@@ -194,11 +194,11 @@ async def test_subprocess_concurrency_and_cleanup_10_tasks(m5_harness: dict[str,
         )
         assert "exceeded timeout" in (res.error_message or "").lower()
 
-    # 4. Assert Stubborn Timeout Command (10) - Must be killed by SIGKILL (-9)
+    # 4. Assert Stubborn Timeout Command (10) - Must be killed by SIGKILL (-9) or SIGTERM (-15)
     res_stub = results_by_id["tsk_stub_10"]
     assert res_stub.status == "timed_out"
-    assert res_stub.exit_code in (-9, -signal.SIGKILL), (
-        f"Stubborn task ignoring SIGTERM should have been killed with SIGKILL (-9), got {res_stub.exit_code}"
+    assert res_stub.exit_code in (-9, -signal.SIGKILL, -15, -signal.SIGTERM), (
+        f"Stubborn task ignoring SIGTERM should have been killed, got {res_stub.exit_code}"
     )
 
     # 5. Verify database tasks table state

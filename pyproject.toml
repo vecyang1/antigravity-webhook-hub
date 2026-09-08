@@ -45,3 +45,7 @@ asyncio_mode = "auto"
 markers = [
     "anyio: mark test to run with anyio",
 ]
+filterwarnings = [
+    "ignore::pytest.PytestUnraisableExceptionWarning",
+    "ignore:.*Event loop is closed.*:RuntimeWarning",
+]
