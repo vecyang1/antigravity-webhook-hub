@@ -1,0 +1,30 @@
+# ==============================================================================
+# Cloudflare Tunnel Configuration Template (Named Production Tunnel)
+# ==============================================================================
+# Recipe for exposing the local Antigravity Webhook Hub securely without opening
+# inbound firewall/router ports.
+#
+# Usage:
+#   1. Replace placeholders (${CLOUDFLARE_TUNNEL_NAME}, ${CLOUDFLARE_TUNNEL_HOSTNAME}, etc.)
+#      or let tunnel/start_tunnel.sh substitute them automatically from .env
+#   2. Run: ./tunnel/start_tunnel.sh
+# ==============================================================================
+
+tunnel: ${CLOUDFLARE_TUNNEL_NAME:-antigravity-webhook-tunnel}
+credentials-file: ${CLOUDFLARE_CREDENTIALS_FILE:-~/.cloudflared/antigravity-webhook-tunnel.json}
+
+ingress:
+  # Route 1: Forward webhook ingress and API traffic to the local asyncio gateway
+  - hostname: ${CLOUDFLARE_TUNNEL_HOSTNAME:-webhook.yourdomain.com}
+    path: ^/(webhook|healthz|ready|metrics|tasks|events|api)
+    service: http://127.0.0.1:${PORT:-9423}
+    originRequest:
+      connectTimeout: 10s
+      noTLSVerify: false
+      keepAliveTimeout: 90s
+      keepAliveConnections: 100
+      # Cloudflare edge strips/proxies SSE; disable origin response buffering
+      disableChunkedEncoding: false
+
+  # Route 2: Mandatory catch-all 404 rule for unmapped paths/domains
+  - service: http_status:404

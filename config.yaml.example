@@ -1,0 +1,41 @@
+# ==============================================================================
+# Antigravity Webhook Hub — Structured Configuration File
+# ==============================================================================
+# Environment variable interpolation supported via ${VARIABLE_NAME} or ${VAR:-default}
+
+server:
+  host: "127.0.0.1"              # Local interface binding; only exposed via Cloudflare Tunnel
+  port: 9423                     # Non-standard port to avoid local collisions
+  max_body_bytes: 1048576        # 1MB maximum payload size limit
+  log_level: "INFO"              # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  keep_alive_timeout: 65         # Seconds to keep client connection open for keepalive
+
+security:
+  auth_mode: "hmac"              # Authentication modes: hmac, bearer, any, both
+  webhook_secret: "${WEBHOOK_SECRET}"
+  bearer_token: "${BEARER_TOKEN}"
+  timestamp_tolerance_seconds: 300       # Past timestamp tolerance (seconds)
+  future_timestamp_tolerance_seconds: 60 # Future timestamp rejection threshold (seconds)
+  signature_header: "X-Hub-Signature-256"
+  timestamp_header: "X-Hub-Timestamp"
+  event_id_header: "X-Hub-Event-ID"
+
+database:
+  path: "data/webhook_hub.db"    # Path to SQLite database file
+  wal_mode: true                 # Enable SQLite Write-Ahead Logging (WAL)
+  busy_timeout_ms: 5000          # Milliseconds to wait before throwing database locked
+
+dispatch:
+  default_action_timeout_seconds: 300
+  max_concurrent_tasks: 5
+  allowed_command_prefixes:
+    - "python3"
+    - "bash"
+    - "bin/"
+
+tunnel:
+  enabled: false
+  provider: "cloudflare"
+  tunnel_name: "antigravity-webhook-tunnel"
+  credentials_file: "~/.cloudflared/credentials.json"
+  hostname: "webhook.yourdomain.com"

@@ -1,0 +1,43 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Cloudflare tunnel generated credentials & configs
+tunnel/config.yml
+tunnel/*.json
+tunnel/*.pem
+
+# Runtime PID and log files
+*.pid
+.webhook-hub.pid
+*.log
+webhook-hub.log
+.agents/signals/
+
+# SQLite database files
+*.db
+*.db-wal
+*.db-shm
+data/
+test_*.db*
+
+# Python cache & build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE & OS metadata
+.DS_Store
+.vscode/
+.idea/
+graphify-out/cache/
