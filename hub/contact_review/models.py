@@ -63,6 +63,14 @@ def normalize_url_string(val: Optional[str]) -> str:
     return f"{netloc}{path}{query}"
 
 
+def normalize_url_for_comparison(val: Optional[str]) -> str:
+    """Normalize URL and strip www prefix for fuzzy match and candidate scoring."""
+    u = normalize_url_string(val)
+    if u.startswith("www."):
+        return u[4:]
+    return u
+
+
 def format_social_url(platform: str, handle: str) -> str:
     """Ensure handle is formatted as a valid URL for Notion url property."""
     if not handle:

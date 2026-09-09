@@ -509,3 +509,24 @@ def test_cmd_sweep_offline_db(tmp_path, capsys):
     assert len(db.get_orphaned_webhook_events()) == 0
     db.close()
 
+
+def test_cmd_sweep_no_auto_retry_and_source_flags(tmp_path, capsys):
+    """Verify --no-auto-retry and --source flags in CLI parser and command execution."""
+    from hub.cli import cmd_sweep
+
+    db_file = tmp_path / "test_cli_flags.db"
+    db = DatabaseManager(str(db_file), cache_size=-16)
+    db.init_schema()
+
+    parser = build_parser()
+    args = parser.parse_args(["sweep", "--db", str(db_file), "--no-auto-retry", "--source", "custom_source"])
+    assert args.auto_retry is False
+    assert args.source == "custom_source"
+
+    code = cmd_sweep(args)
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "DISABLED" in captured.out
+    db.close()
+
+

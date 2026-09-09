@@ -254,9 +254,14 @@ def register_task_routes(
         stale_sec = 300
         max_retries = 3
         limit = 100
+        auto_retry = True
 
         if req.query_params.get("dry_run", "").lower() in ("true", "1", "yes"):
             dry_run = True
+        if "auto_retry" in req.query_params:
+            auto_retry = req.query_params.get("auto_retry", "").lower() not in ("false", "0", "no")
+        if "auto_retry_interrupted" in req.query_params:
+            auto_retry = req.query_params.get("auto_retry_interrupted", "").lower() not in ("false", "0", "no")
         source_filter = req.query_params.get("source")
 
         if req.body:
@@ -273,6 +278,10 @@ def register_task_routes(
                         max_retries = int(body["max_retries"])
                     if "limit" in body:
                         limit = int(body["limit"])
+                    if "auto_retry" in body:
+                        auto_retry = bool(body["auto_retry"])
+                    if "auto_retry_interrupted" in body:
+                        auto_retry = bool(body["auto_retry_interrupted"])
             except Exception:
                 pass
 
@@ -301,6 +310,7 @@ def register_task_routes(
                 reason="api_request",
                 stale_running_seconds=stale_sec,
                 max_retries=max_retries,
+                auto_retry_interrupted=auto_retry,
                 source=source_filter,
                 limit=limit,
             )
@@ -321,6 +331,7 @@ def register_task_routes(
             res = db.sweep_and_requeue_unprocessed(
                 stale_running_seconds=stale_sec,
                 max_retries=max_retries,
+                auto_retry_interrupted=auto_retry,
                 source=source_filter,
                 limit=limit,
             )

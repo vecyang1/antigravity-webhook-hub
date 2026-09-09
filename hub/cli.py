@@ -905,12 +905,15 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     stale_sec = getattr(args, "stale_seconds", 300)
     max_retries = getattr(args, "max_retries", 3)
 
+    auto_retry = getattr(args, "auto_retry", True)
+
     payload_dict = {
         "dry_run": dry_run,
         "source": source,
         "limit": limit,
         "stale_seconds": stale_sec,
         "max_retries": max_retries,
+        "auto_retry_interrupted": auto_retry,
     }
 
     # Try live gateway first if pid is alive
@@ -964,6 +967,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             db_res = mgr.sweep_and_requeue_unprocessed(
                 stale_running_seconds=stale_sec,
                 max_retries=max_retries,
+                auto_retry_interrupted=auto_retry,
                 source=source,
                 limit=limit,
             )
@@ -984,6 +988,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     print("==================================================")
     mode_str = f"LIVE GATEWAY (http://{host}:{port})" if live_success else "OFFLINE DIRECT (SQLite SSOT)"
     print(f"  Mode:         {mode_str}")
+    print(f"  Auto-Retry:   {'ENABLED' if auto_retry else 'DISABLED'}")
     if dry_run:
         would = sweep_data.get("would_recover", {})
         total = would.get("total_unprocessed", 0)
@@ -1028,6 +1033,8 @@ def _add_sweep_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--limit", type=int, default=100, help="Maximum number of tasks to recover in one sweep")
     parser.add_argument("--stale-seconds", type=int, default=300, help="Stale threshold for running tasks in seconds (default: 300s)")
     parser.add_argument("--max-retries", type=int, default=3, help="Maximum retry attempts for interrupted tasks")
+    parser.add_argument("--auto-retry", dest="auto_retry", action="store_true", default=True, help="Auto-retry interrupted and timed out tasks (default: True)")
+    parser.add_argument("--no-auto-retry", dest="auto_retry", action="store_false", help="Do not auto-retry interrupted tasks")
     parser.add_argument("--host", default="127.0.0.1", help="Gateway host when connecting to live server")
     parser.add_argument("--port", type=int, default=9423, help="Gateway port when connecting to live server")
     parser.add_argument("--db", type=str, default=None, help="Path to SQLite database file when offline")

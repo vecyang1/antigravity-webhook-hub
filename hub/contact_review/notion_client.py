@@ -23,6 +23,7 @@ from hub.contact_review.models import (
     ContactInput,
     is_placeholder_name,
     normalize_phone_digits,
+    normalize_url_for_comparison,
     normalize_url_string,
 )
 
@@ -294,7 +295,18 @@ class NotionPeopleClient:
 
         # 4. URL match
         if contact.url:
-            filter_clauses.append({"property": "URL", "url": {"contains": contact.url.strip()}})
+            raw_u = contact.url.strip()
+            filter_clauses.append({"property": "URL", "url": {"contains": raw_u}})
+            norm_u = contact.normalized_url()
+            if norm_u and norm_u != raw_u:
+                filter_clauses.append({"property": "URL", "url": {"contains": norm_u}})
+            url_handle_match = re.search(r"(?:instagram\.com|x\.com|twitter\.com|linkedin\.com/in|t\.me)/([a-zA-Z0-9._-]+)", raw_u)
+            if url_handle_match:
+                u_handle = url_handle_match.group(1).rstrip("/")
+                if u_handle:
+                    filter_clauses.append({"property": "URL", "url": {"contains": u_handle}})
+                    if "instagram.com" in raw_u.lower():
+                        filter_clauses.append({"property": "Instagram", "url": {"contains": u_handle}})
 
         # 5. Social Handle match
         if contact.social_handles:
@@ -383,9 +395,26 @@ class NotionPeopleClient:
             # URL scoring
             cand_url = cand_match.get_url()
             if contact.url and cand_url:
-                if contact.normalized_url() == cand_url.strip().lower():
+                norm_contact_url = normalize_url_for_comparison(contact.url)
+                norm_cand_url = normalize_url_for_comparison(cand_url)
+                if norm_contact_url and norm_cand_url and norm_contact_url == norm_cand_url:
                     score += 85
                     reasons.append("url_match")
+                elif norm_contact_url and norm_cand_url and (norm_contact_url in norm_cand_url or norm_cand_url in norm_contact_url):
+                    score += 80
+                    reasons.append("url_partial_match")
+
+            # Cross-check URL with candidate social handles/properties
+            if contact.url and "url_match" not in reasons:
+                norm_contact_url = normalize_url_for_comparison(contact.url)
+                for plat in ("instagram", "twitter", "x", "linkedin", "telegram", "line", "wechat"):
+                    cand_s = cand_match.get_social(plat)
+                    if cand_s:
+                        norm_cand_s = normalize_url_for_comparison(cand_s)
+                        if norm_cand_s and (norm_contact_url == norm_cand_s or norm_cand_s in norm_contact_url or norm_contact_url in norm_cand_s):
+                            score += 85
+                            reasons.append(f"{plat}_url_match")
+                            break
 
             # Name scoring (ignore if either is a generic placeholder)
             if contact.name and page_name and not is_placeholder_name(contact.name) and not is_placeholder_name(page_name):

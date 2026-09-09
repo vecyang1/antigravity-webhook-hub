@@ -187,3 +187,41 @@ async def test_append_images_to_page_idempotency():
         )
         assert len(res1) == 0
         mock_append.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_candidate_url_matching_with_and_without_www():
+    """Verify search_candidates scores URL matches >= 85 even with protocol, www, and slash variations."""
+    client = NotionPeopleClient(api_token="test_token")
+    contact = ContactInput(
+        name="他也去了吉婆岛",
+        url="https://instagram.com/adamwalk",
+    )
+
+    mock_query_response = {
+        "results": [
+            {
+                "id": "3d5e1b43-2393-8103-aac2-c1f41ac51424",
+                "url": "https://notion.so/3d5e1b4323938103aac2c1f41ac51424",
+                "properties": {
+                    "Full Name": {
+                        "type": "title",
+                        "title": [{"plain_text": "Adam Walker"}],
+                    },
+                    "URL": {
+                        "type": "url",
+                        "url": "https://www.instagram.com/adamwalk/",
+                    },
+                },
+            }
+        ]
+    }
+
+    with patch.object(client, "_request", return_value=mock_query_response):
+        candidates = await client.search_candidates(contact)
+        assert len(candidates) == 1
+        cand = candidates[0]
+        assert cand.page_id == "3d5e1b43-2393-8103-aac2-c1f41ac51424"
+        assert cand.score >= 85
+        assert "url_match" in cand.match_reasons
+

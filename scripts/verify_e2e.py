@@ -126,7 +126,7 @@ class E2EVerifier:
         self.is_ephemeral = True
 
         hub_bin = PROJECT_ROOT / "bin" / "webhook-hub"
-        entrypoint = [sys.executable, "-m", "hub.cli"]
+        entrypoint = [sys.executable, str(hub_bin)] if hub_bin.is_file() else [sys.executable, "-m", "hub.cli"]
         cmd = entrypoint + [
             "start",
             "--host",

@@ -33,7 +33,7 @@ def _tuned_sqlite3_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
         conn.execute("PRAGMA cache_size = -4000;")
         conn.execute("PRAGMA mmap_size = 0;")
         conn.execute("PRAGMA temp_store = FILE;")
-        conn.execute("PRAGMA wal_autocheckpoint = 50;")
+        conn.execute("PRAGMA wal_autocheckpoint = 20;")
     except Exception as e:
         logger.debug("Failed to apply initial PRAGMAs: %s", e)
     return conn
@@ -72,9 +72,9 @@ class DatabaseManager:
         conn.execute(f"PRAGMA cache_size = {self._cache_size};")
         conn.execute("PRAGMA mmap_size = 0;")
         conn.execute("PRAGMA temp_store = FILE;")
-        conn.execute("PRAGMA wal_autocheckpoint = 50;")
+        conn.execute("PRAGMA wal_autocheckpoint = 20;")
         try:
-            conn.execute("PRAGMA soft_heap_limit = 1048576;")
+            conn.execute("PRAGMA soft_heap_limit = 524288;")
             conn.execute("PRAGMA shrink_memory;")
         except Exception:
             pass
@@ -500,9 +500,9 @@ class DatabaseManager:
                 UPDATE tasks
                 SET status = ?,
                     updated_at = CURRENT_TIMESTAMP,
-                    queued_at = CASE WHEN ? = 'queued' AND queued_at IS NULL THEN CURRENT_TIMESTAMP ELSE queued_at END,
-                    started_at = CASE WHEN ? = 'running' AND started_at IS NULL THEN CURRENT_TIMESTAMP ELSE started_at END,
-                    completed_at = CASE WHEN ? IN ('succeeded', 'failed', 'timed_out', 'cancelled') THEN CURRENT_TIMESTAMP ELSE completed_at END,
+                    queued_at = CASE WHEN ? = 'queued' THEN CURRENT_TIMESTAMP ELSE queued_at END,
+                    started_at = CASE WHEN ? = 'running' THEN CURRENT_TIMESTAMP WHEN ? = 'queued' THEN NULL ELSE started_at END,
+                    completed_at = CASE WHEN ? IN ('succeeded', 'failed', 'timed_out', 'cancelled') THEN CURRENT_TIMESTAMP WHEN ? = 'queued' THEN NULL ELSE completed_at END,
                     exit_code = CASE WHEN ? IS NOT NULL THEN ? ELSE exit_code END,
                     error_message = CASE WHEN ? IS NOT NULL THEN ? ELSE error_message END
                 WHERE task_id = ? AND status = ?
@@ -511,6 +511,8 @@ class DatabaseManager:
                 cur.execute(
                     query,
                     (
+                        new_status,
+                        new_status,
                         new_status,
                         new_status,
                         new_status,
@@ -532,7 +534,7 @@ class DatabaseManager:
     def recover_orphaned_tasks(self) -> int:
         """
         Boot-time crash recovery:
-        Marks any tasks stranded in 'running' status as 'failed' (or re-queues if retries left).
+        Marks any tasks stranded in 'running' status as 'queued' (if retries left) or 'failed'.
         """
         with self._lock:
             cur = self._conn.cursor()
@@ -542,7 +544,9 @@ class DatabaseManager:
                 SET status = CASE WHEN retry_count < max_retries THEN 'queued' ELSE 'failed' END,
                     retry_count = CASE WHEN retry_count < max_retries THEN retry_count + 1 ELSE retry_count END,
                     error_message = 'Interrupted by server restart',
-                    completed_at = CURRENT_TIMESTAMP,
+                    queued_at = CASE WHEN retry_count < max_retries THEN CURRENT_TIMESTAMP ELSE queued_at END,
+                    started_at = CASE WHEN retry_count < max_retries THEN NULL ELSE started_at END,
+                    completed_at = CASE WHEN retry_count < max_retries THEN NULL ELSE CURRENT_TIMESTAMP END,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE status = 'running'
                 RETURNING task_id, status;
@@ -589,7 +593,7 @@ class DatabaseManager:
             finally:
                 cur.close()
 
-    def get_orphaned_webhook_events(self, limit: int = 100) -> list[dict[str, Any]]:
+    def get_orphaned_webhook_events(self, source: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:
         """
         Query webhook_events in 'received' status that do not have an associated task in tasks table.
         """
@@ -597,14 +601,16 @@ class DatabaseManager:
             cur = self._conn.cursor()
             try:
                 cur.execute(
-                    """
-                    SELECT e.* FROM webhook_events e
+                    f"""
+                    SELECT e.event_id, e.source, e.idempotency_key, e.status, e.received_at, e.raw_payload
+                    FROM webhook_events e
                     LEFT JOIN tasks t ON e.event_id = t.event_id
                     WHERE e.status = 'received' AND t.task_id IS NULL
+                      {('AND e.source = ?' if source else '')}
                     ORDER BY e.received_at ASC
                     LIMIT ?
                     """,
-                    (limit,),
+                    ([source] if source else []) + [limit],
                 )
                 rows = cur.fetchall()
                 return [dict(r) for r in rows]
@@ -614,6 +620,7 @@ class DatabaseManager:
     def rehydrate_orphaned_event(
         self,
         event_id: str,
+        event_record: Optional[dict[str, Any]] = None,
         default_action_type: str = "cli",
         default_max_retries: int = 3,
         default_timeout_seconds: int = 300,
@@ -625,22 +632,30 @@ class DatabaseManager:
         with self._lock:
             cur = self._conn.cursor()
             try:
-                cur.execute("SELECT * FROM webhook_events WHERE event_id = ?", (event_id,))
-                ev_row = cur.fetchone()
-                if not ev_row:
-                    return None
-                event = dict(ev_row)
+                event = event_record
+                if event is None:
+                    cur.execute("SELECT * FROM webhook_events WHERE event_id = ?", (event_id,))
+                    ev_row = cur.fetchone()
+                    if not ev_row:
+                        return None
+                    event = dict(ev_row)
 
                 # Check if task already exists
                 cur.execute("SELECT task_id FROM tasks WHERE event_id = ? LIMIT 1", (event_id,))
                 if cur.fetchone():
                     return None
 
-                payload = {}
-                try:
-                    payload = json.loads(event.get("raw_payload", "{}"))
-                except Exception:
-                    pass
+                payload: dict[str, Any] = {}
+                raw = event.get("raw_payload", "{}")
+                if raw:
+                    try:
+                        loaded = json.loads(raw)
+                        if isinstance(loaded, dict):
+                            payload = loaded
+                        elif isinstance(loaded, str) and loaded.strip():
+                            payload = {"command": loaded}
+                    except Exception:
+                        payload = {}
 
                 action_type = (
                     payload.get("action_type")
@@ -684,8 +699,8 @@ class DatabaseManager:
         Unprocessed includes:
         - tasks with status 'queued'
         - tasks with status 'received'
-        - tasks with status 'running' that have been running longer than stale_running_seconds
-        - tasks with status 'failed' due to sleep/interruption with retries remaining
+        - tasks with status 'running' that have been running longer than MAX(stale_running_seconds, timeout_seconds)
+        - tasks with status 'failed' or 'timed_out' due to sleep/interruption with retries remaining (max_retries > 0)
         - orphaned webhook_events with status 'received' without tasks
         """
         with self._lock:
@@ -707,29 +722,43 @@ class DatabaseManager:
                 stale_query = f"""
                 SELECT COUNT(*) FROM tasks
                 WHERE status = 'running'
-                  AND (strftime('%s', 'now') - strftime('%s', COALESCE(started_at, updated_at, created_at))) > ?
+                  AND (strftime('%s', 'now') - strftime('%s', COALESCE(started_at, updated_at, created_at))) > MAX(?, COALESCE(timeout_seconds, 0))
                   {('AND source = ?' if source else '')}
                 """
                 stale_params = [stale_running_seconds] + ([source] if source else [])
                 cur.execute(stale_query, stale_params)
                 stale_running_count = cur.fetchone()[0]
 
-                orphaned_events = self.get_orphaned_webhook_events(limit=limit)
-                orphaned_count = len(orphaned_events)
+                if limit == 0:
+                    orphaned_count_query = f"""
+                    SELECT COUNT(*) FROM webhook_events e
+                    LEFT JOIN tasks t ON e.event_id = t.event_id
+                    WHERE e.status = 'received' AND t.task_id IS NULL
+                      {('AND e.source = ?' if source else '')}
+                    """
+                    cur.execute(orphaned_count_query, ([source] if source else []))
+                    orphaned_count = cur.fetchone()[0]
+                    orphaned_events = []
+                else:
+                    orphaned_events = self.get_orphaned_webhook_events(source=source, limit=limit)
+                    orphaned_count = len(orphaned_events)
 
                 interrupted_query = f"""
                 SELECT COUNT(*) FROM tasks
-                WHERE status = 'failed'
-                  AND retry_count < max_retries
-                  AND (
-                    error_message LIKE '%restart%'
-                    OR error_message LIKE '%interrupted%'
-                    OR error_message LIKE '%timed out%'
-                    OR error_message LIKE '%handshake%'
-                    OR error_message LIKE '%Connection%'
-                    OR error_message LIKE '%network%'
-                  )
-                  {('AND source = ?' if source else '')}
+                WHERE (
+                    (status = 'failed' AND retry_count < max_retries AND (
+                        error_message LIKE '%restart%'
+                        OR error_message LIKE '%interrupted%'
+                        OR error_message LIKE '%timed out%'
+                        OR error_message LIKE '%timeout%'
+                        OR error_message LIKE '%handshake%'
+                        OR error_message LIKE '%Connection%'
+                        OR error_message LIKE '%network%'
+                    ))
+                    OR (status = 'timed_out' AND retry_count < max_retries)
+                )
+                AND max_retries > 0
+                {('AND source = ?' if source else '')}
                 """
                 cur.execute(interrupted_query, ([source] if source else []))
                 recoverable_failed_count = cur.fetchone()[0]
@@ -743,13 +772,15 @@ class DatabaseManager:
                 )
 
                 # Fetch task records
-                if status:
+                if limit == 0:
+                    task_rows = []
+                elif status:
                     if status == "stale_running":
                         cur.execute(
                             f"""
                             SELECT * FROM tasks
                             WHERE status = 'running'
-                              AND (strftime('%s', 'now') - strftime('%s', COALESCE(started_at, updated_at, created_at))) > ?
+                              AND (strftime('%s', 'now') - strftime('%s', COALESCE(started_at, updated_at, created_at))) > MAX(?, COALESCE(timeout_seconds, 0))
                               {('AND source = ?' if source else '')}
                             ORDER BY created_at ASC LIMIT ?
                             """,
@@ -764,23 +795,29 @@ class DatabaseManager:
                     cur.execute(
                         f"""
                         SELECT * FROM tasks
-                        WHERE status IN ('queued', 'received')
-                           OR (status = 'running' AND (strftime('%s', 'now') - strftime('%s', COALESCE(started_at, updated_at, created_at))) > ?)
-                           OR (status = 'failed' AND retry_count < max_retries AND (
-                                error_message LIKE '%restart%'
-                                OR error_message LIKE '%interrupted%'
-                                OR error_message LIKE '%timed out%'
-                                OR error_message LIKE '%handshake%'
-                                OR error_message LIKE '%Connection%'
-                                OR error_message LIKE '%network%'
-                           ))
+                        WHERE (status IN ('queued', 'received')
+                           OR (status = 'running' AND (strftime('%s', 'now') - strftime('%s', COALESCE(started_at, updated_at, created_at))) > MAX(?, COALESCE(timeout_seconds, 0)))
+                           OR ((
+                                (status = 'failed' AND (
+                                    error_message LIKE '%restart%'
+                                    OR error_message LIKE '%interrupted%'
+                                    OR error_message LIKE '%timed out%'
+                                    OR error_message LIKE '%timeout%'
+                                    OR error_message LIKE '%handshake%'
+                                    OR error_message LIKE '%Connection%'
+                                    OR error_message LIKE '%network%'
+                                ))
+                                OR status = 'timed_out'
+                           ) AND retry_count < max_retries AND max_retries > 0))
+                           {('AND source = ?' if source else '')}
                         ORDER BY priority DESC, created_at ASC
                         LIMIT ?
                         """,
-                        [stale_running_seconds] + [limit],
+                        [stale_running_seconds] + ([source] if source else []) + [limit],
                     )
 
-                task_rows = cur.fetchall()
+                if limit > 0:
+                    task_rows = cur.fetchall()
                 tasks_list = [dict(r) for r in task_rows]
 
                 return {
@@ -812,7 +849,7 @@ class DatabaseManager:
         1. Resets stale 'running' tasks (cut off by sleep or crashed) to 'queued' (or 'timed_out' if retries exhausted).
         2. Promotes 'received' tasks to 'queued'.
         3. Rehydrates orphaned 'webhook_events' into new 'queued' tasks.
-        4. Re-queues recoverable 'failed' tasks whose errors resulted from sleep / network loss.
+        4. Re-queues recoverable 'failed' and 'timed_out' tasks whose errors resulted from sleep / network loss.
         5. Returns summary metrics and all ready 'queued' task IDs for immediate dispatch.
         """
         with self._lock:
@@ -823,29 +860,31 @@ class DatabaseManager:
             recovered_failed = 0
 
             try:
-                # 1. Recover stale 'running' tasks
-                cur.execute(
-                    """
-                    SELECT task_id, retry_count, max_retries, error_message FROM tasks
-                    WHERE status = 'running'
-                      AND (strftime('%s', 'now') - strftime('%s', COALESCE(started_at, updated_at, created_at))) > ?
-                    """,
-                    (stale_running_seconds,),
-                )
+                # 1. Recover stale 'running' tasks (honoring timeout_seconds and max_retries)
+                stale_sql = f"""
+                SELECT task_id, retry_count, max_retries, error_message, timeout_seconds FROM tasks
+                WHERE status = 'running'
+                  AND (strftime('%s', 'now') - strftime('%s', COALESCE(started_at, updated_at, created_at))) > MAX(?, COALESCE(timeout_seconds, 0))
+                  {('AND source = ?' if source else '')}
+                """
+                cur.execute(stale_sql, [stale_running_seconds] + ([source] if source else []))
                 stale_tasks = cur.fetchall()
                 for st in stale_tasks:
                     tid = st["task_id"]
-                    curr_rc = st["retry_count"]
+                    curr_rc = int(st["retry_count"])
                     task_max = max(int(st["max_retries"]), max_retries if auto_retry_interrupted else int(st["max_retries"]))
-                    if curr_rc < task_max:
+
+                    if auto_retry_interrupted and curr_rc < task_max:
                         cur.execute(
                             """
                             UPDATE tasks
                             SET status = 'queued',
                                 retry_count = retry_count + 1,
-                                max_retries = MAX(max_retries, ?),
+                                max_retries = ?,
                                 error_message = 'Interrupted by sleep or timeout; auto-recovered by sweeper',
                                 queued_at = CURRENT_TIMESTAMP,
+                                started_at = NULL,
+                                completed_at = NULL,
                                 updated_at = CURRENT_TIMESTAMP
                             WHERE task_id = ?
                             """,
@@ -866,60 +905,70 @@ class DatabaseManager:
                         )
 
                 # 2. Promote 'received' tasks to 'queued'
-                cur.execute(
-                    """
-                    UPDATE tasks
-                    SET status = 'queued',
-                        queued_at = CURRENT_TIMESTAMP,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE status = 'received'
-                    """
-                )
+                received_sql = f"""
+                UPDATE tasks
+                SET status = 'queued',
+                    queued_at = CURRENT_TIMESTAMP,
+                    started_at = NULL,
+                    completed_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'received'
+                  {('AND source = ?' if source else '')}
+                """
+                cur.execute(received_sql, ([source] if source else []))
                 recovered_received = cur.rowcount
 
                 # 3. Rehydrate orphaned webhook_events
-                orphans = self.get_orphaned_webhook_events(limit=limit)
+                orphans = self.get_orphaned_webhook_events(source=source, limit=limit)
                 for orp in orphans:
                     eid = orp["event_id"]
-                    created_tid = self.rehydrate_orphaned_event(eid, default_max_retries=max_retries)
+                    created_tid = self.rehydrate_orphaned_event(
+                        eid,
+                        event_record=orp,
+                        default_max_retries=max_retries,
+                    )
                     if created_tid:
                         recovered_orphaned += 1
 
-                # 4. Recover interrupted 'failed' tasks if enabled
+                # 4. Recover interrupted 'failed' and 'timed_out' tasks if enabled
                 if auto_retry_interrupted:
-                    cur.execute(
-                        """
-                        UPDATE tasks
-                        SET status = 'queued',
-                            retry_count = retry_count + 1,
-                            max_retries = MAX(max_retries, ?),
-                            error_message = 'Recovered interrupted failure for re-execution',
-                            queued_at = CURRENT_TIMESTAMP,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE status = 'failed'
-                          AND retry_count < ?
-                          AND (
+                    failed_sql = f"""
+                    UPDATE tasks
+                    SET status = 'queued',
+                        retry_count = retry_count + 1,
+                        max_retries = MAX(max_retries, ?),
+                        error_message = 'Recovered interrupted failure for re-execution',
+                        queued_at = CURRENT_TIMESTAMP,
+                        started_at = NULL,
+                        completed_at = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE (
+                        (status = 'failed' AND (
                             error_message LIKE '%restart%'
                             OR error_message LIKE '%interrupted%'
+                            OR error_message LIKE '%timed out%'
+                            OR error_message LIKE '%timeout%'
                             OR error_message LIKE '%handshake%'
                             OR error_message LIKE '%Connection%'
                             OR error_message LIKE '%network%'
-                          )
-                        """,
-                        (max_retries, max_retries),
+                        ))
+                        OR status = 'timed_out'
                     )
+                    AND retry_count < ?
+                    {('AND source = ?' if source else '')}
+                    """
+                    cur.execute(failed_sql, [max_retries, max_retries] + ([source] if source else []))
                     recovered_failed = cur.rowcount
 
                 # 5. Fetch all currently queued tasks
-                cur.execute(
-                    """
-                    SELECT task_id FROM tasks
-                    WHERE status = 'queued'
-                    ORDER BY priority DESC, created_at ASC
-                    LIMIT ?
-                    """,
-                    (limit,),
-                )
+                queued_sql = f"""
+                SELECT task_id FROM tasks
+                WHERE status = 'queued'
+                  {('AND source = ?' if source else '')}
+                ORDER BY priority DESC, created_at ASC
+                LIMIT ?
+                """
+                cur.execute(queued_sql, ([source] if source else []) + [limit])
                 queued_rows = cur.fetchall()
                 queued_task_ids = [r["task_id"] for r in queued_rows]
 

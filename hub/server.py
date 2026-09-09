@@ -600,32 +600,39 @@ class AsyncHTTPServer:
 
     def _pressure_relief(self) -> None:
         """Periodic background memory relief maintaining <30MB budget on macOS."""
+        global _darwin_libc, _darwin_pressure_relief_fn, _darwin_malloc_default_zone_fn
         if sys.platform == "darwin":
             try:
-                libc = ctypes.CDLL(None)
-                libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-                libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
-                if hasattr(libc, "malloc_default_zone"):
-                    libc.malloc_default_zone.restype = ctypes.c_void_p
-                    z = libc.malloc_default_zone()
+                if "_darwin_libc" not in globals() or _darwin_libc is None:
+                    _darwin_libc = ctypes.CDLL(None)
+                    _darwin_pressure_relief_fn = _darwin_libc.malloc_zone_pressure_relief
+                    _darwin_pressure_relief_fn.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+                    _darwin_pressure_relief_fn.restype = ctypes.c_size_t
+                    if hasattr(_darwin_libc, "malloc_default_zone"):
+                        _darwin_libc.malloc_default_zone.restype = ctypes.c_void_p
+                        _darwin_malloc_default_zone_fn = _darwin_libc.malloc_default_zone
+                    else:
+                        _darwin_malloc_default_zone_fn = None
+                if _darwin_malloc_default_zone_fn is not None:
+                    z = _darwin_malloc_default_zone_fn()
                     if z:
-                        libc.malloc_zone_pressure_relief(z, 0)
+                        _darwin_pressure_relief_fn(z, 0)
                 try:
-                    num_zones = ctypes.c_uint.in_dll(libc, "malloc_num_zones").value
-                    zones = (ctypes.c_void_p * num_zones).in_dll(libc, "malloc_zones")
+                    num_zones = ctypes.c_uint.in_dll(_darwin_libc, "malloc_num_zones").value
+                    zones = (ctypes.c_void_p * num_zones).in_dll(_darwin_libc, "malloc_zones")
                     for i in range(num_zones):
                         if zones[i]:
-                            libc.malloc_zone_pressure_relief(zones[i], 0)
+                            _darwin_pressure_relief_fn(zones[i], 0)
                 except Exception:
                     pass
             except Exception:
                 pass
         elif hasattr(ctypes.CDLL(None), "malloc_trim"):
             try:
-                import ctypes
                 ctypes.CDLL(None).malloc_trim(0)
             except Exception:
                 pass
+
 
     async def _idle_memory_monitor(self) -> None:
         """Periodic background memory relief maintaining <30MB budget on macOS."""

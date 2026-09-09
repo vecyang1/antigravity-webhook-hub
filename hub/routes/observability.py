@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import gc
 import logging
 import os
 import resource
@@ -25,6 +26,39 @@ logger = logging.getLogger("hub.routes.observability")
 
 _darwin_mach_task_self = None
 _darwin_task_info = None
+_darwin_libc = None
+_darwin_pressure_relief_fn = None
+_darwin_malloc_default_zone_fn = None
+
+
+def _apply_darwin_pressure_relief() -> None:
+    """Trigger macOS malloc zone pressure relief to release unused pages."""
+    global _darwin_libc, _darwin_pressure_relief_fn, _darwin_malloc_default_zone_fn
+    if sys.platform != "darwin":
+        return
+    try:
+        if _darwin_libc is None:
+            _darwin_libc = ctypes.CDLL(None)
+            _darwin_pressure_relief_fn = _darwin_libc.malloc_zone_pressure_relief
+            _darwin_pressure_relief_fn.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+            _darwin_pressure_relief_fn.restype = ctypes.c_size_t
+            if hasattr(_darwin_libc, "malloc_default_zone"):
+                _darwin_libc.malloc_default_zone.restype = ctypes.c_void_p
+                _darwin_malloc_default_zone_fn = _darwin_libc.malloc_default_zone
+        if _darwin_malloc_default_zone_fn is not None:
+            z = _darwin_malloc_default_zone_fn()
+            if z:
+                _darwin_pressure_relief_fn(z, 0)
+        try:
+            num_zones = ctypes.c_uint.in_dll(_darwin_libc, "malloc_num_zones").value
+            zones = (ctypes.c_void_p * num_zones).in_dll(_darwin_libc, "malloc_zones")
+            for i in range(num_zones):
+                if zones[i]:
+                    _darwin_pressure_relief_fn(zones[i], 0)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 class _TimeValue(ctypes.Structure):
@@ -134,7 +168,7 @@ def register_observability_routes(
         unprocessed_summary = {}
         if db is not None and hasattr(db, "get_unprocessed_tasks"):
             try:
-                unproc_res = db.get_unprocessed_tasks(limit=1)
+                unproc_res = db.get_unprocessed_tasks(limit=0)
                 unprocessed_summary = unproc_res.get("counts", {})
             except Exception:
                 pass
@@ -145,25 +179,8 @@ def register_observability_routes(
             except Exception:
                 pass
 
-        import gc
         gc.collect()
-        if sys.platform == "darwin":
-            try:
-                import ctypes
-                libc = ctypes.CDLL(None)
-                libc.malloc_default_zone.restype = ctypes.c_void_p
-                libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-                libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
-                zone = libc.malloc_default_zone()
-                if zone:
-                    libc.malloc_zone_pressure_relief(zone, 0)
-                num_zones = ctypes.c_uint.in_dll(libc, "malloc_num_zones").value
-                zones = (ctypes.c_void_p * num_zones).in_dll(libc, "malloc_zones")
-                for i in range(num_zones):
-                    if zones[i]:
-                        libc.malloc_zone_pressure_relief(zones[i], 0)
-            except Exception:
-                pass
+        _apply_darwin_pressure_relief()
 
         stats = server.get_stats()
         uptime = stats.get("uptime_seconds", 0.0)
