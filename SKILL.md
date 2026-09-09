@@ -195,6 +195,18 @@ Provides intelligent deduplication, contradiction detection, property supplement
 }
 ```
 
+### Candidate Matching & URL Normalization Contract
+To prevent duplicate records from URL formatting differences:
+- **Symmetric URL Normalization**: URLs must be normalized via `normalize_url_for_comparison()` on both incoming and stored candidate properties, stripping `http://`, `https://`, `www.` prefixes, and trailing slashes.
+- **Social Handle Extraction**: When querying Notion candidates, social URLs (Instagram, Twitter/X, LinkedIn) must have their handles extracted (e.g. `adamwalk` from `instagram.com/adamwalk/`) and queried against both `URL` and respective social properties.
+- **Cross-Property Scoring**: Incoming URLs must be cross-checked against candidate social properties (e.g. `Instagram`) with >=85 points awarded for a handle/slug match.
+- **Native Name Extraction Guard**: Upstream extractors must NEVER greedily extract unconstrained conversational text or note bullets as native names. Only explicitly labeled patterns (e.g. `姓名:`, `中文名:`, `名前:` or parentheses) are valid native names.
+
+### Hybrid Cloud/Local Ingress Fault-Tolerance Contract
+When a 24/7 cloud workflow (e.g. n8n on `n.worldinspirelab.com`) calls a local gateway via tunnel (`webhook.worldinspirelab.com`):
+- **Laptop Sleep / 502 Edge Behavior**: When the laptop sleeps, Cloudflare edge returns `502 Bad Gateway`. The cloud HTTP node MUST have `neverError: true` and `onError: continueRegularOutput`.
+- **Graceful Degradation**: Cloud workflows must never drop events on 502; they must either route to a cloud fallback database write or post an offline alert guiding the user to wake the laptop.
+
 ### SSOT Verification & Notification
 1. **Live Re-read Verification**: After property mutation, the pipeline re-reads the page from the Notion API to verify property persistence before concluding.
 2. **Slack Thread Feedback**: Posts formatted verdict banner, property diffs, and Notion deep links directly to the originating Slack channel & thread.

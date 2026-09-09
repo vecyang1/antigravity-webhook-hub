@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2026-09-10
+
+### Fixed
+- **Contact Review Candidate Matching & URL Normalization**:
+  - Fixed candidate URL scoring in `hub/contact_review/notion_client.py`: replaced asymmetric comparison with `normalize_url_for_comparison()`, stripping protocols (`http://`, `https://`), `www.` prefixes, and trailing slashes on both incoming and stored candidate URLs.
+  - Enhanced candidate search query filter in `search_candidates`: parses social usernames/handles from URL inputs (e.g. `adamwalk` from `instagram.com/adamwalk/`) and queries both `URL` and `Instagram` Notion properties, preventing 0-candidate query misses caused by slight formatting discrepancies.
+  - Added cross-attribute matching between incoming URL and candidate social profile handles across Instagram, Twitter/X, LinkedIn, Telegram, LINE, and WeChat.
+- **Production n8n Hybrid Ingress Resilience (Workflow `3J5doqEyxA7lT1OO`)**:
+  - Removed greedy `separatedNativeName` CJK regex in `Build People Capture Record` that erroneously hijacked conversational clauses (e.g. `"他也去了吉婆岛"`) and notes (e.g. `"- 非常敏感"`) as native names when base name was Romanized. Native names now strictly require explicit labeled prefixes (`姓名:`, `中文名:`, `名前:` or parentheses).
+  - Patched `Wake Antigravity Contact Review Agent` node with `onError: continueRegularOutput` and `options.neverError: true`, preventing workflow crashes on 502 Bad Gateway when the MacBook is asleep.
+  - Updated Slack verdict node with graceful offline messaging to guide user to wake laptop without dropping in-flight webhook executions.
+- **Observability & Diagnostics**:
+  - Fixed missing `import gc` in `hub/routes/observability.py` resolving 500 errors on `/healthz` during sweeper execution.
+  - Added unit test `test_candidate_url_matching_with_and_without_www` verifying Adam Walker URL matching with score >= 85 (121/121 unit tests passing).
+
 ## [1.3.1] - 2026-09-10
 
 ### Fixed
