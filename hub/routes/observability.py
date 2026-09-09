@@ -189,7 +189,7 @@ def register_observability_routes(
         stats = server.get_stats()
         uptime = stats.get("uptime_seconds", 0.0)
         rss_mb = get_memory_rss_mb()
-        budget_limit = float(os.environ.get("MEMORY_BUDGET_MB", 35.0 if sys.version_info >= (3, 14) else 30.0))
+        budget_limit = float(os.environ.get("MEMORY_BUDGET_MB", 30.0))
         memory_healthy = rss_mb <= budget_limit
 
         status_str = "ok" if (db_healthy and memory_healthy) else "degraded"
