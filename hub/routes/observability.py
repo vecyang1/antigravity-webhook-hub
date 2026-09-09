@@ -51,7 +51,7 @@ def _apply_darwin_pressure_relief() -> None:
                 _darwin_pressure_relief_fn(z, 0)
         try:
             num_zones = ctypes.c_uint.in_dll(_darwin_libc, "malloc_num_zones").value
-            zones = (ctypes.c_void_p * num_zones).in_dll(_darwin_libc, "malloc_zones")
+            zones = ctypes.POINTER(ctypes.c_void_p).in_dll(_darwin_libc, "malloc_zones")
             for i in range(num_zones):
                 if zones[i]:
                     _darwin_pressure_relief_fn(zones[i], 0)
@@ -77,20 +77,24 @@ class _MachTaskBasicInfo(ctypes.Structure):
     ]
 
 
+_darwin_info_struct = None
+_darwin_count = None
+
+
 def _get_darwin_resident_bytes() -> Optional[int]:
     """Query current process resident set size directly from Darwin Mach kernel."""
-    global _darwin_mach_task_self, _darwin_task_info
+    global _darwin_mach_task_self, _darwin_task_info, _darwin_info_struct, _darwin_count
     try:
         if _darwin_task_info is None:
             libc = ctypes.CDLL(None)
             _darwin_mach_task_self = libc.mach_task_self
             _darwin_mach_task_self.restype = ctypes.c_uint32
             _darwin_task_info = libc.task_info
-        info = _MachTaskBasicInfo()
-        count = ctypes.c_uint32(ctypes.sizeof(_MachTaskBasicInfo) // ctypes.sizeof(ctypes.c_uint32))
-        kr = _darwin_task_info(_darwin_mach_task_self(), 20, ctypes.byref(info), ctypes.byref(count))
+            _darwin_info_struct = _MachTaskBasicInfo()
+            _darwin_count = ctypes.c_uint32(ctypes.sizeof(_MachTaskBasicInfo) // ctypes.sizeof(ctypes.c_uint32))
+        kr = _darwin_task_info(_darwin_mach_task_self(), 20, ctypes.byref(_darwin_info_struct), ctypes.byref(_darwin_count))
         if kr == 0:
-            return int(info.resident_size)
+            return int(_darwin_info_struct.resident_size)
     except Exception:
         pass
     return None

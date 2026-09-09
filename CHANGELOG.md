@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-09-10
+
+### Fixed
+- **Database & Rehydration Resilience**:
+  - Fixed `AttributeError` in `DatabaseManager.rehydrate_orphaned_event` when event payload is a non-dict JSON primitive (e.g. strings, arrays, integers) by safely validating `isinstance(data, dict)`.
+  - Fixed lifecycle state corruption: `DatabaseManager.sweep_and_requeue_unprocessed` and `update_task_status_cas` now reset `started_at` and `completed_at` to `NULL` upon task requeue, ensuring accurate runtime durations on subsequent retry attempts.
+  - Fixed query ignoring task-specific `timeout_seconds`: stale task sweep queries now dynamically compute elapsed duration using `MAX(?, COALESCE(timeout_seconds, 0))`.
+  - Fixed recovery gap: `timed_out` tasks with remaining retry budget (`retry_count < max_retries`) are now properly swept and re-enqueued instead of permanently stalling.
+  - Fixed tenant isolation: scoped all recovery queries and batch state updates in `sweep_and_requeue_unprocessed` to the designated `source` filter when provided.
+  - Fixed `recover_orphaned_tasks` erroneously setting `completed_at = CURRENT_TIMESTAMP` for tasks being moved to `queued` state.
+- **Darwin Memory Bounding & Stability (<30MB RSS)**:
+  - Fixed invalid ctypes pointer dereference for macOS Darwin malloc zones: corrected `(ctypes.c_void_p * num_zones).in_dll(...)` to `ctypes.POINTER(ctypes.c_void_p).in_dll(libc, "malloc_zones")` across observability, dispatcher, server, and CLI modules.
+  - Pre-allocated `_MachTaskBasicInfo` and count ctypes structures in `hub/routes/observability.py` to prevent heap allocations during high-frequency memory measurements.
+  - Resolved process-wide SQLite cache pollution: removed runtime mutation of `DEFAULT_SQLITE_CACHE_SIZE` in `hub/cli.py` to preserve default `-4000` for standalone connections while maintaining `-16` for server instances.
+  - Set `sys.dont_write_bytecode = True` and `-B` shebang to prevent pyc disk and memory allocations at startup.
+- **CLI & API Ergonomics**:
+  - Added `--auto-retry` and `--no-auto-retry` CLI flags to `webhook-hub sweep`.
+  - Forwarded `auto_retry_interrupted` parameter in `POST /tasks/sweep` endpoint handler.
+
 ## [1.3.0] - 2026-09-10
 
 ### Added

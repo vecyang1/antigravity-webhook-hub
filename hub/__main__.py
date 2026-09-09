@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+sys.dont_write_bytecode = True
 import time
 import types
 from pathlib import Path

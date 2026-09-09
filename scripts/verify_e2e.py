@@ -126,7 +126,8 @@ class E2EVerifier:
         self.is_ephemeral = True
 
         hub_bin = PROJECT_ROOT / "bin" / "webhook-hub"
-        entrypoint = [sys.executable, str(hub_bin)] if hub_bin.is_file() else [sys.executable, "-m", "hub.cli"]
+        entrypoint = [sys.executable, "-B", str(hub_bin)] if hub_bin.is_file() else [sys.executable, "-B", "-m", "hub.cli"]
+
         cmd = entrypoint + [
             "start",
             "--host",
@@ -142,6 +143,7 @@ class E2EVerifier:
         env = dict(os.environ)
         env["PYTHONPATH"] = str(PROJECT_ROOT)
         env["WEBHOOK_SECRET"] = self.secret
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
 
         try:
             self.server_proc = subprocess.Popen(
@@ -164,7 +166,7 @@ class E2EVerifier:
                     req = urllib.request.Request(f"{self.base_url}/healthz", method="GET")
                     with urllib.request.urlopen(req, timeout=0.5) as resp:
                         if resp.status == 200:
-                            time.sleep(0.5)
+                            time.sleep(1.0)
                             return True
                 except Exception:
                     pass

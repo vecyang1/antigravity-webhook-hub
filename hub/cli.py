@@ -13,23 +13,24 @@ Subcommands:
 
 from __future__ import annotations
 
+import sys
+sys.dont_write_bytecode = True
+
+try:
+    import threading
+    threading.stack_size(131072)
+except Exception:
+    pass
+
 import asyncio
 import gc
 import logging
 import os
 import signal
-import sys
-import threading
 import time
 import types
 from pathlib import Path
 from typing import Any, Optional
-
-# Configure thread stack size for bounded memory on macOS Darwin
-try:
-    threading.stack_size(131072)
-except Exception:
-    pass
 
 # Zero-overhead lazy SSL provider avoiding heavy OpenSSL/LibreSSL dynamic lib loading (<30MB RAM budget)
 if "ssl" not in sys.modules:
@@ -145,7 +146,7 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
     try:
         db_mgr._conn.execute("PRAGMA cache_size = -16;")
         db_mgr._conn.execute("PRAGMA mmap_size = 0;")
-        db_mgr._conn.execute("PRAGMA wal_autocheckpoint = 100;")
+        db_mgr._conn.execute("PRAGMA wal_autocheckpoint = 20;")
     except Exception:
         pass
     db_mgr.init_schema()
@@ -192,13 +193,13 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
         db_mgr.close()
         return 1
 
-    # Reclaim setup allocation memory & freeze startup objects to minimize GC traversal
-    gc.collect()
-    if hasattr(gc, "freeze"):
+    # Reclaim setup allocation memory
+    if hasattr(sys, "_clear_internal_caches"):
         try:
-            gc.freeze()
+            sys._clear_internal_caches()
         except Exception:
             pass
+    gc.collect()
     db_mgr.shrink_memory()
     if sys.platform == "darwin":
         try:
@@ -211,7 +212,7 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
             if zone:
                 libc.malloc_zone_pressure_relief(zone, 0)
             num_zones = ctypes.c_uint.in_dll(libc, "malloc_num_zones").value
-            zones = (ctypes.c_void_p * num_zones).in_dll(libc, "malloc_zones")
+            zones = ctypes.POINTER(ctypes.c_void_p).in_dll(libc, "malloc_zones")
             for i in range(num_zones):
                 if zones[i]:
                     libc.malloc_zone_pressure_relief(zones[i], 0)

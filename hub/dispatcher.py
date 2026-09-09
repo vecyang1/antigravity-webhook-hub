@@ -175,7 +175,7 @@ class TaskDispatcher:
                         _darwin_pressure_relief_fn(z, 0)
                 try:
                     num_zones = ctypes.c_uint.in_dll(_darwin_libc, "malloc_num_zones").value
-                    zones = (ctypes.c_void_p * num_zones).in_dll(_darwin_libc, "malloc_zones")
+                    zones = ctypes.POINTER(ctypes.c_void_p).in_dll(_darwin_libc, "malloc_zones")
                     for i in range(num_zones):
                         if zones[i]:
                             _darwin_pressure_relief_fn(zones[i], 0)

@@ -23,6 +23,9 @@ logger = logging.getLogger("hub.db")
 _original_sqlite3_connect = sqlite3.connect
 
 
+DEFAULT_SQLITE_CACHE_SIZE = -4000
+
+
 def _tuned_sqlite3_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
     conn = _original_sqlite3_connect(*args, **kwargs)
     try:
@@ -30,7 +33,7 @@ def _tuned_sqlite3_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
         conn.execute("PRAGMA busy_timeout = 5000;")
         conn.execute("PRAGMA synchronous = NORMAL;")
         conn.execute("PRAGMA foreign_keys = ON;")
-        conn.execute("PRAGMA cache_size = -16;")
+        conn.execute(f"PRAGMA cache_size = {DEFAULT_SQLITE_CACHE_SIZE};")
         conn.execute("PRAGMA mmap_size = 0;")
         conn.execute("PRAGMA temp_store = FILE;")
         conn.execute("PRAGMA wal_autocheckpoint = 20;")
@@ -67,6 +70,7 @@ class DatabaseManager:
         )
         self._conn.row_factory = sqlite3.Row
         self._apply_pragmas(self._conn)
+        self.shrink_memory()
 
     def _apply_pragmas(self, conn: sqlite3.Connection) -> None:
         """Apply tuned SQLite PRAGMAs for concurrency and bounded memory."""
