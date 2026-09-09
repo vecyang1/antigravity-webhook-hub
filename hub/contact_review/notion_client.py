@@ -1,0 +1,389 @@
+"""
+Antigravity Webhook Hub — Notion People Database Client
+Contract-first REST API client for Notion People database (SSOT).
+Implements candidate querying, property patching, block appending,
+and post-write verification against live Notion state.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import re
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Optional
+
+from hub.contact_review.models import CandidateMatch, ContactInput, normalize_phone_digits
+
+logger = logging.getLogger("hub.contact_review.notion")
+
+DEFAULT_PEOPLE_DATABASE_ID = "22ce1b43-2393-81a4-9443-e32e71142e0d"
+NOTION_API_VERSION = "2022-06-28"
+NOTION_BASE_URL = "https://api.notion.com/v1"
+
+
+def resolve_notion_token() -> str:
+    """
+    Resolve Notion API token from environment, local .env, or notion-mcp-connector.
+    Fails closed if no token can be located.
+    """
+    # 1. Direct environment variable
+    token = os.environ.get("NOTION_TOKEN") or os.environ.get("NOTION_API_KEY")
+    if token:
+        return token.strip()
+
+    # 2. Local .env file
+    local_env_path = Path(".env")
+    if local_env_path.is_file():
+        for line in local_env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                k = k.strip()
+                if k in ("NOTION_TOKEN", "NOTION_API_KEY"):
+                    val = v.strip().strip("'\"")
+                    if val:
+                        return val
+
+    # 3. notion-mcp-connector skill .env
+    skill_env_path = Path("/Users/vecsatfoxmailcom/.gemini/antigravity/skills/notion-mcp-connector/.env")
+    if skill_env_path.is_file():
+        for line in skill_env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                k = k.strip()
+                if k in ("NOTION_TOKEN", "NOTION_API_KEY"):
+                    val = v.strip().strip("'\"")
+                    if val:
+                        return val
+
+    return ""
+
+
+def clean_database_id(raw_id: str) -> str:
+    """Normalize Notion database ID by removing dashes if needed."""
+    clean = raw_id.replace("-", "").strip()
+    return clean
+
+
+# Notion Property Helpers
+def make_title(text: str) -> dict[str, Any]:
+    return {"title": [{"type": "text", "text": {"content": str(text or "").strip()[:1900]}}]}
+
+
+def make_rich_text(text: str) -> dict[str, Any]:
+    return {"rich_text": [{"type": "text", "text": {"content": str(text or "").strip()[:1900]}}]}
+
+
+def make_email(email: str) -> dict[str, Any]:
+    return {"email": str(email or "").strip() or None}
+
+
+def make_url(url: str) -> dict[str, Any]:
+    return {"url": str(url or "").strip() or None}
+
+
+def make_date(date_str: str) -> dict[str, Any]:
+    d = str(date_str or "").strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", d):
+        return {"date": {"start": d}}
+    return {"date": None}
+
+
+def make_select(name: str) -> dict[str, Any]:
+    return {"select": {"name": str(name).strip()[:100]} if name else None}
+
+
+# Notion Block Helpers
+def make_heading_block(text: str, level: int = 3) -> dict[str, Any]:
+    htype = f"heading_{level}"
+    return {
+        "type": htype,
+        htype: {
+            "rich_text": [{"type": "text", "text": {"content": str(text)[:1900]}}]
+        },
+    }
+
+
+def make_bullet_block(text: str) -> dict[str, Any]:
+    return {
+        "type": "bulleted_list_item",
+        "bulleted_list_item": {
+            "rich_text": [{"type": "text", "text": {"content": str(text)[:1900]}}]
+        },
+    }
+
+
+def make_paragraph_block(text: str) -> dict[str, Any]:
+    return {
+        "type": "paragraph",
+        "paragraph": {
+            "rich_text": [{"type": "text", "text": {"content": str(text)[:1900]}}]
+        },
+    }
+
+
+class NotionPeopleClient:
+    """Client for interacting with Notion People database."""
+
+    def __init__(
+        self,
+        api_token: Optional[str] = None,
+        database_id: Optional[str] = None,
+        timeout: int = 20,
+    ):
+        self.api_token = api_token if api_token is not None else resolve_notion_token()
+        self.database_id = clean_database_id(
+            database_id or os.environ.get("NOTION_PEOPLE_DATABASE_ID") or DEFAULT_PEOPLE_DATABASE_ID
+        )
+        self.timeout = timeout
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        data: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Execute synchronous HTTP request to Notion API."""
+        if not self.api_token:
+            raise ValueError(
+                "Notion API token not found. Please set NOTION_TOKEN or NOTION_API_KEY."
+            )
+
+        url = f"{NOTION_BASE_URL}/{path.lstrip('/')}"
+        headers = {
+            "Authorization": f"Bearer {self.api_token}",
+            "Notion-Version": NOTION_API_VERSION,
+            "Content-Type": "application/json",
+            "User-Agent": "Antigravity-Webhook-Hub/1.0",
+        }
+
+        body_bytes = json.dumps(data).encode("utf-8") if data is not None else None
+        req = urllib.request.Request(url, data=body_bytes, headers=headers, method=method)
+
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                resp_bytes = resp.read()
+                return json.loads(resp_bytes.decode("utf-8")) if resp_bytes else {}
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+            try:
+                err_json = json.loads(err_body)
+                err_msg = err_json.get("message") or err_body
+            except Exception:
+                err_msg = err_body
+            logger.error("Notion API error %d on %s %s: %s", e.code, method, path, err_msg)
+            raise RuntimeError(f"Notion API {e.code} error: {err_msg}") from e
+        except Exception as e:
+            logger.error("Notion connection error on %s %s: %s", method, path, e)
+            raise RuntimeError(f"Notion network error: {e}") from e
+
+    async def search_candidates(self, contact: ContactInput) -> list[CandidateMatch]:
+        """
+        Query Notion database for candidates matching name, phone, email, or URL.
+        Runs asynchronously offloading HTTP request to thread pool.
+        """
+        filter_clauses: list[dict[str, Any]] = []
+
+        # 1. Email exact match
+        if contact.email:
+            filter_clauses.append({"property": "Email", "email": {"equals": contact.email.strip()}})
+
+        # 2. Phone match (exact and digits)
+        if contact.phone:
+            filter_clauses.append({"property": "Phone", "rich_text": {"contains": contact.phone.strip()}})
+            digits = contact.phone_digits()
+            if digits and len(digits) >= 7 and digits != contact.phone.strip():
+                filter_clauses.append({"property": "Phone", "rich_text": {"contains": digits[-8:]}})
+
+        # 3. Full Name match
+        if contact.name and contact.name not in ("Unknown Person", ""):
+            filter_clauses.append({"property": "Full Name", "title": {"contains": contact.name.strip()}})
+
+        # 4. URL match
+        if contact.url:
+            filter_clauses.append({"property": "URL", "url": {"contains": contact.url.strip()}})
+
+        # If no search criteria available, return empty
+        if not filter_clauses:
+            return []
+
+        query_payload: dict[str, Any] = {
+            "page_size": 25,
+            "filter": {"or": filter_clauses} if len(filter_clauses) > 1 else filter_clauses[0],
+        }
+
+        loop = asyncio.get_running_loop()
+        path = f"databases/{self.database_id}/query"
+        data = await loop.run_in_executor(None, self._request, "POST", path, query_payload)
+
+        raw_results = data.get("results", [])
+        candidates: list[CandidateMatch] = []
+
+        for p in raw_results:
+            page_id = p.get("id")
+            props = p.get("properties", {})
+            page_url = p.get("url") or f"https://www.notion.so/{self.database_id}?p={page_id.replace('-', '')}"
+            name_parts = props.get("Full Name", {}).get("title", [])
+            page_name = "".join(t.get("plain_text", "") for t in name_parts).strip() or "Unknown Person"
+
+            # Compute preliminary score and match reasons
+            score = 0
+            reasons = []
+
+            cand_match = CandidateMatch(
+                page_id=page_id,
+                page_name=page_name,
+                page_url=page_url,
+                score=0,
+                match_reasons=[],
+                properties=props,
+            )
+
+            # Email scoring
+            cand_email = cand_match.get_email()
+            if contact.email and cand_email:
+                if contact.normalized_email() == cand_email.strip().lower():
+                    score += 100
+                    reasons.append("exact_email_match")
+
+            # Phone scoring
+            cand_phone = cand_match.get_phone()
+            if contact.phone and cand_phone:
+                c_digits = normalize_phone_digits(cand_phone)
+                i_digits = contact.phone_digits()
+                if i_digits and c_digits and (i_digits == c_digits or i_digits.endswith(c_digits[-8:]) or c_digits.endswith(i_digits[-8:])):
+                    score += 90
+                    reasons.append("phone_digits_match")
+
+            # URL scoring
+            cand_url = cand_match.get_url()
+            if contact.url and cand_url:
+                if contact.normalized_url() == cand_url.strip().lower():
+                    score += 85
+                    reasons.append("url_match")
+
+            # Name scoring
+            if contact.name and page_name and contact.name != "Unknown Person":
+                c_name_clean = page_name.strip().lower()
+                i_name_clean = contact.name.strip().lower()
+                if i_name_clean == c_name_clean:
+                    score += 70
+                    reasons.append("exact_name_match")
+                elif i_name_clean in c_name_clean or c_name_clean in i_name_clean:
+                    score += 45
+                    reasons.append("substring_name_match")
+
+            # Company match
+            cand_company = cand_match.get_property_plain_text("Company")
+            if contact.company and cand_company:
+                if contact.company.strip().lower() == cand_company.strip().lower():
+                    score += 20
+                    reasons.append("company_match")
+
+            # City match
+            cand_city = cand_match.get_property_plain_text("City")
+            if contact.city and cand_city:
+                if contact.city.strip().lower() == cand_city.strip().lower():
+                    score += 10
+                    reasons.append("city_match")
+
+            cand_match.score = score
+            cand_match.match_reasons = reasons
+            candidates.append(cand_match)
+
+        # Sort candidates descending by score
+        candidates.sort(key=lambda c: c.score, reverse=True)
+        return candidates
+
+    async def get_page(self, page_id: str) -> dict[str, Any]:
+        """Fetch live page state from Notion (SSOT read)."""
+        loop = asyncio.get_running_loop()
+        path = f"pages/{page_id}"
+        return await loop.run_in_executor(None, self._request, "GET", path, None)
+
+    async def update_page_properties(self, page_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+        """Update properties on an existing Notion page."""
+        loop = asyncio.get_running_loop()
+        path = f"pages/{page_id}"
+        return await loop.run_in_executor(
+            None, self._request, "PATCH", path, {"properties": properties}
+        )
+
+    async def create_page(
+        self,
+        properties: dict[str, Any],
+        children: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        """Create a new page in the Notion People database."""
+        loop = asyncio.get_running_loop()
+        payload: dict[str, Any] = {
+            "parent": {"database_id": self.database_id},
+            "properties": properties,
+        }
+        if children:
+            payload["children"] = children
+        return await loop.run_in_executor(None, self._request, "POST", "pages", payload)
+
+    async def append_page_blocks(
+        self,
+        page_id: str,
+        blocks: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Append blocks (notes, capture record, audit log) to page children."""
+        if not blocks:
+            return {}
+        loop = asyncio.get_running_loop()
+        path = f"blocks/{page_id}/children"
+        return await loop.run_in_executor(
+            None, self._request, "PATCH", path, {"children": blocks}
+        )
+
+    async def verify_page_properties(
+        self,
+        page_id: str,
+        expected_properties: dict[str, Any],
+    ) -> tuple[bool, dict[str, Any]]:
+        """
+        SSOT Verification: Read page state back from Notion and confirm that
+        all patched properties match expected values.
+        """
+        live_page = await self.get_page(page_id)
+        live_props = live_page.get("properties", {})
+
+        for prop_name, expected_obj in expected_properties.items():
+            if prop_name not in live_props:
+                logger.warning("SSOT Verification failed: %s not in live page", prop_name)
+                return False, live_props
+
+            live_obj = live_props[prop_name]
+            ptype = live_obj.get("type")
+
+            # Check title / rich_text
+            if ptype in ("title", "rich_text") and ptype in expected_obj:
+                exp_text = "".join(t.get("text", {}).get("content", "") for t in expected_obj[ptype]).strip()
+                live_text = "".join(t.get("plain_text", "") for t in live_obj.get(ptype, [])).strip()
+                if exp_text and exp_text not in live_text and live_text != exp_text:
+                    logger.warning("SSOT mismatch on %s: expected '%s', got '%s'", prop_name, exp_text, live_text)
+                    return False, live_props
+
+            # Check email
+            elif ptype == "email" and "email" in expected_obj:
+                exp_val = str(expected_obj["email"] or "").strip().lower()
+                live_val = str(live_obj.get("email") or "").strip().lower()
+                if exp_val and exp_val != live_val:
+                    return False, live_props
+
+            # Check url
+            elif ptype == "url" and "url" in expected_obj:
+                exp_val = str(expected_obj["url"] or "").strip()
+                live_val = str(live_obj.get("url") or "").strip()
+                if exp_val and exp_val != live_val:
+                    return False, live_props
+
+        return True, live_props

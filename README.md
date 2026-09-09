@@ -156,6 +156,7 @@ The CLI is invoked via `./bin/webhook-hub` or `python3 -m hub`.
 | `status` | Query process status and `/healthz` metrics | `--json`, `-p` / `--port`, `--host`, `--pidfile` |
 | `logs` | Inspect SQLite logs or stream live SSE | `-f` / `--follow`, `-t` / `--task`, `-n` / `--lines`, `--db` |
 | `test-send` | Cryptographically sign and send test webhook | `--action`, `--command`, `--secret`, `--token`, `--tamper` |
+| `review-contact` | Review and merge contact into Notion CRM SSOT | `--name`, `--phone`, `--dry-run`, `--json`, `--payload` |
 | `verify` | Execute standalone 9-step E2E verification | `--host`, `--port`, `--secret` |
 
 ### Examples
@@ -177,7 +178,11 @@ The CLI is invoked via `./bin/webhook-hub` or `python3 -m hub`.
 # 5. Follow live SSE event stream
 ./bin/webhook-hub logs --follow
 
-# 6. Gracefully terminate daemon
+# 6. Intelligent Contact Review against Notion CRM SSOT
+./bin/webhook-hub review-contact --name "Adam Walker" --phone "+1 415 555 0199" --dry-run
+./bin/webhook-hub review-contact --payload '{"name": "Alice Smith", "email": "alice@example.com"}'
+
+# 7. Gracefully terminate daemon
 ./bin/webhook-hub stop
 ```
 

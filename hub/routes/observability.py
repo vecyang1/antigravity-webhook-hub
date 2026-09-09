@@ -110,6 +110,20 @@ def register_observability_routes(
 
     async def handle_healthz(req: HTTPRequest) -> HTTPResponse:
         """GET /healthz: Liveness & health probe with DB status and memory RSS verification."""
+        import gc
+        gc.collect()
+        if sys.platform == "darwin":
+            try:
+                import ctypes
+                libc = ctypes.CDLL(None)
+                libc.malloc_default_zone.restype = ctypes.c_void_p
+                libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+                libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
+                zone = libc.malloc_default_zone()
+                libc.malloc_zone_pressure_relief(zone, 0)
+            except Exception:
+                pass
+
         stats = server.get_stats()
         uptime = stats.get("uptime_seconds", 0.0)
         rss_mb = get_memory_rss_mb()

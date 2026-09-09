@@ -41,3 +41,4 @@ htmlcov/
 .vscode/
 .idea/
 graphify-out/cache/
+backups/

@@ -309,7 +309,55 @@ class TaskDispatcher:
                 stdout_lines.append(f"Emitted agent signal: {final_path}")
                 self._record_log(task_id, "stdout", stdout_lines[-1], execution_id=execution_id)
                 final_status = "succeeded"
-                exit_code = 0
+            elif action_type in ("contact_review", "review_contact", "contact-review"):
+                # Antigravity Contact Review native in-process dispatch with live SSE and DB streaming
+                from hub.contact_review.runner import execute_contact_review
+
+                raw_params = task_data.get("action_params_json") or task_data.get("action_params")
+                if isinstance(raw_params, str):
+                    try:
+                        params_dict = json.loads(raw_params)
+                    except Exception:
+                        params_dict = {}
+                elif isinstance(raw_params, dict):
+                    params_dict = raw_params
+                else:
+                    params_dict = {}
+
+                def log_fn(msg: str):
+                    stdout_lines.append(msg)
+                    self._record_log(task_id, "stdout", msg, execution_id=execution_id)
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(self._broadcast_log(task_id, "stdout", msg))
+                    except Exception:
+                        pass
+
+                review_res = await execute_contact_review(
+                    payload=params_dict,
+                    auto_apply=True,
+                    notify_slack=True,
+                    dry_run=False,
+                    log_callback=log_fn,
+                )
+
+                if review_res.error:
+                    stderr_lines.append(review_res.error)
+                    self._record_log(task_id, "stderr", review_res.error, execution_id=execution_id)
+                    final_status = "failed"
+                    exit_code = 1
+                    error_message = review_res.error
+                else:
+                    summary_msg = (
+                        f"Verdict: {review_res.verdict.value.upper()} | "
+                        f"Target: {review_res.target_name} | "
+                        f"Page: {review_res.target_page_url} | "
+                        f"SSOT: {'Verified' if review_res.ssot_verified else 'Unverified'}"
+                    )
+                    stdout_lines.append(summary_msg)
+                    self._record_log(task_id, "stdout", summary_msg, execution_id=execution_id)
+                    final_status = "succeeded"
+                    exit_code = 0
 
             else:
                 # Subprocess execution: cli, cli_command, launchd_job, cron_job

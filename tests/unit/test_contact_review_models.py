@@ -1,0 +1,148 @@
+"""
+Unit tests for Contact Review data models and normalization utilities.
+"""
+
+import pytest
+from hub.contact_review.models import (
+    CandidateMatch,
+    ContactInput,
+    FieldDiff,
+    FieldDiffAction,
+    ReviewResult,
+    ReviewVerdict,
+    normalize_email_address,
+    normalize_phone_digits,
+    normalize_url_string,
+)
+
+
+def test_phone_normalization():
+    assert normalize_phone_digits("+84 (901) 234-567") == "84901234567"
+    assert normalize_phone_digits("090-123-4567") == "0901234567"
+    assert normalize_phone_digits("") == ""
+    assert normalize_phone_digits(None) == ""
+
+
+def test_email_normalization():
+    assert normalize_email_address("  User.Test@Example.COM  ") == "user.test@example.com"
+    assert normalize_email_address("") == ""
+    assert normalize_email_address(None) == ""
+
+
+def test_url_normalization():
+    assert normalize_url_string("https://instagram.com/johndoe/") == "instagram.com/johndoe"
+    assert normalize_url_string("HTTP://WWW.EXAMPLE.COM/path/") == "www.example.com/path"
+    assert normalize_url_string("example.com/about") == "example.com/about"
+    assert normalize_url_string("") == ""
+
+
+def test_contact_input_from_dict_flat():
+    data = {
+        "name": "Jane Smith",
+        "phone": "+1 555 123 4567",
+        "email": "jane@example.com",
+        "company": "Acme Inc",
+        "city": "Da Nang",
+        "country": "Vietnam",
+        "birthday": "1992-04-10",
+        "url": "https://linkedin.com/in/janesmith",
+        "notes": "Met at coffee shop",
+        "channel": "C096KR96AF7",
+        "thread_ts": "1725881234.5678",
+    }
+    c = ContactInput.from_dict(data)
+    assert c.name == "Jane Smith"
+    assert c.phone_digits() == "15551234567"
+    assert c.normalized_email() == "jane@example.com"
+    assert c.company == "Acme Inc"
+    assert c.city == "Da Nang"
+    assert c.country == "Vietnam"
+    assert c.birthday == "1992-04-10"
+    assert c.slack_channel == "C096KR96AF7"
+    assert c.slack_thread_ts == "1725881234.5678"
+
+
+def test_contact_input_from_dict_nested_n8n():
+    data = {
+        "source": "slack-intake",
+        "contact": {
+            "name": "David Miller",
+            "phone_number": "+84 999 888 777",
+            "email": "david@tech.io",
+            "company": "Tech Innovations",
+            "entity": "Partner",
+            "instagram": "david_tech",
+        },
+        "slack": {
+            "channel": "C096KR96AF7",
+            "ts": "1725889999.0001",
+            "user": "U12345",
+        },
+        "source_text": "David Miller's contact details: +84 999 888 777",
+    }
+    c = ContactInput.from_dict(data)
+    assert c.name == "David Miller"
+    assert c.phone == "+84 999 888 777"
+    assert c.phone_digits() == "84999888777"
+    assert c.email == "david@tech.io"
+    assert c.company == "Tech Innovations"
+    assert c.entity == "Partner"
+    assert c.social_handles.get("instagram") == "david_tech"
+    assert c.slack_channel == "C096KR96AF7"
+    assert c.slack_thread_ts == "1725889999.0001"
+    assert c.source_text == "David Miller's contact details: +84 999 888 777"
+
+
+def test_candidate_match_properties():
+    props = {
+        "Full Name": {"type": "title", "title": [{"plain_text": "Alice Johnson"}]},
+        "Phone": {"type": "rich_text", "rich_text": [{"plain_text": "+1 234 567 8900"}]},
+        "Email": {"type": "email", "email": "alice@corp.com"},
+        "Company": {"type": "rich_text", "rich_text": [{"plain_text": "Corp LLC"}]},
+        "Birthday": {"type": "date", "date": {"start": "1988-12-01"}},
+        "URL": {"type": "url", "url": "https://alice.dev"},
+    }
+    m = CandidateMatch(
+        page_id="page_123",
+        page_name="Alice Johnson",
+        page_url="https://notion.so/page_123",
+        score=95,
+        match_reasons=["exact_email_match"],
+        properties=props,
+    )
+    assert m.page_name == "Alice Johnson"
+    assert m.get_email() == "alice@corp.com"
+    assert m.get_phone() == "+1 234 567 8900"
+    assert m.get_birthday() == "1988-12-01"
+    assert m.get_url() == "https://alice.dev"
+    assert m.get_property_plain_text("Company") == "Corp LLC"
+
+
+def test_review_result_serialization():
+    res = ReviewResult(
+        verdict=ReviewVerdict.SUPPLEMENT,
+        target_page_id="page_999",
+        target_page_url="https://notion.so/page_999",
+        target_name="Bob Brown",
+        confidence_score=90,
+        diffs=[
+            FieldDiff(
+                field_name="phone",
+                action=FieldDiffAction.SUPPLEMENT,
+                old_value=None,
+                new_value="+84 901 000 111",
+                explanation="Added missing phone",
+            )
+        ],
+        explanation="Enriched contact with 1 missing attribute.",
+        applied=True,
+        ssot_verified=True,
+        slack_notified=True,
+    )
+    d = res.to_dict()
+    assert d["verdict"] == "supplement"
+    assert d["target_page_id"] == "page_999"
+    assert d["applied"] is True
+    assert d["ssot_verified"] is True
+    assert len(d["diffs"]) == 1
+    assert d["diffs"][0]["action"] == "supplement"

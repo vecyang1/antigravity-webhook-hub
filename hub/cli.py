@@ -759,6 +759,128 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 # ==============================================================================
+# SUBCOMMAND: review-contact
+# ==============================================================================
+
+def cmd_review_contact(args: argparse.Namespace) -> int:
+    """Handle `webhook-hub review-contact` command."""
+    import json
+    from hub.contact_review.runner import execute_contact_review
+    from hub.contact_review.notion_client import NotionPeopleClient
+
+    payload_dict = {}
+
+    if getattr(args, "task_id", None):
+        from hub.db import DatabaseManager
+        db_path = getattr(args, "db", None) or os.environ.get("DATABASE_PATH", "data/webhook_hub.db")
+        db = DatabaseManager(db_path=db_path)
+        task = db.get_task(args.task_id)
+        if not task:
+            print(f"Error: Task '{args.task_id}' not found in database.", file=sys.stderr)
+            return 1
+        raw_params = task.get("action_params_json") or task.get("action_params") or "{}"
+        try:
+            payload_dict = json.loads(raw_params) if isinstance(raw_params, str) else raw_params
+        except Exception:
+            payload_dict = {}
+    elif getattr(args, "payload", None):
+        raw = args.payload
+        if raw.startswith("@"):
+            p_file = Path(raw[1:])
+            if not p_file.is_file():
+                print(f"Error: Payload file '{p_file}' not found.", file=sys.stderr)
+                return 1
+            raw = p_file.read_text(encoding="utf-8")
+        try:
+            payload_dict = json.loads(raw)
+        except Exception as e:
+            print(f"Error: Invalid JSON payload: {e}", file=sys.stderr)
+            return 1
+    else:
+        payload_dict = {
+            "name": getattr(args, "name", "Unknown Person"),
+            "phone": getattr(args, "phone", "") or "",
+            "email": getattr(args, "email", "") or "",
+            "company": getattr(args, "company", "") or "",
+            "title": getattr(args, "title", "") or "",
+            "city": getattr(args, "city", "") or "",
+            "country": getattr(args, "country", "") or "",
+            "birthday": getattr(args, "birthday", "") or "",
+            "url": getattr(args, "url", "") or "",
+            "notes": getattr(args, "notes", "") or "",
+            "slack_channel": getattr(args, "slack_channel", "") or "",
+            "slack_thread_ts": getattr(args, "slack_thread_ts", "") or "",
+        }
+
+    client = None
+    if getattr(args, "database_id", None):
+        client = NotionPeopleClient(database_id=args.database_id)
+
+    dry_run = getattr(args, "dry_run", False)
+    notify_slack = not getattr(args, "no_slack", False)
+
+    try:
+        res = asyncio.run(
+            execute_contact_review(
+                payload=payload_dict,
+                auto_apply=not dry_run,
+                notify_slack=notify_slack,
+                dry_run=dry_run,
+                client=client,
+            )
+        )
+    except Exception as e:
+        print(f"Error during contact review: {e}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps(res.to_dict(), indent=2))
+    else:
+        print("=" * 60)
+        print(f" Antigravity Contact Review: {res.verdict.value.upper()}")
+        print("=" * 60)
+        print(f"  Target Contact:   {res.target_name}")
+        if res.target_page_url:
+            print(f"  Notion Page URL:  {res.target_page_url}")
+        print(f"  Confidence:       {res.confidence_score}%")
+        print(f"  SSOT Verified:    {'YES ✅' if res.ssot_verified else 'NO ⚠️'}")
+        if res.slack_notified:
+            print(f"  Slack Notified:   YES ✅")
+        print(f"  Explanation:      {res.explanation}")
+        if res.diffs:
+            print("  Attribute Diffs:")
+            for d in res.diffs:
+                if d.action.value == "no_change":
+                    continue
+                print(f"    - [{d.action.value.upper()}] {d.field_name}: {d.new_value} (was: {d.old_value})")
+        print("=" * 60)
+
+    return 0 if not res.error else 1
+
+
+def _add_review_contact_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--task-id", default=None, help="Load task payload from SQLite database by task ID")
+    parser.add_argument("--payload", default=None, help="Raw JSON payload string or @filepath")
+    parser.add_argument("--name", default="Unknown Person", help="Contact full name")
+    parser.add_argument("--phone", default="", help="Contact phone number")
+    parser.add_argument("--email", default="", help="Contact email address")
+    parser.add_argument("--company", default="", help="Contact company / organization")
+    parser.add_argument("--title", default="", help="Contact job title")
+    parser.add_argument("--city", default="", help="Contact city")
+    parser.add_argument("--country", default="", help="Contact country")
+    parser.add_argument("--birthday", default="", help="Contact birthday (YYYY-MM-DD)")
+    parser.add_argument("--url", default="", help="Contact URL / profile link")
+    parser.add_argument("--notes", default="", help="Contact notes / important info")
+    parser.add_argument("--database-id", default=None, help="Notion database ID override")
+    parser.add_argument("--dry-run", "--no-apply", action="store_true", help="Simulate evaluation without modifying Notion")
+    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    parser.add_argument("--slack-channel", default=None, help="Slack channel override")
+    parser.add_argument("--slack-thread-ts", default=None, help="Slack thread timestamp to reply to")
+    parser.add_argument("--no-slack", action="store_true", help="Skip sending Slack notification")
+    parser.add_argument("--db", default=None, help="Path to SQLite database file")
+
+
+# ==============================================================================
 # MAIN CLI ENTRY POINT & PARSER
 # ==============================================================================
 
@@ -907,6 +1029,9 @@ def build_parser() -> Any:
     p_verify = subparsers.add_parser("verify", help="Execute the standalone E2E verification test suite")
     _add_verify_args(p_verify)
 
+    p_review = subparsers.add_parser("review-contact", aliases=["contact-review"], help="Review and reconcile contact against Notion CRM (SSOT)")
+    _add_review_contact_args(p_review)
+
     return parser
 
 
@@ -916,7 +1041,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         argv = sys.argv[1:]
 
     # If flags like --port or --db are provided without a subcommand, default to 'start'
-    known_commands = {"start", "stop", "status", "logs", "test-send", "verify", "-h", "--help"}
+    known_commands = {"start", "stop", "status", "logs", "test-send", "verify", "review-contact", "contact-review", "-h", "--help"}
     if argv and argv[0] not in known_commands and argv[0].startswith("-"):
         argv = ["start"] + argv
 
@@ -985,6 +1110,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         del p
         gc.collect()
         return cmd_verify(args)
+
+    elif subcommand in ("review-contact", "contact-review"):
+        p = argparse.ArgumentParser(prog="webhook-hub review-contact")
+        _add_review_contact_args(p)
+        args = p.parse_args(sub_args)
+        args.subcommand = "review-contact"
+        del p
+        gc.collect()
+        return cmd_review_contact(args)
 
     else:
         parser = build_parser()

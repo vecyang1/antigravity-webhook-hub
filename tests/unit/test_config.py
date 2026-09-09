@@ -8,7 +8,7 @@ from hub.config import AppConfig, load_config, validate_config
 
 
 def test_default_config():
-    cfg = load_config()
+    cfg = load_config(env_path="")
     assert cfg.server.port == 9423
     assert cfg.server.host == "127.0.0.1"
     assert cfg.server.max_body_bytes == 1048576

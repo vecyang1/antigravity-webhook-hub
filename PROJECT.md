@@ -30,6 +30,7 @@ A lightweight, zero-footprint local webhook gateway and event dispatcher for Ant
 | 15 | Agent Discovery Contract | `SKILL.md` (<300 lines), `README.md`, `CHANGELOG.md` adhering to Keep a Changelog | M4 | Survey 3 / R4 |
 | 16 | Two-Sided E2E Test Suite | Comprehensive pytest suite covering legitimate and adversarial paths | M5 / Test Track | Survey 3 / R5 |
 | 17 | Standalone Verification Script | Zero-dependency end-to-end verification script (`scripts/verify_e2e.py`) | M5 / Test Track | Survey 3 / R5 |
+| 18 | Contact Review & CRM Intake | Intelligent 5-verdict decision engine, compound Notion query, SSOT live verification, threaded Slack notifications | M6 | User Request |
 
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
@@ -40,6 +41,7 @@ A lightweight, zero-footprint local webhook gateway and event dispatcher for Ant
 | M3 | Real-Time Observability & SSE | PubSub broker, SSE streams (`/events/stream`, `/tasks/{task_id}/stream`), `/healthz`, `/metrics`, `/tasks` | M1, M2 | DONE |
 | M4 | Unified CLI & Agent Discovery | `bin/webhook-hub`, `python -m hub`, `SKILL.md`, `README.md`, `CHANGELOG.md` | M1, M2, M3 | DONE |
 | M5 | Final E2E Integration & Verification | Execute 100% of E2E test suite + standalone verifier, followed by adversarial hardening | T1, M1, M2, M3, M4 | DONE |
+| M6 | Contact Review & CRM SSOT Pipeline | 5-verdict engine (`NO_CHANGE`, `SUPPLEMENT`, `CORRECT`, `MERGE`, `CREATE`), Notion People CRM SSOT verification, n8n workflow integration (`3J5doqEyxA7lT1OO`) | M1-M5 | DONE |
 
 ## Code Layout
 ```

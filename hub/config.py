@@ -197,8 +197,8 @@ def load_config(
     cfg = AppConfig()
 
     # 2. Determine and parse .env file
-    if env_path:
-        env_file = Path(env_path)
+    if env_path is not None:
+        env_file = Path(env_path) if env_path else Path("")
     elif config_path:
         env_file = Path("")
     else:

@@ -54,8 +54,15 @@ def register_webhook_routes(
 
         # 3. Pre-DB Task Schema Validation (Defect 4 remediation)
         # Validate task parameters BEFORE calling any database insert.
-        action_type = body_dict.get("action_type") or body_dict.get("action") or "cli"
+        action_type = body_dict.get("action_type") or body_dict.get("action")
+        if not action_type:
+            if source in ("contact-review", "contact_review") or req.path.endswith("/contact-review"):
+                action_type = "contact_review"
+            else:
+                action_type = "cli"
         command = body_dict.get("command") or body_dict.get("target_action")
+        if not command and action_type in ("contact_review", "review_contact", "contact-review"):
+            command = "bin/webhook-hub review-contact"
 
         raw_priority = body_dict.get("priority", 0)
         try:
@@ -216,7 +223,30 @@ def register_webhook_routes(
             if asyncio.iscoroutine(res):
                 await res
 
-        # 7. Asynchronously Enqueue Task for Background Dispatch
+        # 7. Asynchronously or Synchronously Execute Task
+        is_sync = (
+            getattr(req, "query_params", {}).get("sync", "").lower() in ("true", "1", "yes")
+            or body_dict.get("sync") is True
+        )
+        if is_sync and dispatcher is not None:
+            exec_res = await dispatcher.execute_task(task_id)
+            latest_task = db.get_task(task_id) if db else {}
+            if asyncio.iscoroutine(latest_task):
+                latest_task = await latest_task
+            return HTTPResponse.json(
+                {
+                    "status": exec_res.status,
+                    "event_id": event_id,
+                    "task_id": task_id,
+                    "action_type": action_type,
+                    "exit_code": exec_res.exit_code,
+                    "stdout": exec_res.stdout,
+                    "stderr": exec_res.stderr,
+                    "task": latest_task,
+                },
+                status_code=200 if exec_res.status == "succeeded" else 500,
+            )
+
         if dispatcher is not None:
             await dispatcher.enqueue(task_id)
 

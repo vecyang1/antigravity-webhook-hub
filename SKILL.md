@@ -30,6 +30,11 @@ All commands run via `./bin/webhook-hub <subcommand>` or `python3 -m hub <subcom
 # Testing & Verification
 ./bin/webhook-hub test-send --action cli --command "echo 'ping'"
 ./bin/webhook-hub verify               # Run full 9-step standalone E2E suite
+
+# Contact Review & CRM Intelligence
+./bin/webhook-hub review-contact --name "Adam Walker" --dry-run
+./bin/webhook-hub review-contact --name "Jane Doe" --phone "+1 555 0199" --json
+./bin/webhook-hub review-contact --payload '{"name": "Alice", "company": "Acme"}'
 ```
 
 ## 2. HTTP Ingress & API Contracts
@@ -141,3 +146,49 @@ data: {"task_id": "tsk_01", "status": "succeeded", "exit_code": 0}
 | Tasks stuck in `queued` | Dispatcher stopped or queue saturated | Check `./bin/webhook-hub logs` or restart hub daemon via `restart`. |
 | Database locked | Concurrent long transaction | WAL mode auto-applied. Verify `data/webhook_hub.db` is on local APFS/ext4 filesystem. |
 | `403 Forbidden (1010)` | Cloudflare Browser Integrity Check | Controlled by Page Rule `*webhook.worldinspirelab.com/*` (`browser_check: off`). Check with `./tunnel/start_tunnel.sh --status`. |
+
+## 7. Contact Review & CRM Intake Pipeline (Antigravity Review Agent)
+
+Provides intelligent deduplication, contradiction detection, property supplementation, and SSOT read-after-write verification for contacts ingested from Slack, n8n, and web forms.
+
+### Ingress Endpoint
+- **URL**: `POST /webhook/contact-review` (or `POST /webhook/contact-review?sync=true`)
+- **Public Tunnel**: `https://webhook.worldinspirelab.com/webhook/contact-review`
+- **Auth**: Bearer token (`Authorization: Bearer <token>`) or HMAC-SHA256 signature
+- **Database**: Notion People database (`22ce1b43-2393-81a4-9443-e32e71142e0d`)
+
+### Decision Engine & Review Verdicts
+| Verdict | Trigger Condition | Execution Action |
+|---|---|---|
+| `NO_CHANGE` | Candidate exists; all incoming fields already match SSOT properties. | No property patch; skip mutation. |
+| `SUPPLEMENT` | Candidate exists; incoming fields provide new info without conflict. | PATCH new properties, append audit note to page. |
+| `CORRECT` | Candidate exists; incoming fields contradict existing properties. | Update properties to new truth, record diff history. |
+| `MERGE` | Multiple candidates match or explicit merge requested. | Consolidate fields, update primary page, record audit. |
+| `CREATE` | No matching candidate found in Notion database. | Create new database page with structured attributes. |
+
+### Payload Contract
+```json
+{
+  "source": "slack_people",
+  "channel_id": "C096KR96AF7",
+  "thread_ts": "1788879178.867219",
+  "contact": {
+    "name": "Jane Doe",
+    "phone": "+1 555 0199",
+    "email": "jane@example.com",
+    "company": "Acme Labs",
+    "title": "Head of AI",
+    "city": "San Francisco",
+    "country": "USA",
+    "birthday": "1995-04-12",
+    "url": "https://linkedin.com/in/janedoe",
+    "note": "Met at AI Conference 2026"
+  }
+}
+```
+
+### SSOT Verification & Notification
+1. **Live Re-read Verification**: After property mutation, the pipeline re-reads the page from the Notion API to verify property persistence before concluding.
+2. **Slack Thread Feedback**: Posts formatted verdict banner, property diffs, and Notion deep links directly to the originating Slack channel & thread.
+3. **Agent Signal**: Emits atomic JSON event to `.agents/signals/contact_review/` for downstream agents.
+

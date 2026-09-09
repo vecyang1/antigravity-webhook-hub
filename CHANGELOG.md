@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-09
+
+### Added
+- Antigravity Contact Review Agent subsystem (`hub.contact_review`):
+  - Intelligent 5-verdict decision engine (`NO_CHANGE`, `SUPPLEMENT`, `CORRECT`, `MERGE`, `CREATE`) replacing crude blind dedupe/overwrite logic.
+  - Live Notion CRM integration for `People ppl[UB3_250711]` (`22ce1b43-2393-81a4-9443-e32e71142e0d`) supporting compound OR candidate queries across name, phone, email, and social URLs.
+  - Single Source of Truth (SSOT) read-after-write verification ensuring live database properties match expected mutations before reporting.
+  - Threaded Slack notification dispatcher with verdict banners, Notion deep links, and attribute diff highlights.
+  - Dedicated CLI command: `./bin/webhook-hub review-contact` (alias: `contact-review`) supporting `--dry-run`, `--json`, `--name`, `--phone`, and payload inputs.
+  - Synchronous execution query mode (`POST /webhook/contact-review?sync=true`) returning immediate 200 responses with execution logs and verified verdict state.
+  - In-process `contact_review` task dispatching with real-time SSE event streaming and SQLite SSOT log chunks.
+- Live n8n workflow modernization:
+  - Deployed `Wake Antigravity Contact Review Agent` into workflow `3J5doqEyxA7lT1OO` ("Slack_people ppl people 25.07.20 ✅") on `https://n.worldinspirelab.com`.
+  - Replaced legacy blind update/create branches with SSOT Antigravity Review pipeline and threaded Slack feedback.
+  - Automated deployment and rollback script (`scripts/patch_n8n_people_workflow.py`) with pre-patch backups.
+
 ## [1.1.1] - 2026-09-09
 
 ### Added
