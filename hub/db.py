@@ -12,6 +12,7 @@ import json
 import logging
 import sqlite3
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -47,8 +48,9 @@ class DatabaseManager:
     Enforces WAL mode, atomic CAS state machine transitions, and crash recovery.
     """
 
-    def __init__(self, db_path: str = "data/webhook_hub.db"):
+    def __init__(self, db_path: str = "data/webhook_hub.db", cache_size: int = -4000):
         self.db_path = str(db_path)
+        self._cache_size = int(cache_size)
         if self.db_path not in (":memory:", ""):
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -67,11 +69,12 @@ class DatabaseManager:
         conn.execute("PRAGMA busy_timeout = 5000;")
         conn.execute("PRAGMA synchronous = NORMAL;")
         conn.execute("PRAGMA foreign_keys = ON;")
-        conn.execute("PRAGMA cache_size = -4000;")  # ~4MB cache per PROJECT.md
+        conn.execute(f"PRAGMA cache_size = {self._cache_size};")
         conn.execute("PRAGMA mmap_size = 0;")
         conn.execute("PRAGMA temp_store = FILE;")
         conn.execute("PRAGMA wal_autocheckpoint = 50;")
         try:
+            conn.execute("PRAGMA soft_heap_limit = 1048576;")
             conn.execute("PRAGMA shrink_memory;")
         except Exception:
             pass
@@ -88,6 +91,7 @@ class DatabaseManager:
         """Explicitly reclaim SQLite internal cache and buffer memory."""
         with self._lock:
             try:
+                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
                 self._conn.execute("PRAGMA shrink_memory;")
             except Exception:
                 pass
@@ -385,14 +389,16 @@ class DatabaseManager:
             timeout_seconds = int(task_dict.get("timeout_seconds", 300))
             retry_count = int(task_dict.get("retry_count", 0))
             max_retries = int(task_dict.get("max_retries", 0))
+            error_message = task_dict.get("error_message")
+            exit_code = task_dict.get("exit_code")
 
             self._conn.execute(
                 """
                 INSERT INTO tasks (
                     task_id, event_id, source, action_type, target_action, command,
                     action_params_json, status, priority, timeout_seconds,
-                    retry_count, max_retries
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    retry_count, max_retries, error_message, exit_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -407,6 +413,8 @@ class DatabaseManager:
                     timeout_seconds,
                     retry_count,
                     max_retries,
+                    error_message,
+                    exit_code,
                 ),
             )
             self._commit_and_shrink()
@@ -563,6 +571,368 @@ class DatabaseManager:
                 )
                 rows = cur.fetchall()
                 return [dict(r) for r in rows]
+            finally:
+                cur.close()
+
+    def update_event_status(self, event_id: str, new_status: str) -> bool:
+        """Update webhook event status (received, processed, duplicate, rejected)."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    "UPDATE webhook_events SET status = ? WHERE event_id = ?",
+                    (new_status, event_id),
+                )
+                success = cur.rowcount > 0
+                self._commit_and_shrink()
+                return success
+            finally:
+                cur.close()
+
+    def get_orphaned_webhook_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        """
+        Query webhook_events in 'received' status that do not have an associated task in tasks table.
+        """
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT e.* FROM webhook_events e
+                    LEFT JOIN tasks t ON e.event_id = t.event_id
+                    WHERE e.status = 'received' AND t.task_id IS NULL
+                    ORDER BY e.received_at ASC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
+                rows = cur.fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                cur.close()
+
+    def rehydrate_orphaned_event(
+        self,
+        event_id: str,
+        default_action_type: str = "cli",
+        default_max_retries: int = 3,
+        default_timeout_seconds: int = 300,
+    ) -> Optional[str]:
+        """
+        Synthesize and insert a task for an orphaned event in 'received' status.
+        Returns the created task_id, or None if event not found or already has a task.
+        """
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute("SELECT * FROM webhook_events WHERE event_id = ?", (event_id,))
+                ev_row = cur.fetchone()
+                if not ev_row:
+                    return None
+                event = dict(ev_row)
+
+                # Check if task already exists
+                cur.execute("SELECT task_id FROM tasks WHERE event_id = ? LIMIT 1", (event_id,))
+                if cur.fetchone():
+                    return None
+
+                payload = {}
+                try:
+                    payload = json.loads(event.get("raw_payload", "{}"))
+                except Exception:
+                    pass
+
+                action_type = (
+                    payload.get("action_type")
+                    or payload.get("action")
+                    or ("contact_review" if event.get("source") in ("contact-review", "contact_review") else default_action_type)
+                )
+                command = payload.get("command") or payload.get("target_action") or ""
+                if not command and action_type in ("contact_review", "review_contact", "contact-review"):
+                    command = "bin/webhook-hub review-contact"
+
+                task_id = f"tsk_{uuid.uuid4().hex[:16]}"
+                task_record = {
+                    "task_id": task_id,
+                    "event_id": event_id,
+                    "source": event.get("source", "default"),
+                    "action_type": action_type,
+                    "command": command,
+                    "target_action": command,
+                    "action_params_json": json.dumps(payload),
+                    "status": "queued",
+                    "priority": int(payload.get("priority", 0)),
+                    "timeout_seconds": int(payload.get("timeout_seconds", default_timeout_seconds)),
+                    "retry_count": 0,
+                    "max_retries": int(payload.get("max_retries", default_max_retries)),
+                }
+
+                self.insert_task(task_record)
+                return task_id
+            finally:
+                cur.close()
+
+    def get_unprocessed_tasks(
+        self,
+        status: Optional[str] = None,
+        source: Optional[str] = None,
+        stale_running_seconds: int = 300,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """
+        Query all unprocessed tasks and events across the system.
+        Unprocessed includes:
+        - tasks with status 'queued'
+        - tasks with status 'received'
+        - tasks with status 'running' that have been running longer than stale_running_seconds
+        - tasks with status 'failed' due to sleep/interruption with retries remaining
+        - orphaned webhook_events with status 'received' without tasks
+        """
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                # Counts
+                cur.execute(
+                    f"SELECT COUNT(*) FROM tasks WHERE status = 'queued' {('AND source = ?' if source else '')}",
+                    ([source] if source else []),
+                )
+                queued_count = cur.fetchone()[0]
+
+                cur.execute(
+                    f"SELECT COUNT(*) FROM tasks WHERE status = 'received' {('AND source = ?' if source else '')}",
+                    ([source] if source else []),
+                )
+                received_count = cur.fetchone()[0]
+
+                stale_query = f"""
+                SELECT COUNT(*) FROM tasks
+                WHERE status = 'running'
+                  AND (strftime('%s', 'now') - strftime('%s', COALESCE(started_at, updated_at, created_at))) > ?
+                  {('AND source = ?' if source else '')}
+                """
+                stale_params = [stale_running_seconds] + ([source] if source else [])
+                cur.execute(stale_query, stale_params)
+                stale_running_count = cur.fetchone()[0]
+
+                orphaned_events = self.get_orphaned_webhook_events(limit=limit)
+                orphaned_count = len(orphaned_events)
+
+                interrupted_query = f"""
+                SELECT COUNT(*) FROM tasks
+                WHERE status = 'failed'
+                  AND retry_count < max_retries
+                  AND (
+                    error_message LIKE '%restart%'
+                    OR error_message LIKE '%interrupted%'
+                    OR error_message LIKE '%timed out%'
+                    OR error_message LIKE '%handshake%'
+                    OR error_message LIKE '%Connection%'
+                    OR error_message LIKE '%network%'
+                  )
+                  {('AND source = ?' if source else '')}
+                """
+                cur.execute(interrupted_query, ([source] if source else []))
+                recoverable_failed_count = cur.fetchone()[0]
+
+                total_unprocessed = (
+                    queued_count
+                    + received_count
+                    + stale_running_count
+                    + orphaned_count
+                    + recoverable_failed_count
+                )
+
+                # Fetch task records
+                if status:
+                    if status == "stale_running":
+                        cur.execute(
+                            f"""
+                            SELECT * FROM tasks
+                            WHERE status = 'running'
+                              AND (strftime('%s', 'now') - strftime('%s', COALESCE(started_at, updated_at, created_at))) > ?
+                              {('AND source = ?' if source else '')}
+                            ORDER BY created_at ASC LIMIT ?
+                            """,
+                            [stale_running_seconds] + ([source] if source else []) + [limit],
+                        )
+                    else:
+                        cur.execute(
+                            f"SELECT * FROM tasks WHERE status = ? {('AND source = ?' if source else '')} ORDER BY priority DESC, created_at ASC LIMIT ?",
+                            [status] + ([source] if source else []) + [limit],
+                        )
+                else:
+                    cur.execute(
+                        f"""
+                        SELECT * FROM tasks
+                        WHERE status IN ('queued', 'received')
+                           OR (status = 'running' AND (strftime('%s', 'now') - strftime('%s', COALESCE(started_at, updated_at, created_at))) > ?)
+                           OR (status = 'failed' AND retry_count < max_retries AND (
+                                error_message LIKE '%restart%'
+                                OR error_message LIKE '%interrupted%'
+                                OR error_message LIKE '%timed out%'
+                                OR error_message LIKE '%handshake%'
+                                OR error_message LIKE '%Connection%'
+                                OR error_message LIKE '%network%'
+                           ))
+                        ORDER BY priority DESC, created_at ASC
+                        LIMIT ?
+                        """,
+                        [stale_running_seconds] + [limit],
+                    )
+
+                task_rows = cur.fetchall()
+                tasks_list = [dict(r) for r in task_rows]
+
+                return {
+                    "total_unprocessed": total_unprocessed,
+                    "counts": {
+                        "queued": queued_count,
+                        "received": received_count,
+                        "stale_running": stale_running_count,
+                        "orphaned_events": orphaned_count,
+                        "recoverable_failed": recoverable_failed_count,
+                        "total_unprocessed": total_unprocessed,
+                    },
+                    "tasks": tasks_list,
+                    "orphaned_events": orphaned_events,
+                }
+            finally:
+                cur.close()
+
+    def sweep_and_requeue_unprocessed(
+        self,
+        stale_running_seconds: int = 300,
+        max_retries: int = 3,
+        auto_retry_interrupted: bool = True,
+        source: Optional[str] = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """
+        Atomic recovery and rehydration of all unprocessed tasks and events:
+        1. Resets stale 'running' tasks (cut off by sleep or crashed) to 'queued' (or 'timed_out' if retries exhausted).
+        2. Promotes 'received' tasks to 'queued'.
+        3. Rehydrates orphaned 'webhook_events' into new 'queued' tasks.
+        4. Re-queues recoverable 'failed' tasks whose errors resulted from sleep / network loss.
+        5. Returns summary metrics and all ready 'queued' task IDs for immediate dispatch.
+        """
+        with self._lock:
+            cur = self._conn.cursor()
+            recovered_stale = 0
+            recovered_received = 0
+            recovered_orphaned = 0
+            recovered_failed = 0
+
+            try:
+                # 1. Recover stale 'running' tasks
+                cur.execute(
+                    """
+                    SELECT task_id, retry_count, max_retries, error_message FROM tasks
+                    WHERE status = 'running'
+                      AND (strftime('%s', 'now') - strftime('%s', COALESCE(started_at, updated_at, created_at))) > ?
+                    """,
+                    (stale_running_seconds,),
+                )
+                stale_tasks = cur.fetchall()
+                for st in stale_tasks:
+                    tid = st["task_id"]
+                    curr_rc = st["retry_count"]
+                    task_max = max(int(st["max_retries"]), max_retries if auto_retry_interrupted else int(st["max_retries"]))
+                    if curr_rc < task_max:
+                        cur.execute(
+                            """
+                            UPDATE tasks
+                            SET status = 'queued',
+                                retry_count = retry_count + 1,
+                                max_retries = MAX(max_retries, ?),
+                                error_message = 'Interrupted by sleep or timeout; auto-recovered by sweeper',
+                                queued_at = CURRENT_TIMESTAMP,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE task_id = ?
+                            """,
+                            (task_max, tid),
+                        )
+                        recovered_stale += 1
+                    else:
+                        cur.execute(
+                            """
+                            UPDATE tasks
+                            SET status = 'timed_out',
+                                error_message = 'Stale execution timed out; max retries exhausted',
+                                completed_at = CURRENT_TIMESTAMP,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE task_id = ?
+                            """,
+                            (tid,),
+                        )
+
+                # 2. Promote 'received' tasks to 'queued'
+                cur.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'queued',
+                        queued_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE status = 'received'
+                    """
+                )
+                recovered_received = cur.rowcount
+
+                # 3. Rehydrate orphaned webhook_events
+                orphans = self.get_orphaned_webhook_events(limit=limit)
+                for orp in orphans:
+                    eid = orp["event_id"]
+                    created_tid = self.rehydrate_orphaned_event(eid, default_max_retries=max_retries)
+                    if created_tid:
+                        recovered_orphaned += 1
+
+                # 4. Recover interrupted 'failed' tasks if enabled
+                if auto_retry_interrupted:
+                    cur.execute(
+                        """
+                        UPDATE tasks
+                        SET status = 'queued',
+                            retry_count = retry_count + 1,
+                            max_retries = MAX(max_retries, ?),
+                            error_message = 'Recovered interrupted failure for re-execution',
+                            queued_at = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE status = 'failed'
+                          AND retry_count < ?
+                          AND (
+                            error_message LIKE '%restart%'
+                            OR error_message LIKE '%interrupted%'
+                            OR error_message LIKE '%handshake%'
+                            OR error_message LIKE '%Connection%'
+                            OR error_message LIKE '%network%'
+                          )
+                        """,
+                        (max_retries, max_retries),
+                    )
+                    recovered_failed = cur.rowcount
+
+                # 5. Fetch all currently queued tasks
+                cur.execute(
+                    """
+                    SELECT task_id FROM tasks
+                    WHERE status = 'queued'
+                    ORDER BY priority DESC, created_at ASC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
+                queued_rows = cur.fetchall()
+                queued_task_ids = [r["task_id"] for r in queued_rows]
+
+                self._commit_and_shrink()
+
+                return {
+                    "recovered_stale_running": recovered_stale,
+                    "recovered_received_tasks": recovered_received,
+                    "recovered_orphaned_events": recovered_orphaned,
+                    "recovered_interrupted_failed": recovered_failed,
+                    "total_queued": len(queued_task_ids),
+                    "task_ids": queued_task_ids,
+                }
             finally:
                 cur.close()
 

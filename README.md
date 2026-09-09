@@ -15,14 +15,14 @@ A lightweight, zero-footprint local webhook gateway and decoupled event dispatch
 - **Pure Standard Library**: High-throughput HTTP/1.1 asynchronous server constructed entirely on Python's built-in `asyncio` and `sqlite3` engines—zero heavy web framework dependencies.
 - **Cryptographic Ingress Protection**: Enforces HMAC-SHA256 timestamped signatures (constant-time verification) and Bearer token authorization before committing any bytes to disk. Rejections produce zero database writes.
 - **Dual-Layer Deduplication**: Automatic deduplication via caller-supplied idempotency keys (`X-Hub-Event-ID` / `idempotency_key`) and SHA-256 payload content hashes.
-- **Crash-Resilient State Machine**: SQLite Single Source of Truth (SSOT) operating in Write-Ahead Logging (`WAL`) mode with atomic compare-and-swap (CAS) transitions and boot-time orphan task recovery.
+- **Crash-Resilient State Machine & Auto-Picker**: SQLite Single Source of Truth (SSOT) operating in Write-Ahead Logging (`WAL`) mode with atomic compare-and-swap (CAS) transitions. Includes an autonomous **Auto-Picker & Unprocessed Sweeper** that detects Mac sleep or battery loss (e.g. 3 hours offline) via monotonic clock jump detection, instantly rehydrates orphaned `webhook_events`, resets stale `running` executions, and auto-retries interrupted tasks upon wake.
 - **Decoupled Multi-Target Dispatcher**: Asynchronously processes ingress webhooks across multiple runners:
   - Isolated subprocess process groups (`os.setsid`, `os.killpg`) with stdout/stderr capture and configurable timeout enforcement.
   - macOS `launchd` kickstart jobs.
   - Periodic `cron` schedules.
   - Antigravity AI agent atomic JSON signal files.
 - **Real-Time Observability & Streaming**: Live Server-Sent Events (`SSE`) endpoints (`/events/stream`, `/tasks/{id}/stream`) with automated 15-second heartbeats and Prometheus metrics exposition (`/metrics`).
-- **Unified Toolchain**: Full lifecycle control via executable `./bin/webhook-hub` CLI or `python3 -m hub`.
+- **Unified Toolchain**: Full lifecycle control via executable `./bin/webhook-hub` CLI or `python3 -m hub` (including `sweep` and `pick-unprocessed`).
 
 ---
 
@@ -264,6 +264,16 @@ List task execution records with optional filtering:
 #### `GET /tasks/{task_id}`
 Retrieve granular task execution metadata, exit code, execution timestamps, and stdout/stderr tails.
 
+#### `GET /tasks/unprocessed`
+Inspect unhandled, orphaned, or stale tasks stranded by Mac sleep, battery exhaustion, or restarts:
+- Query parameters: `stale_seconds` (default: 300), `source`, `limit` (default: 100).
+- Returns: summary breakdown (`queued`, `received`, `stale_running`, `orphaned_events`, `recoverable_failed`, `total_unprocessed`), task records, and unhandled event IDs.
+
+#### `POST /tasks/sweep`
+Atomically recover and re-enqueue all unprocessed tasks and orphaned webhook events into the dispatcher queue:
+- Request body: `{"stale_seconds": 300, "max_retries": 3, "auto_retry_interrupted": true, "dry_run": false, "limit": 100}`
+- Returns: recovery counters and list of immediately enqueued `task_ids`.
+
 ---
 
 ### Server-Sent Events (SSE)
@@ -306,10 +316,12 @@ Subscribes to live execution logs and progress events exclusively scoped to a si
 
 ### 1. Standalone End-to-End Verification Suite
 
-Run the zero-dependency verification script covering the complete 9-point contract:
+Run the zero-dependency verification script covering the complete 10-point contract:
 
 ```bash
 python3 scripts/verify_e2e.py
+# Or via CLI alias:
+./bin/webhook-hub verify
 ```
 
 Verification suite checks:
@@ -322,6 +334,7 @@ Verification suite checks:
 7. Adversarial: Stale timestamp replay attack rejection (`401 Unauthorized`, zero DB writes)
 8. Adversarial: Duplicate payload deduplication (`202 Accepted`, single execution)
 9. Adversarial: Subprocess timeout & process group termination
+10. Auto-Picker & Unprocessed Task Sweeper (recovers orphaned events & stale running tasks)
 
 ### 2. Comprehensive Test Suite
 

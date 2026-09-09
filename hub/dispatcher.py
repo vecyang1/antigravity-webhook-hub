@@ -52,12 +52,20 @@ class TaskDispatcher:
         self.broker = broker
         self.config = config
         self.queue: asyncio.Queue[str] = asyncio.Queue()
+        self._enqueued_task_ids: set[str] = set()
         self._worker_tasks: list[asyncio.Task] = []
         self._worker_task: Optional[asyncio.Task] = None
+        self._sweeper_task: Optional[asyncio.Task] = None
         self._is_running: bool = False
+        self._last_sweep_time: float = 0.0
+        self._last_sweep_result: dict[str, Any] = {}
+        self._sleep_recoveries_count: int = 0
+        self._total_sweeps_count: int = 0
+        self._last_sleep_detected_at: Optional[str] = None
+        self._last_sleep_duration_seconds: float = 0.0
 
     async def start(self) -> None:
-        """Start the background task dispatcher workers, recover orphaned tasks, and rehydrate queued tasks."""
+        """Start background task dispatcher workers, recover orphaned tasks, and launch unprocessed sweeper."""
         if hasattr(self.db, "recover_orphaned_tasks"):
             try:
                 recovered = self.db.recover_orphaned_tasks()
@@ -68,7 +76,13 @@ class TaskDispatcher:
             except Exception as e:
                 logger.warning("Crash recovery check failed: %s", e)
 
-        # Rehydrate all pending queued tasks into in-memory dispatch queue
+        # Initial auto-pick sweep on startup
+        try:
+            await self.sweep_unprocessed_tasks(reason="boot_startup")
+        except Exception as e:
+            logger.warning("Initial boot-time sweep failed: %s", e)
+
+        # Rehydrate any remaining queued tasks into in-memory dispatch queue
         try:
             queued_tasks = []
             if hasattr(self.db, "get_queued_tasks"):
@@ -103,9 +117,24 @@ class TaskDispatcher:
         self._worker_task = self._worker_tasks[0] if self._worker_tasks else None
         logger.info("TaskDispatcher background workers started with %d concurrent loops", max_workers)
 
+        # Launch background sweeper loop for sleep/wake detection & unprocessed task recovery
+        sweeper_cfg = getattr(self.config, "sweeper", None)
+        sweeper_enabled = getattr(sweeper_cfg, "enabled", True) if sweeper_cfg else True
+        if sweeper_enabled:
+            self._sweeper_task = asyncio.create_task(self._sweeper_loop())
+
     async def stop(self) -> None:
-        """Gracefully stop background workers."""
+        """Gracefully stop background workers and sweeper loop."""
         self._is_running = False
+
+        if self._sweeper_task is not None:
+            self._sweeper_task.cancel()
+            try:
+                await self._sweeper_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._sweeper_task = None
+
         if self._worker_tasks:
             for t in self._worker_tasks:
                 t.cancel()
@@ -115,8 +144,34 @@ class TaskDispatcher:
         logger.info("TaskDispatcher background workers stopped")
 
     async def enqueue(self, task_id: str) -> None:
-        """Enqueue task_id for asynchronous background execution."""
-        await self.queue.put(task_id)
+        """Enqueue task_id for asynchronous background execution with duplicate prevention."""
+        if task_id not in self._enqueued_task_ids:
+            self._enqueued_task_ids.add(task_id)
+            await self.queue.put(task_id)
+
+    def _apply_pressure_relief(self) -> None:
+        """Trigger macOS malloc zone pressure relief to keep process RSS strictly < 30MB."""
+        if sys.platform == "darwin":
+            try:
+                import ctypes
+                libc = ctypes.CDLL(None)
+                libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+                libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
+                if hasattr(libc, "malloc_default_zone"):
+                    libc.malloc_default_zone.restype = ctypes.c_void_p
+                    z = libc.malloc_default_zone()
+                    if z:
+                        libc.malloc_zone_pressure_relief(z, 0)
+                try:
+                    num_zones = ctypes.c_uint.in_dll(libc, "malloc_num_zones").value
+                    zones = (ctypes.c_void_p * num_zones).in_dll(libc, "malloc_zones")
+                    for i in range(num_zones):
+                        if zones[i]:
+                            libc.malloc_zone_pressure_relief(zones[i], 0)
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
     async def _worker_loop(self) -> None:
         """Continuous consumer loop dequeuing tasks from queue."""
@@ -128,11 +183,163 @@ class TaskDispatcher:
                 except Exception as task_err:
                     logger.exception("Error executing task %s: %s", task_id, task_err)
                 finally:
+                    self._enqueued_task_ids.discard(task_id)
                     self.queue.task_done()
+                    gc.collect()
+                    self._apply_pressure_relief()
+                    if hasattr(self.db, "shrink_memory"):
+                        try:
+                            self.db.shrink_memory()
+                        except Exception:
+                            pass
             except asyncio.CancelledError:
                 break
             except Exception as loop_err:
                 logger.exception("Error in dispatcher worker loop: %s", loop_err)
+                await asyncio.sleep(0.1)
+
+    async def sweep_unprocessed_tasks(
+        self,
+        reason: str = "manual",
+        sleep_duration: float = 0.0,
+        stale_running_seconds: Optional[int] = None,
+        max_retries: Optional[int] = None,
+        auto_retry_interrupted: Optional[bool] = None,
+        source: Optional[str] = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """
+        Auto-pick and recover unprocessed tasks across SQLite SSOT.
+        Recovers:
+        - Stale running tasks (cut off by system sleep, crash, or timeout)
+        - Tasks created in 'received' status
+        - Orphaned webhook_events lacking tasks
+        - Recoverable failed tasks (network/sleep interruptions)
+        Re-queues them into the in-memory execution queue and emits live SSE updates.
+        """
+        sweeper_cfg = getattr(self.config, "sweeper", None)
+        if stale_running_seconds is None:
+            stale_running_seconds = getattr(sweeper_cfg, "stale_running_seconds", 300) if sweeper_cfg else 300
+        if max_retries is None:
+            max_retries = getattr(sweeper_cfg, "max_auto_retries", 3) if sweeper_cfg else 3
+        if auto_retry_interrupted is None:
+            auto_retry_interrupted = getattr(sweeper_cfg, "auto_retry_interrupted", True) if sweeper_cfg else True
+
+        if sleep_duration > 0:
+            self._sleep_recoveries_count += 1
+            self._last_sleep_detected_at = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+            self._last_sleep_duration_seconds = sleep_duration
+
+        res = {}
+        if hasattr(self.db, "sweep_and_requeue_unprocessed"):
+            try:
+                db_res = self.db.sweep_and_requeue_unprocessed(
+                    stale_running_seconds=stale_running_seconds,
+                    max_retries=max_retries,
+                    auto_retry_interrupted=auto_retry_interrupted,
+                    source=source,
+                    limit=limit,
+                )
+                if asyncio.iscoroutine(db_res):
+                    res = await db_res
+                else:
+                    res = db_res
+            except Exception as e:
+                logger.error("Error executing DB sweep_and_requeue_unprocessed: %s", e)
+                res = {"error": str(e), "task_ids": []}
+
+        task_ids = res.get("task_ids", [])
+        enqueued_count = 0
+        for tid in task_ids:
+            if tid not in self._enqueued_task_ids:
+                await self.enqueue(tid)
+                enqueued_count += 1
+
+        self._last_sweep_time = time.time()
+        self._total_sweeps_count += 1
+        self._last_sweep_result = res
+
+        summary = {
+            "reason": reason,
+            "sleep_duration": sleep_duration,
+            "recovered_stale_running": res.get("recovered_stale_running", 0),
+            "recovered_received_tasks": res.get("recovered_received_tasks", 0),
+            "recovered_orphaned_events": res.get("recovered_orphaned_events", 0),
+            "recovered_interrupted_failed": res.get("recovered_interrupted_failed", 0),
+            "total_queued": res.get("total_queued", len(task_ids)),
+            "newly_enqueued": enqueued_count,
+            "task_ids": task_ids,
+            "timestamp": self._last_sweep_time,
+        }
+
+        if self.broker:
+            try:
+                await self.broker.publish("sweeper_run", summary)
+            except Exception as broker_err:
+                logger.debug("Failed to publish sweeper_run to broker: %s", broker_err)
+
+        if enqueued_count > 0 or res.get("recovered_stale_running", 0) > 0:
+            logger.info(
+                "Auto-picked %d unprocessed tasks into queue (reason: %s, sleep_duration: %.1fs)",
+                enqueued_count, reason, sleep_duration
+            )
+
+        return summary
+
+    async def _sweeper_loop(self) -> None:
+        """
+        Background monitor for automatic unprocessed task pickup and macOS sleep/wake detection.
+        Ticks every tick_seconds (default 5.0s).
+        - If elapsed wall-clock/monotonic duration > tick_seconds + sleep_drift_threshold,
+          macOS sleep/wake is detected, triggering immediate auto-pick recovery!
+        - Periodically (every interval_seconds), performs background sweep for pending tasks.
+        """
+        sweeper_cfg = getattr(self.config, "sweeper", None)
+        interval = getattr(sweeper_cfg, "interval_seconds", 30) if sweeper_cfg else 30
+        drift_threshold = getattr(sweeper_cfg, "sleep_drift_threshold_seconds", 15) if sweeper_cfg else 15
+        tick_seconds = min(5.0, max(1.0, float(interval) / 6.0))
+        last_periodic_sweep = time.time()
+
+        logger.info(
+            "Unprocessed message sweeper loop active (interval: %ds, sleep_threshold: %ds)",
+            interval, drift_threshold
+        )
+
+        while self._is_running:
+            t0 = time.monotonic()
+            try:
+                await asyncio.sleep(tick_seconds)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                continue
+
+            if not self._is_running:
+                break
+
+            elapsed = time.monotonic() - t0
+            # Detect macOS sleep/wake leap:
+            # On macOS Darwin, monotonic time continues across system sleep (mach_continuous_time).
+            # When macOS sleeps for 3 hours, asyncio.sleep(5) wakes up with elapsed ~10800 seconds!
+            if elapsed > (tick_seconds + drift_threshold):
+                logger.warning(
+                    "macOS sleep/wake detected: elapsed %.1fs > expected %.1fs (system was asleep). Auto-picking unprocessed messages!",
+                    elapsed, tick_seconds
+                )
+                try:
+                    await self.sweep_unprocessed_tasks(
+                        reason="sleep_wake_recovery",
+                        sleep_duration=elapsed,
+                    )
+                    last_periodic_sweep = time.time()
+                except Exception as e:
+                    logger.error("Error during sleep recovery sweep: %s", e)
+            elif (time.time() - last_periodic_sweep) >= interval:
+                try:
+                    await self.sweep_unprocessed_tasks(reason="periodic_sweep")
+                    last_periodic_sweep = time.time()
+                except Exception as e:
+                    logger.error("Error during periodic sweep: %s", e)
                 await asyncio.sleep(0.1)
 
     def _record_log(self, task_id: str, stream: str, chunk: str, execution_id: Optional[str] = None) -> None:
@@ -402,16 +609,20 @@ class TaskDispatcher:
                             for k, v in parsed_params["env"].items():
                                 proc_env[str(k)] = str(v)
 
-                # Process group isolation via os.setsid on POSIX
-                preexec = os.setsid if hasattr(os, "setsid") else None
+                extra_kwargs: dict[str, Any] = {}
+                if sys.platform != "win32":
+                    if sys.version_info >= (3, 11):
+                        extra_kwargs["process_group"] = 0
+                    elif hasattr(os, "setsid"):
+                        extra_kwargs["preexec_fn"] = os.setsid
 
                 proc = await asyncio.create_subprocess_shell(
                     cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    preexec_fn=preexec,
                     env=proc_env,
                     cwd=cwd,
+                    **extra_kwargs,
                 )
 
                 # Immediately record spawned process PID in executions audit table
@@ -524,6 +735,15 @@ class TaskDispatcher:
             error_message=error_message,
         )
 
+        # Keep webhook_events status synchronized with task completion
+        event_id = task_data.get("event_id") if isinstance(task_data, dict) else None
+        if event_id and hasattr(self.db, "update_event_status"):
+            if final_status == "succeeded":
+                try:
+                    self.db.update_event_status(event_id, "processed")
+                except Exception as ev_err:
+                    logger.debug("Failed to update event status: %s", ev_err)
+
         await self._broadcast_status(task_id, final_status, exit_code, error_message)
 
         res_obj = ExecutionResult(
@@ -541,17 +761,7 @@ class TaskDispatcher:
         del stderr_lines
         del task_data
         gc.collect()
-        if sys.platform == "darwin":
-            try:
-                import ctypes
-                libc = ctypes.CDLL(None)
-                libc.malloc_default_zone.restype = ctypes.c_void_p
-                libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-                libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
-                zone = libc.malloc_default_zone()
-                libc.malloc_zone_pressure_relief(zone, 0)
-            except Exception:
-                pass
+        self._apply_pressure_relief()
         if hasattr(self.db, "_conn") and hasattr(self.db, "_lock"):
             try:
                 with self.db._lock:

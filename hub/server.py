@@ -441,21 +441,7 @@ class AsyncHTTPServer:
                     del body
                     del request
                     gc.collect()
-                    if sys.platform == "darwin":
-                        try:
-                            libc = ctypes.CDLL(None)
-                            libc.malloc_default_zone.restype = ctypes.c_void_p
-                            libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-                            libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
-                            zone = libc.malloc_default_zone()
-                            libc.malloc_zone_pressure_relief(zone, 0)
-                        except Exception:
-                            pass
-                    elif hasattr(ctypes.CDLL(None), "malloc_trim"):
-                        try:
-                            ctypes.CDLL(None).malloc_trim(0)
-                        except Exception:
-                            pass
+                    self._pressure_relief()
                     if self._db is not None and hasattr(self._db, "shrink_memory"):
                         self._db.shrink_memory()
 
@@ -592,6 +578,14 @@ class AsyncHTTPServer:
                 self._active_tasks.discard(t)
                 if transport is not None:
                     self._active_transports.discard(transport)
+                if not self._active_tasks:
+                    gc.collect()
+                    self._pressure_relief()
+                    if self._db is not None and hasattr(self._db, "shrink_memory"):
+                        try:
+                            self._db.shrink_memory()
+                        except Exception:
+                            pass
 
             task.add_done_callback(_on_task_done)
 
@@ -604,27 +598,46 @@ class AsyncHTTPServer:
         self._memory_monitor_task = asyncio.create_task(self._idle_memory_monitor())
         logger.info("Antigravity Webhook Hub HTTP server listening on http://%s:%d", self.host, self.port)
 
+    def _pressure_relief(self) -> None:
+        """Periodic background memory relief maintaining <30MB budget on macOS."""
+        if sys.platform == "darwin":
+            try:
+                libc = ctypes.CDLL(None)
+                libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+                libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
+                if hasattr(libc, "malloc_default_zone"):
+                    libc.malloc_default_zone.restype = ctypes.c_void_p
+                    z = libc.malloc_default_zone()
+                    if z:
+                        libc.malloc_zone_pressure_relief(z, 0)
+                try:
+                    num_zones = ctypes.c_uint.in_dll(libc, "malloc_num_zones").value
+                    zones = (ctypes.c_void_p * num_zones).in_dll(libc, "malloc_zones")
+                    for i in range(num_zones):
+                        if zones[i]:
+                            libc.malloc_zone_pressure_relief(zones[i], 0)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        elif hasattr(ctypes.CDLL(None), "malloc_trim"):
+            try:
+                import ctypes
+                ctypes.CDLL(None).malloc_trim(0)
+            except Exception:
+                pass
+
     async def _idle_memory_monitor(self) -> None:
         """Periodic background memory relief maintaining <30MB budget on macOS."""
+        gc.collect()
+        self._pressure_relief()
+        if self._db is not None and hasattr(self._db, "shrink_memory"):
+            self._db.shrink_memory()
         while self._is_running:
             try:
                 await asyncio.sleep(0.5)
                 gc.collect()
-                if sys.platform == "darwin":
-                    try:
-                        libc = ctypes.CDLL(None)
-                        libc.malloc_default_zone.restype = ctypes.c_void_p
-                        libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-                        libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
-                        zone = libc.malloc_default_zone()
-                        libc.malloc_zone_pressure_relief(zone, 0)
-                    except Exception:
-                        pass
-                elif hasattr(ctypes.CDLL(None), "malloc_trim"):
-                    try:
-                        ctypes.CDLL(None).malloc_trim(0)
-                    except Exception:
-                        pass
+                self._pressure_relief()
                 if self._db is not None and hasattr(self._db, "shrink_memory"):
                     self._db.shrink_memory()
             except asyncio.CancelledError:
@@ -713,7 +726,7 @@ def wire_routes(
 
     try:
         from hub.routes.observability import register_observability_routes
-        register_observability_routes(server, config, db, broker)
+        register_observability_routes(server, config, db, broker, dispatcher)
     except ImportError:
         pass
 

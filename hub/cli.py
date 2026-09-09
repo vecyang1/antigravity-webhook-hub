@@ -141,7 +141,7 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
         pid_path.write_text(f"{pid}\n", encoding="utf-8")
 
     # 1. Initialize SQLite Database Manager & Migrations
-    db_mgr = DatabaseManager(config.database.path)
+    db_mgr = DatabaseManager(config.database.path, cache_size=-16)
     try:
         db_mgr._conn.execute("PRAGMA cache_size = -16;")
         db_mgr._conn.execute("PRAGMA mmap_size = 0;")
@@ -161,7 +161,7 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
     dispatcher = TaskDispatcher(
         db=db_mgr,
         broker=broker,
-        config=config.dispatch,
+        config=config,
     )
     await dispatcher.start()
 
@@ -172,7 +172,7 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
     # 5. Wire System Routes
     register_webhook_routes(server, config, db_mgr, dispatcher, broker)
     register_task_routes(server, config, db_mgr, dispatcher, broker)
-    register_observability_routes(server, config, db_mgr, broker)
+    register_observability_routes(server, config, db_mgr, broker, dispatcher)
     register_sse_routes(server, config, db_mgr, broker)
 
     # 6. Start HTTP Server
@@ -194,6 +194,12 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
 
     # Reclaim setup allocation memory & freeze startup objects to minimize GC traversal
     gc.collect()
+    if hasattr(gc, "freeze"):
+        try:
+            gc.freeze()
+        except Exception:
+            pass
+    db_mgr.shrink_memory()
     if sys.platform == "darwin":
         try:
             import ctypes
@@ -202,7 +208,13 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
             libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
             libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
             zone = libc.malloc_default_zone()
-            libc.malloc_zone_pressure_relief(zone, 0)
+            if zone:
+                libc.malloc_zone_pressure_relief(zone, 0)
+            num_zones = ctypes.c_uint.in_dll(libc, "malloc_num_zones").value
+            zones = (ctypes.c_void_p * num_zones).in_dll(libc, "malloc_zones")
+            for i in range(num_zones):
+                if zones[i]:
+                    libc.malloc_zone_pressure_relief(zones[i], 0)
         except Exception:
             pass
 
@@ -443,6 +455,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         db_info = healthz_data.get("database", {})
         db_status = db_info.get("status", healthz_data.get("db", "connected"))
 
+        unproc_count = healthz_data.get("unprocessed_tasks_count", 0)
+        unproc_info = healthz_data.get("unprocessed", {})
+
         if args.json:
             out = {
                 "running": True,
@@ -453,6 +468,8 @@ def cmd_status(args: argparse.Namespace) -> int:
                 "uptime_seconds": uptime,
                 "memory_rss_mb": round(mem_rss, 2),
                 "database": db_status,
+                "unprocessed_tasks": unproc_count,
+                "unprocessed_details": unproc_info,
                 "healthz": healthz_data,
             }
             print(json.dumps(out, indent=2))
@@ -466,10 +483,21 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"  Uptime:      {uptime:.1f}s")
             print(f"  Memory RSS:  {mem_rss:.2f} MB (Budget: < 30.0 MB)")
             print(f"  Database:    {db_status}")
+            print(f"  Unprocessed: {unproc_count} tasks")
             print("==================================================")
         return 0
 
     # Not running or unreachable
+    offline_unproc = 0
+    try:
+        from hub.db import DatabaseManager
+        mgr = DatabaseManager(getattr(args, "db", None) or "data/webhook_hub.db")
+        unproc_data = mgr.get_unprocessed_tasks(limit=1)
+        offline_unproc = unproc_data.get("counts", {}).get("total_unprocessed", 0)
+        mgr.close()
+    except Exception:
+        pass
+
     if args.json:
         out = {
             "running": False,
@@ -478,6 +506,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             "host": host,
             "port": port,
             "status": "stopped",
+            "unprocessed_tasks": offline_unproc,
         }
         print(json.dumps(out, indent=2))
     else:
@@ -490,6 +519,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"  Stale PID file found pointing to dead process {pid}.")
         else:
             print(f"  No running server detected on http://{host}:{port}.")
+        if offline_unproc > 0:
+            print(f"  Unprocessed in DB: {offline_unproc} tasks (Run './bin/webhook-hub sweep' or start daemon)")
         print("==================================================")
     return 1
 
@@ -858,6 +889,153 @@ def cmd_review_contact(args: argparse.Namespace) -> int:
     return 0 if not res.error else 1
 
 
+def cmd_sweep(args: argparse.Namespace) -> int:
+    """Handle `webhook-hub sweep` (or `pick-unprocessed`) command."""
+    import json
+    import urllib.request
+    import urllib.error
+
+    host = getattr(args, "host", "127.0.0.1")
+    port = getattr(args, "port", 9423)
+    target_url = f"http://{host}:{port}/tasks/sweep"
+
+    dry_run = getattr(args, "dry_run", False)
+    source = getattr(args, "source", None)
+    limit = getattr(args, "limit", 100)
+    stale_sec = getattr(args, "stale_seconds", 300)
+    max_retries = getattr(args, "max_retries", 3)
+
+    payload_dict = {
+        "dry_run": dry_run,
+        "source": source,
+        "limit": limit,
+        "stale_seconds": stale_sec,
+        "max_retries": max_retries,
+    }
+
+    # Try live gateway first if pid is alive
+    pid_path = Path(getattr(args, "pidfile", DEFAULT_PID_FILE))
+    pid = _read_pid_file(pid_path)
+    is_alive = _is_pid_running(pid) if pid is not None else False
+
+    live_success = False
+    sweep_data = None
+    if is_alive:
+        try:
+            req_data = json.dumps(payload_dict).encode("utf-8")
+            headers = {"Content-Type": "application/json"}
+            req = urllib.request.Request(target_url, data=req_data, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                if resp.status == 200:
+                    sweep_data = json.loads(resp.read().decode("utf-8"))
+                    live_success = True
+        except Exception:
+            pass
+
+    # If live gateway wasn't reachable or not running, perform direct local DB sweep
+    if not live_success:
+        from hub.db import DatabaseManager
+        db_path = getattr(args, "db", None)
+        if not db_path:
+            try:
+                cfg = load_config(config_path=getattr(args, "config", None), env_path=getattr(args, "env_file", None))
+                db_path = cfg.database.path
+            except Exception:
+                db_path = "data/webhook_hub.db"
+
+        mgr = DatabaseManager(db_path)
+        mgr.init_schema()
+
+        if dry_run:
+            unproc = mgr.get_unprocessed_tasks(
+                source=source,
+                stale_running_seconds=stale_sec,
+                limit=limit,
+            )
+            sweep_data = {
+                "status": "success",
+                "mode": "offline_db_direct",
+                "dry_run": True,
+                "would_recover": unproc.get("counts", {}),
+                "tasks": unproc.get("tasks", []),
+                "orphaned_events": unproc.get("orphaned_events", []),
+            }
+        else:
+            db_res = mgr.sweep_and_requeue_unprocessed(
+                stale_running_seconds=stale_sec,
+                max_retries=max_retries,
+                source=source,
+                limit=limit,
+            )
+            sweep_data = {
+                "status": "success",
+                "mode": "offline_db_direct",
+                "dry_run": False,
+                "recovered": db_res,
+            }
+        mgr.close()
+
+    if getattr(args, "json", False):
+        print(json.dumps(sweep_data, indent=2))
+        return 0
+
+    print("==================================================")
+    print(f" Antigravity Webhook Hub — Unprocessed Task Sweep {'[DRY RUN]' if dry_run else ''}")
+    print("==================================================")
+    mode_str = f"LIVE GATEWAY (http://{host}:{port})" if live_success else "OFFLINE DIRECT (SQLite SSOT)"
+    print(f"  Mode:         {mode_str}")
+    if dry_run:
+        would = sweep_data.get("would_recover", {})
+        total = would.get("total_unprocessed", 0)
+        print(f"  Pending:      {total} unprocessed messages/tasks found")
+        print(f"    - Queued:                {would.get('queued', 0)}")
+        print(f"    - Received:              {would.get('received', 0)}")
+        print(f"    - Stale Running (Sleep): {would.get('stale_running', 0)}")
+        print(f"    - Orphaned Events:       {would.get('orphaned_events', 0)}")
+        print(f"    - Interrupted / Failed:  {would.get('recoverable_failed', 0)}")
+        tasks = sweep_data.get("tasks", [])
+        if tasks:
+            print("\n  Task Candidates:")
+            for t in tasks[:10]:
+                print(f"    • {t.get('task_id')}: status={t.get('status')}, action={t.get('action_type')}, created={t.get('created_at')}")
+            if len(tasks) > 10:
+                print(f"    ... and {len(tasks) - 10} more.")
+    else:
+        rec = sweep_data.get("recovered", {})
+        total_q = rec.get("total_queued", 0)
+        stale_rec = rec.get("recovered_stale_running", 0)
+        orph_rec = rec.get("recovered_orphaned_events", 0)
+        failed_rec = rec.get("recovered_interrupted_failed", 0)
+        recv_rec = rec.get("recovered_received_tasks", 0)
+        print(f"  Status:       SUCCESS")
+        print(f"  Total Queued: {total_q} tasks ready for dispatch")
+        print(f"  Recovered:")
+        print(f"    - Stale Running (Sleep): {stale_rec}")
+        print(f"    - Received Tasks:        {recv_rec}")
+        print(f"    - Orphaned Webhooks:     {orph_rec}")
+        print(f"    - Interrupted / Failed:  {failed_rec}")
+        if not live_success:
+            print("\n  Note: Gateway daemon is stopped. Start daemon to execute queued tasks:")
+            print("        ./bin/webhook-hub start -d")
+    print("==================================================")
+    return 0
+
+
+def _add_sweep_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--dry-run", action="store_true", help="Inspect unprocessed tasks without executing or modifying state")
+    parser.add_argument("--json", action="store_true", help="Format output as JSON for AI agents")
+    parser.add_argument("--source", type=str, default=None, help="Filter sweep by source (e.g. slack_people, github, default)")
+    parser.add_argument("--limit", type=int, default=100, help="Maximum number of tasks to recover in one sweep")
+    parser.add_argument("--stale-seconds", type=int, default=300, help="Stale threshold for running tasks in seconds (default: 300s)")
+    parser.add_argument("--max-retries", type=int, default=3, help="Maximum retry attempts for interrupted tasks")
+    parser.add_argument("--host", default="127.0.0.1", help="Gateway host when connecting to live server")
+    parser.add_argument("--port", type=int, default=9423, help="Gateway port when connecting to live server")
+    parser.add_argument("--db", type=str, default=None, help="Path to SQLite database file when offline")
+    parser.add_argument("--config", type=str, default=None, help="Path to config.yaml file")
+    parser.add_argument("--env-file", type=str, default=None, help="Path to .env file")
+    parser.add_argument("--pidfile", default=DEFAULT_PID_FILE, help="Path to PID file")
+
+
 def _add_review_contact_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--task-id", default=None, help="Load task payload from SQLite database by task ID")
     parser.add_argument("--payload", default=None, help="Raw JSON payload string or @filepath")
@@ -1032,6 +1210,9 @@ def build_parser() -> Any:
     p_review = subparsers.add_parser("review-contact", aliases=["contact-review"], help="Review and reconcile contact against Notion CRM (SSOT)")
     _add_review_contact_args(p_review)
 
+    p_sweep = subparsers.add_parser("sweep", aliases=["pick-unprocessed", "recover"], help="Auto-pick and recover unprocessed messages and tasks")
+    _add_sweep_args(p_sweep)
+
     return parser
 
 
@@ -1041,7 +1222,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         argv = sys.argv[1:]
 
     # If flags like --port or --db are provided without a subcommand, default to 'start'
-    known_commands = {"start", "stop", "status", "logs", "test-send", "verify", "review-contact", "contact-review", "-h", "--help"}
+    known_commands = {
+        "start", "stop", "status", "logs", "test-send", "verify",
+        "review-contact", "contact-review", "sweep", "pick-unprocessed", "recover",
+        "-h", "--help"
+    }
     if argv and argv[0] not in known_commands and argv[0].startswith("-"):
         argv = ["start"] + argv
 
@@ -1119,6 +1304,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         del p
         gc.collect()
         return cmd_review_contact(args)
+
+    elif subcommand in ("sweep", "pick-unprocessed", "recover"):
+        p = argparse.ArgumentParser(prog="webhook-hub sweep")
+        _add_sweep_args(p)
+        args = p.parse_args(sub_args)
+        args.subcommand = "sweep"
+        del p
+        gc.collect()
+        return cmd_sweep(args)
 
     else:
         parser = build_parser()

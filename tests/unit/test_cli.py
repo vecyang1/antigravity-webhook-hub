@@ -445,3 +445,67 @@ def test_cmd_verify_delegation():
         assert mock_run.called
         cmd_called = mock_run.call_args[0][0]
         assert any("verify_e2e.py" in str(arg) for arg in cmd_called)
+
+
+# ==============================================================================
+# 8. SWEEP SUBCOMMAND TESTS
+# ==============================================================================
+
+def test_build_parser_sweep_subcommands():
+    """Verify sweep subcommand and aliases are registered."""
+    parser = build_parser()
+    subparsers_action = [
+        action for action in parser._actions
+        if action.__class__.__name__ == "_SubParsersAction"
+    ]
+    choices = subparsers_action[0].choices
+    assert "sweep" in choices
+    assert "pick-unprocessed" in choices
+    assert "recover" in choices
+
+
+def test_cmd_sweep_offline_db(tmp_path, capsys):
+    """Test sweep command directly against offline SQLite database."""
+    from hub.cli import cmd_sweep
+
+    db_file = tmp_path / "test_cli_sweep.db"
+    db = DatabaseManager(str(db_file), cache_size=-16)
+    db.init_schema()
+
+    # Seed orphan event
+    db.insert_webhook_event({
+        "event_id": "evt_cli_orphan",
+        "source": "cli_test",
+        "raw_payload": '{"command": "echo cli_sweep"}',
+        "status": "received",
+    })
+
+    parser = build_parser()
+
+    # 1. Dry run
+    args_dry = parser.parse_args(["sweep", "--db", str(db_file), "--dry-run"])
+    code_dry = cmd_sweep(args_dry)
+    assert code_dry == 0
+    cap_dry = capsys.readouterr()
+    assert "DRY RUN" in cap_dry.out
+    assert "Orphaned Events" in cap_dry.out
+
+    # 2. JSON dry run
+    args_json = parser.parse_args(["sweep", "--db", str(db_file), "--dry-run", "--json"])
+    code_json = cmd_sweep(args_json)
+    assert code_json == 0
+    cap_json = capsys.readouterr()
+    data_json = json.loads(cap_json.out)
+    assert data_json["dry_run"] is True
+
+    # 3. Live recovery sweep
+    args_live = parser.parse_args(["sweep", "--db", str(db_file)])
+    code_live = cmd_sweep(args_live)
+    assert code_live == 0
+    cap_live = capsys.readouterr()
+    assert "Recovered" in cap_live.out
+
+    # Verify event is no longer orphaned
+    assert len(db.get_orphaned_webhook_events()) == 0
+    db.close()
+

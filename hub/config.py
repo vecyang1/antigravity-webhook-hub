@@ -62,12 +62,24 @@ class TunnelConfig:
 
 
 @dataclass(slots=True)
+class SweeperConfig:
+    enabled: bool = True
+    interval_seconds: int = 30
+    sleep_drift_threshold_seconds: int = 15
+    stale_running_seconds: int = 300
+    auto_retry_interrupted: bool = True
+    max_auto_retries: int = 3
+    rehydrate_orphaned_events: bool = True
+
+
+@dataclass(slots=True)
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     dispatch: DispatchConfig = field(default_factory=DispatchConfig)
     tunnel: TunnelConfig = field(default_factory=TunnelConfig)
+    sweeper: SweeperConfig = field(default_factory=SweeperConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -104,6 +116,15 @@ class AppConfig:
                 "tunnel_name": self.tunnel.tunnel_name,
                 "credentials_file": self.tunnel.credentials_file,
                 "hostname": self.tunnel.hostname,
+            },
+            "sweeper": {
+                "enabled": self.sweeper.enabled,
+                "interval_seconds": self.sweeper.interval_seconds,
+                "sleep_drift_threshold_seconds": self.sweeper.sleep_drift_threshold_seconds,
+                "stale_running_seconds": self.sweeper.stale_running_seconds,
+                "auto_retry_interrupted": self.sweeper.auto_retry_interrupted,
+                "max_auto_retries": self.sweeper.max_auto_retries,
+                "rehydrate_orphaned_events": self.sweeper.rehydrate_orphaned_events,
             },
         }
 
@@ -284,6 +305,27 @@ def load_config(
         if "hostname" in tun:
             cfg.tunnel.hostname = str(tun["hostname"])
 
+    if "sweeper" in yaml_data and isinstance(yaml_data["sweeper"], dict):
+        sw = yaml_data["sweeper"]
+        if "enabled" in sw:
+            cfg.sweeper.enabled = _to_bool(sw["enabled"])
+        if "interval_seconds" in sw:
+            cfg.sweeper.interval_seconds = _to_int(sw["interval_seconds"], cfg.sweeper.interval_seconds)
+        if "sleep_drift_threshold_seconds" in sw:
+            cfg.sweeper.sleep_drift_threshold_seconds = _to_int(
+                sw["sleep_drift_threshold_seconds"], cfg.sweeper.sleep_drift_threshold_seconds
+            )
+        if "stale_running_seconds" in sw:
+            cfg.sweeper.stale_running_seconds = _to_int(
+                sw["stale_running_seconds"], cfg.sweeper.stale_running_seconds
+            )
+        if "auto_retry_interrupted" in sw:
+            cfg.sweeper.auto_retry_interrupted = _to_bool(sw["auto_retry_interrupted"])
+        if "max_auto_retries" in sw:
+            cfg.sweeper.max_auto_retries = _to_int(sw["max_auto_retries"], cfg.sweeper.max_auto_retries)
+        if "rehydrate_orphaned_events" in sw:
+            cfg.sweeper.rehydrate_orphaned_events = _to_bool(sw["rehydrate_orphaned_events"])
+
     # 4. Apply environment variables over YAML
     # Server
     if "HOST" in combined_env:
@@ -347,6 +389,26 @@ def load_config(
     if "CLOUDFLARE_CREDENTIALS_FILE" in combined_env:
         cfg.tunnel.credentials_file = combined_env["CLOUDFLARE_CREDENTIALS_FILE"]
 
+    # Sweeper / Auto-picker
+    if "SWEEPER_ENABLED" in combined_env:
+        cfg.sweeper.enabled = _to_bool(combined_env["SWEEPER_ENABLED"])
+    if "SWEEPER_INTERVAL_SECONDS" in combined_env:
+        cfg.sweeper.interval_seconds = _to_int(combined_env["SWEEPER_INTERVAL_SECONDS"], cfg.sweeper.interval_seconds)
+    if "SWEEPER_SLEEP_DRIFT_THRESHOLD_SECONDS" in combined_env:
+        cfg.sweeper.sleep_drift_threshold_seconds = _to_int(
+            combined_env["SWEEPER_SLEEP_DRIFT_THRESHOLD_SECONDS"], cfg.sweeper.sleep_drift_threshold_seconds
+        )
+    if "SWEEPER_STALE_RUNNING_SECONDS" in combined_env:
+        cfg.sweeper.stale_running_seconds = _to_int(
+            combined_env["SWEEPER_STALE_RUNNING_SECONDS"], cfg.sweeper.stale_running_seconds
+        )
+    if "SWEEPER_AUTO_RETRY_INTERRUPTED" in combined_env:
+        cfg.sweeper.auto_retry_interrupted = _to_bool(combined_env["SWEEPER_AUTO_RETRY_INTERRUPTED"])
+    if "SWEEPER_MAX_AUTO_RETRIES" in combined_env:
+        cfg.sweeper.max_auto_retries = _to_int(combined_env["SWEEPER_MAX_AUTO_RETRIES"], cfg.sweeper.max_auto_retries)
+    if "SWEEPER_REHYDRATE_ORPHANED_EVENTS" in combined_env:
+        cfg.sweeper.rehydrate_orphaned_events = _to_bool(combined_env["SWEEPER_REHYDRATE_ORPHANED_EVENTS"])
+
     # 5. Apply CLI / Explicit overrides (highest precedence)
     if cli_overrides:
         for k, v in cli_overrides.items():
@@ -382,6 +444,14 @@ def load_config(
                 elif hasattr(cfg.tunnel, k):
                     curr = getattr(cfg.tunnel, k)
                     setattr(cfg.tunnel, k, _to_bool(v) if isinstance(curr, bool) else v)
+                elif hasattr(cfg.sweeper, k):
+                    curr = getattr(cfg.sweeper, k)
+                    if isinstance(curr, bool):
+                        setattr(cfg.sweeper, k, _to_bool(v))
+                    elif isinstance(curr, int):
+                        setattr(cfg.sweeper, k, int(v))
+                    else:
+                        setattr(cfg.sweeper, k, v)
 
     return cfg
 

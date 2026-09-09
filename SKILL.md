@@ -27,9 +27,15 @@ All commands run via `./bin/webhook-hub <subcommand>` or `python3 -m hub <subcom
 ./bin/webhook-hub logs --task tsk_123  # Inspect single task execution output
 ./bin/webhook-hub logs -f              # Follow live global SSE event stream
 
+# Auto-Picker & Unprocessed Task Sweeper (Mac Sleep / Battery Loss Recovery)
+./bin/webhook-hub sweep                   # Recover and requeue all unprocessed/stale tasks
+./bin/webhook-hub sweep --dry-run         # Inspect recoverable tasks without mutating state
+./bin/webhook-hub sweep --dry-run --json  # Machine-readable JSON summary for agents
+./bin/webhook-hub pick-unprocessed        # Inspect unprocessed tasks & orphaned events (alias)
+
 # Testing & Verification
 ./bin/webhook-hub test-send --action cli --command "echo 'ping'"
-./bin/webhook-hub verify               # Run full 9-step standalone E2E suite
+./bin/webhook-hub verify               # Run full 10-step standalone E2E suite
 
 # Contact Review & CRM Intelligence
 ./bin/webhook-hub review-contact --name "Adam Walker" --dry-run
@@ -52,6 +58,8 @@ All commands run via `./bin/webhook-hub <subcommand>` or `python3 -m hub <subcom
 | `POST` | `/webhook/{source}` | Source-tagged ingress (e.g., github, stripe) | `202 Accepted` | `400`, `401`, `413` |
 | `GET` | `/tasks` | Query historical tasks (`?status=&limit=`) | `200 OK` | `400 Bad Request` |
 | `GET` | `/tasks/{id}` | Detailed task metadata & output logs | `200 OK` | `404 Not Found` |
+| `GET` | `/tasks/unprocessed` | Query unprocessed, orphaned, and stale tasks (`?stale_seconds=&source=&limit=`) | `200 OK` | `400 Bad Request` |
+| `POST` | `/tasks/sweep` | Sweep, recover, and re-enqueue unprocessed tasks into dispatcher | `200 OK` | `400 Bad Request` |
 | `GET` | `/events/stream` | Server-Sent Events live event stream | `200 OK` | - |
 | `GET` | `/tasks/{id}/stream` | SSE stream scoped to specific task | `200 OK` | `404 Not Found` |
 
@@ -191,4 +199,15 @@ Provides intelligent deduplication, contradiction detection, property supplement
 1. **Live Re-read Verification**: After property mutation, the pipeline re-reads the page from the Notion API to verify property persistence before concluding.
 2. **Slack Thread Feedback**: Posts formatted verdict banner, property diffs, and Notion deep links directly to the originating Slack channel & thread.
 3. **Agent Signal**: Emits atomic JSON event to `.agents/signals/contact_review/` for downstream agents.
+
+## 8. Mac Sleep & Battery Loss Auto-Recovery (Unprocessed Sweeper)
+
+When a Mac sleeps or loses battery for hours (e.g. 3 hours), in-flight tasks and incoming events can become orphaned or stalled. The Webhook Hub includes built-in recovery:
+
+1. **Monotonic Clock Jump Detection**: The dispatcher monitors elapsed time between loops. If a leap (`time.monotonic()` jump > 3x interval or > 60s) occurs due to Mac sleep or hibernation, an immediate sweep cycle is automatically triggered upon wake.
+2. **Periodic Background Sweeper**: Automatically inspects SQLite SSOT every 60s (`sweeper_interval_seconds`) for tasks stranded in `running` longer than `stale_task_timeout_seconds` (default 300s).
+3. **Orphaned Webhook Rehydration**: Any `webhook_events` with `status = 'received'` that never had a task created (e.g., sudden power loss) are promoted to tasks and enqueued.
+4. **Interrupted Task Retry**: Any tasks that failed with network/restart/timeout signatures are automatically retried up to `max_retries`.
+5. **On-Demand Sweeping**: Agents or cron jobs can inspect or trigger recovery via `./bin/webhook-hub sweep` (or `POST /tasks/sweep`) at any time.
+
 

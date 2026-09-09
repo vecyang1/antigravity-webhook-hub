@@ -205,6 +205,142 @@ def register_task_routes(
             status_code=202,
         )
 
+    async def handle_unprocessed_tasks(req: HTTPRequest) -> HTTPResponse:
+        """GET /tasks/unprocessed: Return all unprocessed tasks and orphaned events from SQLite SSOT."""
+        status_filter = req.query_params.get("status")
+        source_filter = req.query_params.get("source")
+        try:
+            limit = min(max(1, int(req.query_params.get("limit", 100))), 500)
+        except (ValueError, TypeError):
+            limit = 100
+        try:
+            stale_sec = max(10, int(req.query_params.get("stale_seconds", 300)))
+        except (ValueError, TypeError):
+            stale_sec = 300
+
+        if db is not None and hasattr(db, "get_unprocessed_tasks"):
+            data = db.get_unprocessed_tasks(
+                status=status_filter,
+                source=source_filter,
+                stale_running_seconds=stale_sec,
+                limit=limit,
+            )
+            return HTTPResponse.json(
+                {
+                    "status": "success",
+                    "counts": data.get("counts", {}),
+                    "total_unprocessed": data.get("counts", {}).get("total_unprocessed", 0),
+                    "tasks": data.get("tasks", []),
+                    "orphaned_events": data.get("orphaned_events", []),
+                },
+                status_code=200,
+            )
+
+        return HTTPResponse.json(
+            {
+                "status": "success",
+                "counts": {"total_unprocessed": 0},
+                "total_unprocessed": 0,
+                "tasks": [],
+                "orphaned_events": [],
+            },
+            status_code=200,
+        )
+
+    async def handle_sweep_tasks(req: HTTPRequest) -> HTTPResponse:
+        """POST /tasks/sweep: Trigger immediate sweep and recovery of unprocessed tasks."""
+        dry_run = False
+        source_filter = None
+        stale_sec = 300
+        max_retries = 3
+        limit = 100
+
+        if req.query_params.get("dry_run", "").lower() in ("true", "1", "yes"):
+            dry_run = True
+        source_filter = req.query_params.get("source")
+
+        if req.body:
+            try:
+                body = req.json()
+                if isinstance(body, dict):
+                    if "dry_run" in body:
+                        dry_run = bool(body["dry_run"])
+                    if "source" in body:
+                        source_filter = str(body["source"])
+                    if "stale_seconds" in body:
+                        stale_sec = int(body["stale_seconds"])
+                    if "max_retries" in body:
+                        max_retries = int(body["max_retries"])
+                    if "limit" in body:
+                        limit = int(body["limit"])
+            except Exception:
+                pass
+
+        if dry_run:
+            if db is not None and hasattr(db, "get_unprocessed_tasks"):
+                unproc = db.get_unprocessed_tasks(
+                    source=source_filter,
+                    stale_running_seconds=stale_sec,
+                    limit=limit,
+                )
+                return HTTPResponse.json(
+                    {
+                        "status": "success",
+                        "dry_run": True,
+                        "total_unprocessed": unproc.get("total_unprocessed", unproc.get("counts", {}).get("total_unprocessed", 0)),
+                        "would_recover": unproc.get("counts", {}),
+                        "tasks": unproc.get("tasks", []),
+                        "orphaned_events": unproc.get("orphaned_events", []),
+                    },
+                    status_code=200,
+                )
+            return HTTPResponse.json({"status": "success", "dry_run": True, "would_recover": {}}, status_code=200)
+
+        if dispatcher is not None and hasattr(dispatcher, "sweep_unprocessed_tasks"):
+            sweep_summary = await dispatcher.sweep_unprocessed_tasks(
+                reason="api_request",
+                stale_running_seconds=stale_sec,
+                max_retries=max_retries,
+                source=source_filter,
+                limit=limit,
+            )
+            return HTTPResponse.json(
+                {
+                    "status": "success",
+                    "dry_run": False,
+                    "recovered": sweep_summary,
+                    "recovered_orphaned_events": sweep_summary.get("recovered_orphaned_events", 0),
+                    "recovered_stale_running": sweep_summary.get("recovered_stale_running", 0),
+                    "recovered_interrupted_failed": sweep_summary.get("recovered_interrupted_failed", 0),
+                    "total_queued": sweep_summary.get("total_queued", 0),
+                },
+                status_code=200,
+            )
+
+        if db is not None and hasattr(db, "sweep_and_requeue_unprocessed"):
+            res = db.sweep_and_requeue_unprocessed(
+                stale_running_seconds=stale_sec,
+                max_retries=max_retries,
+                source=source_filter,
+                limit=limit,
+            )
+            return HTTPResponse.json(
+                {
+                    "status": "success",
+                    "dry_run": False,
+                    "recovered": res,
+                    "recovered_orphaned_events": res.get("recovered_orphaned_events", 0),
+                    "recovered_stale_running": res.get("recovered_stale_running", 0),
+                    "recovered_interrupted_failed": res.get("recovered_interrupted_failed", 0),
+                    "total_queued": res.get("total_queued", 0),
+                },
+                status_code=200,
+            )
+
+        return HTTPResponse.error("Neither dispatcher nor db available for sweep", status_code=500)
+
     server.add_route("GET", "/tasks", handle_tasks_list)
+    server.add_route("GET", "/tasks/unprocessed", handle_unprocessed_tasks)
+    server.add_route("POST", "/tasks/sweep", handle_sweep_tasks)
     server.add_route("GET", "/tasks/{task_id}", handle_task_detail)
     server.add_route("POST", "/tasks", handle_create_task)

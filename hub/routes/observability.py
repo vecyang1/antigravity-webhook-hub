@@ -105,31 +105,12 @@ def register_observability_routes(
     config: AppConfig,
     db: Optional[Any] = None,
     broker: Optional[Any] = None,
+    dispatcher: Optional[Any] = None,
 ) -> None:
     """Register all observability and task inspection endpoints."""
 
     async def handle_healthz(req: HTTPRequest) -> HTTPResponse:
         """GET /healthz: Liveness & health probe with DB status and memory RSS verification."""
-        import gc
-        gc.collect()
-        if sys.platform == "darwin":
-            try:
-                import ctypes
-                libc = ctypes.CDLL(None)
-                libc.malloc_default_zone.restype = ctypes.c_void_p
-                libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-                libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
-                zone = libc.malloc_default_zone()
-                libc.malloc_zone_pressure_relief(zone, 0)
-            except Exception:
-                pass
-
-        stats = server.get_stats()
-        uptime = stats.get("uptime_seconds", 0.0)
-        rss_mb = get_memory_rss_mb()
-        budget_limit = float(os.environ.get("MEMORY_BUDGET_MB", 30.0))
-        memory_healthy = rss_mb <= budget_limit
-
         db_status = "connected"
         db_healthy = True
 
@@ -150,12 +131,45 @@ def register_observability_routes(
                 db_status = f"error: {str(db_err)}"
                 db_healthy = False
 
-            if hasattr(db, "_conn") and hasattr(db, "_lock"):
-                try:
-                    with db._lock:
-                        db._conn.execute("PRAGMA shrink_memory;")
-                except Exception:
-                    pass
+        unprocessed_summary = {}
+        if db is not None and hasattr(db, "get_unprocessed_tasks"):
+            try:
+                unproc_res = db.get_unprocessed_tasks(limit=1)
+                unprocessed_summary = unproc_res.get("counts", {})
+            except Exception:
+                pass
+
+        if db is not None and hasattr(db, "shrink_memory"):
+            try:
+                db.shrink_memory()
+            except Exception:
+                pass
+
+        import gc
+        gc.collect()
+        if sys.platform == "darwin":
+            try:
+                import ctypes
+                libc = ctypes.CDLL(None)
+                libc.malloc_default_zone.restype = ctypes.c_void_p
+                libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+                libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
+                zone = libc.malloc_default_zone()
+                if zone:
+                    libc.malloc_zone_pressure_relief(zone, 0)
+                num_zones = ctypes.c_uint.in_dll(libc, "malloc_num_zones").value
+                zones = (ctypes.c_void_p * num_zones).in_dll(libc, "malloc_zones")
+                for i in range(num_zones):
+                    if zones[i]:
+                        libc.malloc_zone_pressure_relief(zones[i], 0)
+            except Exception:
+                pass
+
+        stats = server.get_stats()
+        uptime = stats.get("uptime_seconds", 0.0)
+        rss_mb = get_memory_rss_mb()
+        budget_limit = float(os.environ.get("MEMORY_BUDGET_MB", 30.0))
+        memory_healthy = rss_mb <= budget_limit
 
         status_str = "ok" if (db_healthy and memory_healthy) else "degraded"
         status_code = 200 if db_healthy else 503
@@ -174,6 +188,8 @@ def register_observability_routes(
                 "memory_budget_mb": budget_limit,
             },
             "memory_rss_mb": rss_mb,
+            "unprocessed": unprocessed_summary,
+            "unprocessed_tasks_count": unprocessed_summary.get("total_unprocessed", 0),
         }
 
         return HTTPResponse.json(response_data, status_code=status_code)
@@ -298,12 +314,13 @@ def register_observability_routes(
             status_code=200,
         )
 
-    # Delegate task management routes to dedicated hub.routes.tasks module per PROJECT.md
-    try:
-        from hub.routes.tasks import register_task_routes
-        register_task_routes(server, config, db, broker=broker)
-    except ImportError:
-        pass
+    # Delegate task management routes to dedicated hub.routes.tasks module if not already registered
+    if ("GET", "/tasks") not in getattr(server, "_exact_routes", {}):
+        try:
+            from hub.routes.tasks import register_task_routes
+            register_task_routes(server, config, db, dispatcher=dispatcher, broker=broker)
+        except ImportError:
+            pass
 
     server.add_route("GET", "/", handle_root)
     server.add_route("GET", "/healthz", handle_healthz)

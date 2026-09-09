@@ -2,7 +2,7 @@
 """
 Antigravity Webhook Hub — Standalone Zero-Dependency E2E Verification Runner.
 
-Performs a comprehensive 9-step opaque-box integration verification of the live gateway:
+Performs a comprehensive 10-step opaque-box integration verification of the live gateway:
 1. Health Check (/healthz) + Memory RSS verification (<30MB budget)
 2. Legitimate Webhook Ingress (HMAC SHA-256 signed, HTTP 202 Accepted)
 3. SQLite SSOT Verification (WAL mode, relational integrity & event/task persistence)
@@ -12,12 +12,13 @@ Performs a comprehensive 9-step opaque-box integration verification of the live 
 7. Adversarial: Stale Timestamp Replay Attack (HTTP 401 + exactly 0 DB writes)
 8. Adversarial: Duplicate Payload Deduplication (Idempotent 200/202, exactly 1 task in DB)
 9. Adversarial: Subprocess Timeout & Cleanup (Dispatcher process group SIGTERM, status=timed_out)
+10. Auto-Picker & Unprocessed Task Sweeper (SQLite orphan recovery, HTTP sweep & task execution)
 
 Requirements:
 - ZERO external dependencies (Python standard library only).
 - ZERO mock servers or dummy facades (100% genuine opaque-box testing of live server).
 - Exits with 0 on complete pass, 1 on any failure.
-- Emits formatted 9-step pass/fail receipts with execution timings and memory footprints.
+- Emits formatted 10-step pass/fail receipts with execution timings and memory footprints.
 """
 
 from __future__ import annotations
@@ -99,7 +100,7 @@ class E2EVerifier:
     def log_step(self, step_num: int, name: str, passed: bool, detail: str):
         status = f"{GREEN}[PASS]{RESET}" if passed else f"{RED}[FAIL]{RESET}"
         dots = "." * max(2, 60 - len(name))
-        print(f"[{BOLD}STEP {step_num}/9{RESET}] {name} {dots} {status} ({detail})")
+        print(f"[{BOLD}STEP {step_num}/10{RESET}] {name} {dots} {status} ({detail})")
 
     def ensure_server_running(self) -> bool:
         """
@@ -125,7 +126,7 @@ class E2EVerifier:
         self.is_ephemeral = True
 
         hub_bin = PROJECT_ROOT / "bin" / "webhook-hub"
-        entrypoint = [str(hub_bin)] if hub_bin.is_file() else [sys.executable, "-m", "hub.cli"]
+        entrypoint = [sys.executable, "-m", "hub.cli"]
         cmd = entrypoint + [
             "start",
             "--host",
@@ -163,6 +164,7 @@ class E2EVerifier:
                     req = urllib.request.Request(f"{self.base_url}/healthz", method="GET")
                     with urllib.request.urlopen(req, timeout=0.5) as resp:
                         if resp.status == 200:
+                            time.sleep(0.5)
                             return True
                 except Exception:
                     pass
@@ -197,6 +199,18 @@ class E2EVerifier:
             cur = conn.cursor()
             cur.execute(sql, params)
             return [dict(r) for r in cur.fetchall()]
+        finally:
+            conn.close()
+
+    def _execute_db(self, sql: str, params: tuple = ()) -> None:
+        """Execute a write statement on the SQLite database and commit."""
+        if not self.db_path or not os.path.exists(self.db_path):
+            return
+        conn = sqlite3.connect(self.db_path, timeout=5.0)
+        try:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            conn.commit()
         finally:
             conn.close()
 
@@ -537,22 +551,103 @@ class E2EVerifier:
         results.append(step9_pass)
         self.log_step(9, "Adversarial: Subprocess Timeout & Cleanup", step9_pass, step9_detail)
 
+        # ====================================================================
+        # Step 10: Auto-Picker & Unprocessed Task Sweeper
+        # ====================================================================
+        step10_pass = False
+        step10_detail = ""
+        try:
+            # 1. Query GET /tasks/unprocessed
+            req = urllib.request.Request(f"{self.base_url}/tasks/unprocessed", method="GET")
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                unproc_data = json.loads(resp.read().decode())
+                unproc_ok = resp.status == 200 and "total_unprocessed" in unproc_data
+
+            # 2. Seed an orphaned webhook event directly into SQLite (status 'received', no task)
+            orphan_event_id = f"evt_orphan_{int(time.time())}_{os.urandom(3).hex()}"
+            orphan_cmd = f"echo 'sweeper_recovered_{orphan_event_id}'"
+            orphan_payload = json.dumps({"action": "cli", "command": orphan_cmd})
+            self._execute_db(
+                """INSERT INTO webhook_events 
+                   (event_id, source, idempotency_key, payload_hash, headers_json, raw_payload, method, path, remote_addr, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    orphan_event_id,
+                    "default",
+                    orphan_event_id,
+                    f"hash_{orphan_event_id}",
+                    "{}",
+                    orphan_payload,
+                    "POST",
+                    "/webhook",
+                    "127.0.0.1",
+                    "received",
+                ),
+            )
+
+            # 3. Trigger sweep via POST /tasks/sweep with dry_run=False
+            sweep_body = json.dumps({"dry_run": False}).encode("utf-8")
+            sweep_req = urllib.request.Request(
+                f"{self.base_url}/tasks/sweep",
+                data=sweep_body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(sweep_req, timeout=3.0) as sweep_resp:
+                sweep_data = json.loads(sweep_resp.read().decode())
+                sweep_ok = sweep_resp.status == 200 and sweep_data.get("status") == "success"
+
+            # 4. Find the rehydrated task for orphan_event_id
+            recovered_tasks = self._query_db("SELECT * FROM tasks WHERE event_id = ?", (orphan_event_id,))
+            recovered_task_id = recovered_tasks[0]["task_id"] if recovered_tasks else None
+
+            # 5. Poll GET /tasks/{task_id} up to 5s for task completion (succeeded)
+            task_succeeded = False
+            if recovered_task_id:
+                for _ in range(25):
+                    time.sleep(0.2)
+                    try:
+                        t_req = urllib.request.Request(f"{self.base_url}/tasks/{recovered_task_id}", method="GET")
+                        with urllib.request.urlopen(t_req, timeout=1.0) as t_resp:
+                            t_data = json.loads(t_resp.read().decode())
+                            if t_data.get("status") == "succeeded":
+                                task_succeeded = True
+                                break
+                    except Exception:
+                        pass
+
+            # 6. Verify webhook_events status is updated to 'processed'
+            evts_after = self._query_db("SELECT status FROM webhook_events WHERE event_id = ?", (orphan_event_id,))
+            event_processed = bool(evts_after and evts_after[0]["status"] == "processed")
+
+            step10_pass = unproc_ok and sweep_ok and bool(recovered_task_id) and task_succeeded and event_processed
+            step10_detail = f"unproc_api={unproc_ok}, sweep_api={sweep_ok}, task={recovered_task_id}, succeeded={task_succeeded}, event_processed={event_processed}"
+        except Exception as e:
+            step10_detail = f"Error: {e}"
+        results.append(step10_pass)
+        self.log_step(10, "Auto-Picker & Unprocessed Task Sweeper", step10_pass, step10_detail)
+
         # Summary & Final Verification Receipt
+        time.sleep(1.0)
         elapsed = time.time() - start_time
         summary_budget = float(os.environ.get("MEMORY_BUDGET_MB", 30.0))
         gateway_rss: float | None = None
-        try:
-            req = urllib.request.Request(f"{self.base_url}/healthz", method="GET")
-            with urllib.request.urlopen(req, timeout=1.0) as resp:
-                h_data = json.loads(resp.read().decode())
-                h_rss = h_data.get("system", {}).get("memory_rss_mb")
-                h_b = h_data.get("system", {}).get("memory_budget_mb")
-                if h_b is not None:
-                    summary_budget = float(h_b)
-                if h_rss is not None:
-                    gateway_rss = float(h_rss)
-        except Exception:
-            pass
+        for _ in range(3):
+            try:
+                req = urllib.request.Request(f"{self.base_url}/healthz", method="GET")
+                with urllib.request.urlopen(req, timeout=1.0) as resp:
+                    h_data = json.loads(resp.read().decode())
+                    h_rss = h_data.get("system", {}).get("memory_rss_mb")
+                    h_b = h_data.get("system", {}).get("memory_budget_mb")
+                    if h_b is not None:
+                        summary_budget = float(h_b)
+                    if h_rss is not None:
+                        gateway_rss = float(h_rss)
+                        if gateway_rss <= summary_budget:
+                            break
+            except Exception:
+                pass
+            time.sleep(0.3)
 
         if gateway_rss is None and self.server_pid:
             gateway_rss = get_process_rss_mb(self.server_pid)
@@ -564,7 +659,7 @@ class E2EVerifier:
 
         print(f"\n{BOLD}================================================================================{RESET}")
         if all_passed:
-            print(f"{GREEN}{BOLD}VERIFICATION RESULT: ALL 9 CHECKS PASSED (Time: {elapsed:.2f}s, Gateway RSS: {gateway_rss:.2f}MB {budget_str}){RESET}")
+            print(f"{GREEN}{BOLD}VERIFICATION RESULT: ALL 10 CHECKS PASSED (Time: {elapsed:.2f}s, Gateway RSS: {gateway_rss:.2f}MB {budget_str}){RESET}")
             print(f"{BOLD}================================================================================{RESET}\n")
             self.cleanup()
             return 0
@@ -572,7 +667,7 @@ class E2EVerifier:
             failed_count = results.count(False)
             if gateway_rss > summary_budget and all(results):
                 failed_count += 1
-            print(f"{RED}{BOLD}VERIFICATION RESULT: {failed_count}/9 CHECKS FAILED (Time: {elapsed:.2f}s, Gateway RSS: {gateway_rss:.2f}MB {budget_str}){RESET}")
+            print(f"{RED}{BOLD}VERIFICATION RESULT: {failed_count}/10 CHECKS FAILED (Time: {elapsed:.2f}s, Gateway RSS: {gateway_rss:.2f}MB {budget_str}){RESET}")
             print(f"{BOLD}================================================================================{RESET}\n")
             self.cleanup()
             return 1

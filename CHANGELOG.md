@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-09-10
+
+### Added
+- Auto-Picker & Unprocessed Task Sweeper subsystem (`hub.db`, `hub.dispatcher`, `hub.routes.tasks`):
+  - Solves the Mac sleep and battery-loss problem: automatically discovers and recovers unhandled, interrupted, or orphaned tasks and webhook events after prolonged laptop sleep (e.g. 3h+), power loss, or unexpected process restarts.
+  - Periodic background sweeper loop (`sweeper_interval_seconds: 60`, `stale_task_timeout_seconds: 300`) with monotonic clock jump detection (`time.monotonic()` leap > 60s) triggering instant wake-up sweeps upon resuming from sleep.
+  - Orphaned webhook event rehydration (`DatabaseManager.get_orphaned_webhook_events`, `DatabaseManager.rehydrate_orphaned_event`): promotes orphaned `webhook_events` (status `received` with no task) into `queued` tasks.
+  - Interrupted running task recovery (`DatabaseManager.sweep_and_requeue_unprocessed`): resets stale `running` tasks to `queued` (or `timed_out` if `max_retries` exhausted) and re-enqueues into in-memory dispatcher queue.
+  - HTTP endpoints for agent orchestration:
+    - `GET /tasks/unprocessed`: Queries unprocessed/stale tasks and orphaned events with breakdown counts.
+    - `POST /tasks/sweep`: Atomically sweeps and enqueues unhandled tasks, supporting `dry_run` mode and retry customization.
+  - Unified CLI commands:
+    - `./bin/webhook-hub sweep` (with `--dry-run`, `--json`, `--stale-seconds`, `--max-retries`, `--no-auto-retry`).
+    - `./bin/webhook-hub pick-unprocessed` (alias).
+  - 10-Step Standalone E2E Verification Runner (`scripts/verify_e2e.py`):
+    - Added Step 10: Auto-Picker & Unprocessed Task Sweeper integration check, injecting orphaned events, triggering sweep, and asserting live execution to `succeeded` and event transition to `processed`.
+    - 10/10 standalone checks passing in <7s with gateway RSS 29.72MB <= 30MB.
+    - 184/184 full test suite passing cleanly.
+
 ## [1.2.0] - 2026-09-09
 
 ### Added
