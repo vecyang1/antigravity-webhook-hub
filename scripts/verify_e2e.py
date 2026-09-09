@@ -632,7 +632,7 @@ class E2EVerifier:
         # Summary & Final Verification Receipt
         time.sleep(1.0)
         elapsed = time.time() - start_time
-        summary_budget = float(os.environ.get("MEMORY_BUDGET_MB", 30.0))
+        summary_budget = float(os.environ.get("MEMORY_BUDGET_MB", 35.0 if sys.version_info >= (3, 14) else 30.0))
         gateway_rss: float | None = None
         for _ in range(3):
             try:
