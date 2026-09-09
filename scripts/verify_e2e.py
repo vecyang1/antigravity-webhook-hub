@@ -540,6 +540,7 @@ class E2EVerifier:
         # Summary & Final Verification Receipt
         elapsed = time.time() - start_time
         summary_budget = float(os.environ.get("MEMORY_BUDGET_MB", 30.0))
+        gateway_rss: float | None = None
         try:
             req = urllib.request.Request(f"{self.base_url}/healthz", method="GET")
             with urllib.request.urlopen(req, timeout=1.0) as resp:
@@ -548,7 +549,7 @@ class E2EVerifier:
                 h_b = h_data.get("system", {}).get("memory_budget_mb")
                 if h_b is not None:
                     summary_budget = float(h_b)
-                if h_rss is not None and float(h_rss) <= summary_budget:
+                if h_rss is not None:
                     gateway_rss = float(h_rss)
         except Exception:
             pass
