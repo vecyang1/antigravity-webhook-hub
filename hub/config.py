@@ -22,6 +22,7 @@ class ServerConfig:
     max_body_bytes: int = 1048576  # 1MB
     log_level: str = "INFO"
     keep_alive_timeout: int = 65
+    memory_budget_mb: float = 30.0
 
 
 @dataclass(slots=True)
@@ -246,6 +247,11 @@ def load_config(
             cfg.server.log_level = str(s["log_level"]).upper()
         if "keep_alive_timeout" in s:
             cfg.server.keep_alive_timeout = _to_int(s["keep_alive_timeout"], cfg.server.keep_alive_timeout)
+        if "memory_budget_mb" in s:
+            try:
+                cfg.server.memory_budget_mb = float(s["memory_budget_mb"])
+            except (ValueError, TypeError):
+                pass
 
     if "security" in yaml_data and isinstance(yaml_data["security"], dict):
         sec = yaml_data["security"]
@@ -338,6 +344,11 @@ def load_config(
         cfg.server.log_level = combined_env["LOG_LEVEL"].upper()
     if "KEEP_ALIVE_TIMEOUT" in combined_env:
         cfg.server.keep_alive_timeout = _to_int(combined_env["KEEP_ALIVE_TIMEOUT"], cfg.server.keep_alive_timeout)
+    if "MEMORY_BUDGET_MB" in combined_env:
+        try:
+            cfg.server.memory_budget_mb = float(combined_env["MEMORY_BUDGET_MB"])
+        except (ValueError, TypeError):
+            pass
 
     # Security
     if "AUTH_MODE" in combined_env:

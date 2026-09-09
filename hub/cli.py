@@ -79,6 +79,7 @@ import os
 import signal
 
 from hub.config import AppConfig, ServerConfig, load_config
+from hub.memory import apply_memory_pressure_relief
 
 logger = logging.getLogger("hub.cli")
 
@@ -195,14 +196,8 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
         return 1
 
     # Reclaim setup allocation memory
-    if hasattr(sys, "_clear_internal_caches"):
-        try:
-            sys._clear_internal_caches()
-        except Exception:
-            pass
-    gc.collect()
+    apply_memory_pressure_relief()
     db_mgr.shrink_memory(truncate_wal=False)
-    server._pressure_relief()
 
     print(f"Antigravity Webhook Hub running at http://{config.server.host}:{config.server.port} (PID: {pid})")
 

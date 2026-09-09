@@ -24,11 +24,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-logger = logging.getLogger("hub.dispatcher")
+from hub.memory import apply_memory_pressure_relief
 
-_darwin_libc = None
-_darwin_pressure_relief_fn = None
-_darwin_malloc_default_zone_fn = None
+logger = logging.getLogger("hub.dispatcher")
 
 
 @dataclass(slots=True)
@@ -155,60 +153,7 @@ class TaskDispatcher:
 
     def _apply_pressure_relief(self) -> None:
         """Trigger macOS malloc zone pressure relief to keep process RSS strictly < 30MB."""
-        global _darwin_libc, _darwin_pressure_relief_fn, _darwin_malloc_default_zone_fn
-        if "linecache" in sys.modules:
-            try:
-                sys.modules["linecache"].clearcache()
-            except Exception:
-                pass
-        if "re" in sys.modules:
-            try:
-                sys.modules["re"].purge()
-            except Exception:
-                pass
-        if hasattr(sys, "_clear_internal_caches"):
-            try:
-                sys._clear_internal_caches()
-            except Exception:
-                pass
-        elif hasattr(sys, "_clear_type_cache"):
-            try:
-                sys._clear_type_cache()
-            except Exception:
-                pass
-        gc.collect(2)
-
-        if sys.platform == "darwin":
-            try:
-                if "_darwin_pressure_relief_fn" not in globals() or _darwin_pressure_relief_fn is None:
-                    import ctypes
-                    _darwin_libc = ctypes.CDLL(None)
-                    _darwin_pressure_relief_fn = _darwin_libc.malloc_zone_pressure_relief
-                    _darwin_pressure_relief_fn.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-                    _darwin_pressure_relief_fn.restype = ctypes.c_size_t
-                    if hasattr(_darwin_libc, "malloc_default_zone"):
-                        _darwin_libc.malloc_default_zone.restype = ctypes.c_void_p
-                        _darwin_malloc_default_zone_fn = _darwin_libc.malloc_default_zone
-                    else:
-                        _darwin_malloc_default_zone_fn = None
-                    try:
-                        globals()["_darwin_num_zones"] = ctypes.c_uint.in_dll(_darwin_libc, "malloc_num_zones")
-                        globals()["_darwin_zones"] = ctypes.POINTER(ctypes.c_void_p).in_dll(_darwin_libc, "malloc_zones")
-                    except Exception:
-                        globals()["_darwin_num_zones"] = None
-                        globals()["_darwin_zones"] = None
-                if _darwin_malloc_default_zone_fn is not None:
-                    z = _darwin_malloc_default_zone_fn()
-                    if z:
-                        _darwin_pressure_relief_fn(z, 0)
-                nz = globals().get("_darwin_num_zones")
-                zs = globals().get("_darwin_zones")
-                if nz is not None and zs is not None:
-                    for i in range(nz.value):
-                        if zs[i]:
-                            _darwin_pressure_relief_fn(zs[i], 0)
-            except Exception:
-                pass
+        apply_memory_pressure_relief()
 
     async def _worker_loop(self) -> None:
         """Continuous consumer loop dequeuing tasks from queue."""

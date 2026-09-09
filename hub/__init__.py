@@ -3,9 +3,12 @@ Antigravity Webhook Hub
 A lightweight, zero-footprint local webhook gateway and event dispatcher for Antigravity on macOS.
 """
 
+from __future__ import annotations
+
 import sys
 import time
 import types
+from typing import Any
 
 # Configure thread stack size for bounded memory on macOS Darwin
 try:
@@ -89,6 +92,11 @@ __all__ = [
     "generate_hmac_signature",
     "compute_payload_hash",
     "compute_dedup_hash",
+    # Memory
+    "apply_memory_pressure_relief",
+    "get_memory_rss_bytes",
+    "get_memory_rss_mb",
+    "get_memory_budget_mb",
 ]
 
 _LAZY_MODULES: dict[str, tuple[str, str]] = {
@@ -119,6 +127,11 @@ _LAZY_MODULES: dict[str, tuple[str, str]] = {
     "generate_hmac_signature": ("hub.security", "generate_hmac_signature"),
     "compute_payload_hash": ("hub.security", "compute_payload_hash"),
     "compute_dedup_hash": ("hub.security", "compute_dedup_hash"),
+    # Memory
+    "apply_memory_pressure_relief": ("hub.memory", "apply_memory_pressure_relief"),
+    "get_memory_rss_bytes": ("hub.memory", "get_memory_rss_bytes"),
+    "get_memory_rss_mb": ("hub.memory", "get_memory_rss_mb"),
+    "get_memory_budget_mb": ("hub.memory", "get_memory_budget_mb"),
 }
 
 
@@ -135,4 +148,4 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return __all__
+    return sorted(set(__all__) | set(globals().keys()))

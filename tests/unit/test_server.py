@@ -121,3 +121,63 @@ async def test_server_lifecycle_and_routes(server_port):
 
     finally:
         await server.stop()
+
+
+@pytest.mark.anyio
+async def test_server_kwonly_and_varkw_handlers(server_port):
+    port = server_port + 1
+    cfg = ServerConfig(host="127.0.0.1", port=port)
+    server = AsyncHTTPServer(cfg)
+
+    # 1. Handler with keyword-only arguments
+    @server.get("/items/{item_id}")
+    def kwonly_handler(req, *, item_id: str):
+        return {"item_id": item_id}
+
+    # 2. Handler with **kwargs
+    @server.get("/custom/{foo}/{bar}")
+    def varkw_handler(req, **kwargs):
+        return {"captured": kwargs}
+
+    # 3. Callable class instance handler
+    class CallableAsyncHandler:
+        async def __call__(self, request):
+            return {"callable": "worked"}
+
+    server.add_route("GET", "/callable", CallableAsyncHandler())
+
+    await server.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+
+        # Test kwonly
+        writer.write(b"GET /items/item_42 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        await writer.drain()
+        headers = await reader.readuntil(b"\r\n\r\n")
+        assert b"200 OK" in headers
+        body_len = int([l for l in headers.decode().split("\r\n") if l.lower().startswith("content-length:")][0].split(":")[1].strip())
+        body = json.loads((await reader.readexactly(body_len)).decode())
+        assert body["item_id"] == "item_42"
+
+        # Test varkw
+        writer.write(b"GET /custom/hello/world HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        await writer.drain()
+        headers = await reader.readuntil(b"\r\n\r\n")
+        assert b"200 OK" in headers
+        body_len = int([l for l in headers.decode().split("\r\n") if l.lower().startswith("content-length:")][0].split(":")[1].strip())
+        body = json.loads((await reader.readexactly(body_len)).decode())
+        assert body["captured"] == {"foo": "hello", "bar": "world"}
+
+        # Test callable object
+        writer.write(b"GET /callable HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        await writer.drain()
+        headers = await reader.readuntil(b"\r\n\r\n")
+        assert b"200 OK" in headers
+        body_len = int([l for l in headers.decode().split("\r\n") if l.lower().startswith("content-length:")][0].split(":")[1].strip())
+        body = json.loads((await reader.readexactly(body_len)).decode())
+        assert body["callable"] == "worked"
+
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        await server.stop()

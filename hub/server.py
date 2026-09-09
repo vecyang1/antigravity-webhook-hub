@@ -9,17 +9,18 @@ keep-alive connections, and streaming SSE responses.
 from __future__ import annotations
 
 import asyncio
-import ctypes
 import gc
 import json
 import logging
 import re
 import sys
 import time
+import types
 import urllib.parse
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from hub.config import ServerConfig
+from hub.memory import apply_memory_pressure_relief
 from hub.models import HTTPRequest, HTTPResponse
 
 _HTTP_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -70,61 +71,70 @@ def _is_coroutine_callable(fn: Any) -> bool:
     target = fn
     if hasattr(target, "__func__"):
         target = target.__func__
+    elif hasattr(target, "__call__") and not isinstance(target, (type, types.FunctionType, types.MethodType)):
+        target = getattr(target.__call__, "__func__", target.__call__)
     code = getattr(target, "__code__", None)
     if code is not None:
-        return bool(code.co_flags & 0x80)
+        return bool(code.co_flags & (0x80 | 0x100))
     try:
         import inspect
-        return inspect.iscoroutinefunction(fn)
+        return inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(getattr(fn, "__call__", None))
     except Exception:
         return False
 
 
-def _extract_handler_params(handler: RouteHandler) -> tuple[tuple[str, ...], Optional[str]]:
+def _extract_handler_params(handler: RouteHandler) -> tuple[tuple[str, ...], Optional[str], bool]:
     target = handler
     skip = 0
     if hasattr(target, "__self__") and hasattr(target, "__func__"):
         target = target.__func__
         skip = 1
+    elif hasattr(target, "__call__") and not isinstance(target, (type, types.FunctionType, types.MethodType)):
+        call_fn = getattr(target.__call__, "__func__", target.__call__)
+        target = call_fn
+        skip = 1 if hasattr(target, "__self__") else 0
     code = getattr(target, "__code__", None)
     if code is not None:
-        names = code.co_varnames[skip : code.co_argcount]
+        total_named_args = code.co_argcount + getattr(code, "co_kwonlyargcount", 0)
+        names = code.co_varnames[skip:total_named_args]
+        has_var_keyword = bool(code.co_flags & 0x08)
         req_name = None
         for n in names:
             if n in ("request", "req"):
                 req_name = n
                 break
-        return tuple(names), req_name
+        return tuple(names), req_name, has_var_keyword
     try:
         import inspect
         sig = inspect.signature(handler)
         names = tuple(sig.parameters.keys())
+        has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
         req_name = None
         for p_name, p_param in sig.parameters.items():
             if p_name in ("request", "req") or p_param.annotation == HTTPRequest:
                 req_name = p_name
                 break
-        return names, req_name
+        return names, req_name, has_var_keyword
     except Exception:
-        return (), None
+        return (), None, False
 
 
 class _HandlerInvoker:
     """Pre-analyzed dispatch invoker for a route handler to avoid runtime inspect overhead."""
 
-    __slots__ = ("param_names", "req_param", "num_params", "is_async")
+    __slots__ = ("param_names", "req_param", "has_var_keyword", "num_params", "is_async")
 
     def __init__(self, handler: RouteHandler):
-        self.param_names, self.req_param = _extract_handler_params(handler)
+        self.param_names, self.req_param, self.has_var_keyword = _extract_handler_params(handler)
         self.num_params = len(self.param_names)
         self.is_async = _is_coroutine_callable(handler)
 
     def invoke(
         self, handler: RouteHandler, request: HTTPRequest, path_kwargs: dict[str, str]
     ) -> Any:
-        if self.num_params == 0:
+        if self.num_params == 0 and not self.has_var_keyword:
             return handler()
-        if not path_kwargs and self.num_params == 1:
+        if not path_kwargs and self.num_params == 1 and not self.has_var_keyword:
             return handler(request)
 
         call_args: dict[str, Any] = {}
@@ -141,21 +151,31 @@ class _HandlerInvoker:
                     call_args[p_name] = request
                     break
 
-        if not call_args and self.num_params == 0:
+        if self.has_var_keyword:
+            for k, v in path_kwargs.items():
+                call_args.setdefault(k, v)
+
+        if not call_args and self.num_params == 0 and not self.has_var_keyword:
             return handler()
-        if not call_args and self.num_params == 1:
+        if not call_args and self.num_params == 1 and not self.has_var_keyword:
             return handler(request)
         return handler(**call_args)
 
 
-_INVOKER_CACHE: dict[RouteHandler, _HandlerInvoker] = {}
-
-
 def _get_invoker(handler: RouteHandler) -> _HandlerInvoker:
-    invoker = _INVOKER_CACHE.get(handler)
-    if invoker is None:
-        invoker = _HandlerInvoker(handler)
-        _INVOKER_CACHE[handler] = invoker
+    """Retrieve or attach cached invoker directly on handler to prevent unbounded global map leaks."""
+    try:
+        invoker = getattr(handler, "__hub_invoker__", None)
+        if invoker is not None:
+            return invoker
+    except Exception:
+        pass
+    invoker = _HandlerInvoker(handler)
+    try:
+        if hasattr(handler, "__dict__"):
+            handler.__hub_invoker__ = invoker
+    except Exception:
+        pass
     return invoker
 
 
@@ -691,64 +711,7 @@ class AsyncHTTPServer:
 
     def _pressure_relief(self) -> None:
         """Periodic background memory relief maintaining <30MB budget on macOS."""
-        global _darwin_libc, _darwin_pressure_relief_fn, _darwin_malloc_default_zone_fn
-        if "linecache" in sys.modules:
-            try:
-                sys.modules["linecache"].clearcache()
-            except Exception:
-                pass
-        if "re" in sys.modules:
-            try:
-                sys.modules["re"].purge()
-            except Exception:
-                pass
-        if hasattr(sys, "_clear_internal_caches"):
-            try:
-                sys._clear_internal_caches()
-            except Exception:
-                pass
-        elif hasattr(sys, "_clear_type_cache"):
-            try:
-                sys._clear_type_cache()
-            except Exception:
-                pass
-        gc.collect(2)
-
-        if sys.platform == "darwin":
-            try:
-                if "_darwin_pressure_relief_fn" not in globals() or _darwin_pressure_relief_fn is None:
-                    _darwin_libc = ctypes.CDLL(None)
-                    _darwin_pressure_relief_fn = _darwin_libc.malloc_zone_pressure_relief
-                    _darwin_pressure_relief_fn.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-                    _darwin_pressure_relief_fn.restype = ctypes.c_size_t
-                    if hasattr(_darwin_libc, "malloc_default_zone"):
-                        _darwin_libc.malloc_default_zone.restype = ctypes.c_void_p
-                        _darwin_malloc_default_zone_fn = _darwin_libc.malloc_default_zone
-                    else:
-                        _darwin_malloc_default_zone_fn = None
-                    try:
-                        globals()["_darwin_num_zones"] = ctypes.c_uint.in_dll(_darwin_libc, "malloc_num_zones")
-                        globals()["_darwin_zones"] = ctypes.POINTER(ctypes.c_void_p).in_dll(_darwin_libc, "malloc_zones")
-                    except Exception:
-                        globals()["_darwin_num_zones"] = None
-                        globals()["_darwin_zones"] = None
-                if _darwin_malloc_default_zone_fn is not None:
-                    z = _darwin_malloc_default_zone_fn()
-                    if z:
-                        _darwin_pressure_relief_fn(z, 0)
-                nz = globals().get("_darwin_num_zones")
-                zs = globals().get("_darwin_zones")
-                if nz is not None and zs is not None:
-                    for i in range(nz.value):
-                        if zs[i]:
-                            _darwin_pressure_relief_fn(zs[i], 0)
-            except Exception:
-                pass
-        elif hasattr(ctypes.CDLL(None), "malloc_trim"):
-            try:
-                ctypes.CDLL(None).malloc_trim(0)
-            except Exception:
-                pass
+        apply_memory_pressure_relief()
 
 
     async def _idle_memory_monitor(self) -> None:

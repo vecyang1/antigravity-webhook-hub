@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.4] - 2026-09-10
+
+### Fixed
+- **Centralized Memory Management & Tooling Unification (`hub/memory.py`)**:
+  - Eliminated duplicated and fragmented ctypes memory logic across `hub/routes/observability.py`, `hub/server.py`, `hub/dispatcher.py`, and `hub/cli.py`. Consolidated Darwin Mach kernel task inspection (`TASK_VM_INFO`, `MACH_TASK_BASIC_INFO`), runtime cache clearing, multi-zone malloc pressure relief, and memory budget resolution into a single unified module `hub/memory.py`.
+  - Exported memory utilities (`apply_memory_pressure_relief`, `get_memory_rss_bytes`, `get_memory_rss_mb`, `get_memory_budget_mb`) in `hub/__init__.py` via PEP 562 lazy loading.
+- **Python 3.14 PEP 649 Deferred Annotation Compatibility**:
+  - Fixed `NameError: name 'Any' is not defined` when introspecting annotations on `hub.__getattr__` by adding `from __future__ import annotations` and importing `typing.Any` in `hub/__init__.py`.
+- **HTTP Server Handler Dispatch Robustness & Memory Leak Prevention**:
+  - Fixed `_extract_handler_params` and `_HandlerInvoker` dropping keyword-only arguments (`co_kwonlyargcount`) and failing on variable keyword arguments (`CO_VARKEYWORDS`), preventing runtime dispatch crashes (`TypeError`).
+  - Fixed `_is_coroutine_callable` to properly detect callable class instances (`async def __call__`).
+  - Replaced global `_INVOKER_CACHE` dictionary with per-handler attributes (`__hub_invoker__`) to prevent memory leaks from bound methods and dynamic handlers.
+  - Made memory budget configurable via `ServerConfig.memory_budget_mb`, YAML, and `MEMORY_BUDGET_MB` environment variable.
+- **Test Coverage**:
+  - Added unit test suite `tests/unit/test_memory.py` verifying memory pressure relief, budget resolution, and PEP 562 exports.
+  - Added tests in `tests/unit/test_server.py` for keyword-only parameters, `**kwargs`, and callable class handlers.
+  - Full suite now passes 197/197 tests (0 failures), and standalone E2E verifier passes 10/10 steps cleanly with gateway RSS ~18.5MB.
+
 ## [1.3.3] - 2026-09-10
 
 ### Fixed
