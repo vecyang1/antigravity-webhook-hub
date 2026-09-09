@@ -11,18 +11,25 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import gc
-import inspect
 import json
 import logging
 import re
 import sys
 import time
 import urllib.parse
-from email.utils import formatdate
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from hub.config import ServerConfig
 from hub.models import HTTPRequest, HTTPResponse
+
+_HTTP_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_HTTP_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _format_http_date(timestamp: Optional[float] = None) -> str:
+    """Format RFC 1123 / RFC 2822 HTTP date without importing email package."""
+    t = time.gmtime(timestamp if timestamp is not None else time.time())
+    return f"{_HTTP_DAYS[t.tm_wday]}, {t.tm_mday:02d} {_HTTP_MONTHS[t.tm_mon - 1]} {t.tm_year:04d} {t.tm_hour:02d}:{t.tm_min:02d}:{t.tm_sec:02d} GMT"
 
 logger = logging.getLogger("hub.server")
 
@@ -57,6 +64,99 @@ class RoutePattern:
         if not m:
             return None
         return m.groupdict()
+
+
+def _is_coroutine_callable(fn: Any) -> bool:
+    target = fn
+    if hasattr(target, "__func__"):
+        target = target.__func__
+    code = getattr(target, "__code__", None)
+    if code is not None:
+        return bool(code.co_flags & 0x80)
+    try:
+        import inspect
+        return inspect.iscoroutinefunction(fn)
+    except Exception:
+        return False
+
+
+def _extract_handler_params(handler: RouteHandler) -> tuple[tuple[str, ...], Optional[str]]:
+    target = handler
+    skip = 0
+    if hasattr(target, "__self__") and hasattr(target, "__func__"):
+        target = target.__func__
+        skip = 1
+    code = getattr(target, "__code__", None)
+    if code is not None:
+        names = code.co_varnames[skip : code.co_argcount]
+        req_name = None
+        for n in names:
+            if n in ("request", "req"):
+                req_name = n
+                break
+        return tuple(names), req_name
+    try:
+        import inspect
+        sig = inspect.signature(handler)
+        names = tuple(sig.parameters.keys())
+        req_name = None
+        for p_name, p_param in sig.parameters.items():
+            if p_name in ("request", "req") or p_param.annotation == HTTPRequest:
+                req_name = p_name
+                break
+        return names, req_name
+    except Exception:
+        return (), None
+
+
+class _HandlerInvoker:
+    """Pre-analyzed dispatch invoker for a route handler to avoid runtime inspect overhead."""
+
+    __slots__ = ("param_names", "req_param", "num_params", "is_async")
+
+    def __init__(self, handler: RouteHandler):
+        self.param_names, self.req_param = _extract_handler_params(handler)
+        self.num_params = len(self.param_names)
+        self.is_async = _is_coroutine_callable(handler)
+
+    def invoke(
+        self, handler: RouteHandler, request: HTTPRequest, path_kwargs: dict[str, str]
+    ) -> Any:
+        if self.num_params == 0:
+            return handler()
+        if not path_kwargs and self.num_params == 1:
+            return handler(request)
+
+        call_args: dict[str, Any] = {}
+        for p_name in self.param_names:
+            if p_name in path_kwargs:
+                call_args[p_name] = path_kwargs[p_name]
+            elif p_name == self.req_param:
+                call_args[p_name] = request
+
+        # If request is not yet bound and there is an unbound parameter, bind it
+        if request not in call_args.values():
+            for p_name in self.param_names:
+                if p_name not in call_args:
+                    call_args[p_name] = request
+                    break
+
+        if not call_args and self.num_params == 0:
+            return handler()
+        if not call_args and self.num_params == 1:
+            return handler(request)
+        return handler(**call_args)
+
+
+_INVOKER_CACHE: dict[RouteHandler, _HandlerInvoker] = {}
+
+
+def _get_invoker(handler: RouteHandler) -> _HandlerInvoker:
+    invoker = _INVOKER_CACHE.get(handler)
+    if invoker is None:
+        invoker = _HandlerInvoker(handler)
+        _INVOKER_CACHE[handler] = invoker
+    return invoker
 
 
 class AsyncHTTPServer:
@@ -108,6 +208,7 @@ class AsyncHTTPServer:
             self._pattern_routes.append(RoutePattern(method, path, handler))
         else:
             self._exact_routes[(method, path)] = handler
+        _get_invoker(handler)
 
     def add_middleware(self, middleware: MiddlewareFunc) -> None:
         """Register a middleware function executed before route handlers."""
@@ -385,30 +486,10 @@ class AsyncHTTPServer:
                     else:
                         # 6. Execute Handler
                         try:
-                            # Inspect handler parameters to pass kwargs or request
-                            sig = inspect.signature(handler)
-                            call_args = {}
-                            for p_name, p_param in sig.parameters.items():
-                                if p_name in path_kwargs:
-                                    call_args[p_name] = path_kwargs[p_name]
-                                elif p_name in ("request", "req") or p_param.annotation == HTTPRequest:
-                                    call_args[p_name] = request
+                            invoker = _get_invoker(handler)
+                            result = invoker.invoke(handler, request, path_kwargs)
 
-                            # If request is not yet bound and there is an unbound parameter, bind it
-                            if request not in call_args.values():
-                                for p_name in sig.parameters:
-                                    if p_name not in call_args:
-                                        call_args[p_name] = request
-                                        break
-
-                            if not call_args and len(sig.parameters) == 0:
-                                result = handler()
-                            elif not call_args and len(sig.parameters) == 1:
-                                result = handler(request)
-                            else:
-                                result = handler(**call_args)
-
-                            if inspect.isawaitable(result):
+                            if invoker.is_async or hasattr(type(result), "__await__"):
                                 result = await result
 
                             # Normalize result to HTTPResponse
@@ -436,16 +517,17 @@ class AsyncHTTPServer:
                 should_keep_alive = client_wants_keep_alive and (response.status_code < 500)
                 await self._write_response(writer, response, should_keep_alive)
 
-                # Reclaim memory periodically or after substantial payloads (>50KB)
-                if (self._total_requests % 5 == 0) or (len(body) > 50_000):
-                    del body
-                    del request
-                    gc.collect()
+                is_stream_resp = response.is_stream
+                del body
+                del request
+                del response
+                if should_keep_alive and (self._total_requests % 5 == 0):
+                    gc.collect(2)
                     self._pressure_relief()
                     if self._db is not None and hasattr(self._db, "shrink_memory"):
-                        self._db.shrink_memory()
+                        self._db.shrink_memory(truncate_wal=False)
 
-                if not should_keep_alive or response.is_stream:
+                if not should_keep_alive or is_stream_resp:
                     # For streaming or non-keepalive, close connection
                     break
 
@@ -458,6 +540,15 @@ class AsyncHTTPServer:
                 await writer.wait_closed()
             except Exception:
                 pass
+            del writer
+            del reader
+            gc.collect(2)
+            self._pressure_relief()
+            if self._db is not None and hasattr(self._db, "shrink_memory"):
+                try:
+                    self._db.shrink_memory(truncate_wal=False)
+                except Exception:
+                    pass
 
     async def _write_response(
         self,
@@ -488,7 +579,7 @@ class AsyncHTTPServer:
 
         # Standard headers
         headers = dict(response.headers)
-        headers["Date"] = formatdate(timeval=None, localtime=False, usegmt=True)
+        headers["Date"] = _format_http_date()
         headers["Server"] = "Antigravity-Webhook-Hub/1.0"
 
         if response.is_stream and response.stream_generator:
@@ -601,9 +692,31 @@ class AsyncHTTPServer:
     def _pressure_relief(self) -> None:
         """Periodic background memory relief maintaining <30MB budget on macOS."""
         global _darwin_libc, _darwin_pressure_relief_fn, _darwin_malloc_default_zone_fn
+        if "linecache" in sys.modules:
+            try:
+                sys.modules["linecache"].clearcache()
+            except Exception:
+                pass
+        if "re" in sys.modules:
+            try:
+                sys.modules["re"].purge()
+            except Exception:
+                pass
+        if hasattr(sys, "_clear_internal_caches"):
+            try:
+                sys._clear_internal_caches()
+            except Exception:
+                pass
+        elif hasattr(sys, "_clear_type_cache"):
+            try:
+                sys._clear_type_cache()
+            except Exception:
+                pass
+        gc.collect(2)
+
         if sys.platform == "darwin":
             try:
-                if "_darwin_libc" not in globals() or _darwin_libc is None:
+                if "_darwin_pressure_relief_fn" not in globals() or _darwin_pressure_relief_fn is None:
                     _darwin_libc = ctypes.CDLL(None)
                     _darwin_pressure_relief_fn = _darwin_libc.malloc_zone_pressure_relief
                     _darwin_pressure_relief_fn.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
@@ -613,18 +726,22 @@ class AsyncHTTPServer:
                         _darwin_malloc_default_zone_fn = _darwin_libc.malloc_default_zone
                     else:
                         _darwin_malloc_default_zone_fn = None
+                    try:
+                        globals()["_darwin_num_zones"] = ctypes.c_uint.in_dll(_darwin_libc, "malloc_num_zones")
+                        globals()["_darwin_zones"] = ctypes.POINTER(ctypes.c_void_p).in_dll(_darwin_libc, "malloc_zones")
+                    except Exception:
+                        globals()["_darwin_num_zones"] = None
+                        globals()["_darwin_zones"] = None
                 if _darwin_malloc_default_zone_fn is not None:
                     z = _darwin_malloc_default_zone_fn()
                     if z:
                         _darwin_pressure_relief_fn(z, 0)
-                try:
-                    num_zones = ctypes.c_uint.in_dll(_darwin_libc, "malloc_num_zones").value
-                    zones = ctypes.POINTER(ctypes.c_void_p).in_dll(_darwin_libc, "malloc_zones")
-                    for i in range(num_zones):
-                        if zones[i]:
-                            _darwin_pressure_relief_fn(zones[i], 0)
-                except Exception:
-                    pass
+                nz = globals().get("_darwin_num_zones")
+                zs = globals().get("_darwin_zones")
+                if nz is not None and zs is not None:
+                    for i in range(nz.value):
+                        if zs[i]:
+                            _darwin_pressure_relief_fn(zs[i], 0)
             except Exception:
                 pass
         elif hasattr(ctypes.CDLL(None), "malloc_trim"):
@@ -636,17 +753,17 @@ class AsyncHTTPServer:
 
     async def _idle_memory_monitor(self) -> None:
         """Periodic background memory relief maintaining <30MB budget on macOS."""
-        gc.collect()
+        gc.collect(2)
         self._pressure_relief()
         if self._db is not None and hasattr(self._db, "shrink_memory"):
-            self._db.shrink_memory()
+            self._db.shrink_memory(truncate_wal=False)
         while self._is_running:
             try:
-                await asyncio.sleep(0.5)
-                gc.collect()
+                await asyncio.sleep(1.0)
+                gc.collect(2)
                 self._pressure_relief()
                 if self._db is not None and hasattr(self._db, "shrink_memory"):
-                    self._db.shrink_memory()
+                    self._db.shrink_memory(truncate_wal=False)
             except asyncio.CancelledError:
                 break
             except Exception:

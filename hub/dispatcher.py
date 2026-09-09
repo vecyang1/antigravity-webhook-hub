@@ -156,9 +156,31 @@ class TaskDispatcher:
     def _apply_pressure_relief(self) -> None:
         """Trigger macOS malloc zone pressure relief to keep process RSS strictly < 30MB."""
         global _darwin_libc, _darwin_pressure_relief_fn, _darwin_malloc_default_zone_fn
+        if "linecache" in sys.modules:
+            try:
+                sys.modules["linecache"].clearcache()
+            except Exception:
+                pass
+        if "re" in sys.modules:
+            try:
+                sys.modules["re"].purge()
+            except Exception:
+                pass
+        if hasattr(sys, "_clear_internal_caches"):
+            try:
+                sys._clear_internal_caches()
+            except Exception:
+                pass
+        elif hasattr(sys, "_clear_type_cache"):
+            try:
+                sys._clear_type_cache()
+            except Exception:
+                pass
+        gc.collect(2)
+
         if sys.platform == "darwin":
             try:
-                if "_darwin_libc" not in globals() or _darwin_libc is None:
+                if "_darwin_pressure_relief_fn" not in globals() or _darwin_pressure_relief_fn is None:
                     import ctypes
                     _darwin_libc = ctypes.CDLL(None)
                     _darwin_pressure_relief_fn = _darwin_libc.malloc_zone_pressure_relief
@@ -169,18 +191,22 @@ class TaskDispatcher:
                         _darwin_malloc_default_zone_fn = _darwin_libc.malloc_default_zone
                     else:
                         _darwin_malloc_default_zone_fn = None
+                    try:
+                        globals()["_darwin_num_zones"] = ctypes.c_uint.in_dll(_darwin_libc, "malloc_num_zones")
+                        globals()["_darwin_zones"] = ctypes.POINTER(ctypes.c_void_p).in_dll(_darwin_libc, "malloc_zones")
+                    except Exception:
+                        globals()["_darwin_num_zones"] = None
+                        globals()["_darwin_zones"] = None
                 if _darwin_malloc_default_zone_fn is not None:
                     z = _darwin_malloc_default_zone_fn()
                     if z:
                         _darwin_pressure_relief_fn(z, 0)
-                try:
-                    num_zones = ctypes.c_uint.in_dll(_darwin_libc, "malloc_num_zones").value
-                    zones = ctypes.POINTER(ctypes.c_void_p).in_dll(_darwin_libc, "malloc_zones")
-                    for i in range(num_zones):
-                        if zones[i]:
-                            _darwin_pressure_relief_fn(zones[i], 0)
-                except Exception:
-                    pass
+                nz = globals().get("_darwin_num_zones")
+                zs = globals().get("_darwin_zones")
+                if nz is not None and zs is not None:
+                    for i in range(nz.value):
+                        if zs[i]:
+                            _darwin_pressure_relief_fn(zs[i], 0)
             except Exception:
                 pass
 
@@ -299,7 +325,7 @@ class TaskDispatcher:
         self._apply_pressure_relief()
         if hasattr(self.db, "shrink_memory"):
             try:
-                self.db.shrink_memory()
+                self.db.shrink_memory(truncate_wal=False)
             except Exception:
                 pass
 
@@ -718,6 +744,23 @@ class TaskDispatcher:
                             pass
 
                     exit_code = proc.returncode
+                finally:
+                    if proc is not None:
+                        try:
+                            if proc.stdout and not proc.stdout.at_eof():
+                                proc.stdout.feed_eof()
+                        except Exception:
+                            pass
+                        try:
+                            if proc.stderr and not proc.stderr.at_eof():
+                                proc.stderr.feed_eof()
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(proc, "_transport") and proc._transport is not None:
+                                proc._transport.close()
+                        except Exception:
+                            pass
 
         except Exception as exc:
             final_status = "failed"
@@ -779,9 +822,16 @@ class TaskDispatcher:
         del stdout_lines
         del stderr_lines
         del task_data
+        if "proc" in locals() and proc is not None:
+            del proc
         gc.collect()
         self._apply_pressure_relief()
-        if hasattr(self.db, "_conn") and hasattr(self.db, "_lock"):
+        if hasattr(self.db, "shrink_memory"):
+            try:
+                self.db.shrink_memory(truncate_wal=False)
+            except Exception:
+                pass
+        elif hasattr(self.db, "_conn") and hasattr(self.db, "_lock"):
             try:
                 with self.db._lock:
                     self.db._conn.execute("PRAGMA shrink_memory;")

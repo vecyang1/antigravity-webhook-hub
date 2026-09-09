@@ -22,11 +22,6 @@ try:
 except Exception:
     pass
 
-import asyncio
-import gc
-import logging
-import os
-import signal
 import time
 import types
 from pathlib import Path
@@ -76,6 +71,12 @@ if "email.utils" not in sys.modules:
             return val
 
     sys.modules["email.utils"] = _LightweightEmailUtils()
+
+import asyncio
+import gc
+import logging
+import os
+import signal
 
 from hub.config import AppConfig, ServerConfig, load_config
 
@@ -200,24 +201,8 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
         except Exception:
             pass
     gc.collect()
-    db_mgr.shrink_memory()
-    if sys.platform == "darwin":
-        try:
-            import ctypes
-            libc = ctypes.CDLL(None)
-            libc.malloc_default_zone.restype = ctypes.c_void_p
-            libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-            libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
-            zone = libc.malloc_default_zone()
-            if zone:
-                libc.malloc_zone_pressure_relief(zone, 0)
-            num_zones = ctypes.c_uint.in_dll(libc, "malloc_num_zones").value
-            zones = ctypes.POINTER(ctypes.c_void_p).in_dll(libc, "malloc_zones")
-            for i in range(num_zones):
-                if zones[i]:
-                    libc.malloc_zone_pressure_relief(zones[i], 0)
-        except Exception:
-            pass
+    db_mgr.shrink_memory(truncate_wal=False)
+    server._pressure_relief()
 
     print(f"Antigravity Webhook Hub running at http://{config.server.host}:{config.server.port} (PID: {pid})")
 

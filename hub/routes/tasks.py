@@ -28,6 +28,8 @@ def register_task_routes(
     broker: Optional[Any] = None,
 ) -> None:
     """Register all task management routes: GET /tasks, GET /tasks/{task_id}, POST /tasks."""
+    if ("GET", "/tasks") in server._exact_routes:
+        return
 
     async def handle_tasks_list(req: HTTPRequest) -> HTTPResponse:
         """GET /tasks: List tasks with optional status filtering and pagination."""
@@ -123,7 +125,9 @@ def register_task_routes(
         task_data.setdefault("stdout", "")
         task_data.setdefault("stderr", "")
 
-        return HTTPResponse.json(task_data, status_code=200)
+        resp = HTTPResponse.json(task_data, status_code=200)
+        del task_data
+        return resp
 
     async def handle_create_task(req: HTTPRequest) -> HTTPResponse:
         """POST /tasks: Direct task submission and enqueueing."""

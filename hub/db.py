@@ -27,18 +27,21 @@ DEFAULT_SQLITE_CACHE_SIZE = -4000
 
 
 def _tuned_sqlite3_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+    cache_sz = kwargs.pop("cache_size", DEFAULT_SQLITE_CACHE_SIZE)
+    if "cached_statements" not in kwargs:
+        kwargs["cached_statements"] = 16
     conn = _original_sqlite3_connect(*args, **kwargs)
     try:
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA busy_timeout = 5000;")
         conn.execute("PRAGMA synchronous = NORMAL;")
         conn.execute("PRAGMA foreign_keys = ON;")
-        conn.execute(f"PRAGMA cache_size = {DEFAULT_SQLITE_CACHE_SIZE};")
+        conn.execute(f"PRAGMA cache_size = {cache_sz};")
         conn.execute("PRAGMA mmap_size = 0;")
         conn.execute("PRAGMA temp_store = FILE;")
         conn.execute("PRAGMA wal_autocheckpoint = 20;")
         try:
-            conn.execute("PRAGMA soft_heap_limit = 524288;")
+            conn.execute("PRAGMA soft_heap_limit = 131072;")
             conn.execute("PRAGMA shrink_memory;")
         except Exception:
             pass
@@ -67,6 +70,8 @@ class DatabaseManager:
             self.db_path,
             check_same_thread=False,
             timeout=5.0,
+            cached_statements=16,
+            cache_size=self._cache_size,
         )
         self._conn.row_factory = sqlite3.Row
         self._apply_pragmas(self._conn)
@@ -83,7 +88,7 @@ class DatabaseManager:
         conn.execute("PRAGMA temp_store = FILE;")
         conn.execute("PRAGMA wal_autocheckpoint = 20;")
         try:
-            conn.execute("PRAGMA soft_heap_limit = 524288;")
+            conn.execute("PRAGMA soft_heap_limit = 131072;")
             conn.execute("PRAGMA shrink_memory;")
         except Exception:
             pass
@@ -96,11 +101,18 @@ class DatabaseManager:
         except Exception:
             pass
 
-    def shrink_memory(self) -> None:
+    def shrink_memory(self, truncate_wal: bool = False) -> None:
         """Explicitly reclaim SQLite internal cache and buffer memory."""
         with self._lock:
             try:
-                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+                if truncate_wal:
+                    try:
+                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                    except Exception:
+                        try:
+                            self._conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+                        except Exception:
+                            pass
                 self._conn.execute("PRAGMA shrink_memory;")
             except Exception:
                 pass
@@ -844,6 +856,10 @@ class DatabaseManager:
                 }
             finally:
                 cur.close()
+                try:
+                    self._conn.execute("PRAGMA shrink_memory;")
+                except Exception:
+                    pass
 
     def sweep_and_requeue_unprocessed(
         self,
@@ -1132,6 +1148,10 @@ class DatabaseManager:
                 return [dict(row) for row in cur.fetchall()]
             finally:
                 cur.close()
+                try:
+                    self._conn.execute("PRAGMA shrink_memory;")
+                except Exception:
+                    pass
 
     async def execute_write(self, query: str, params: Any = ()) -> int:
         """Run write query serialized under lock."""

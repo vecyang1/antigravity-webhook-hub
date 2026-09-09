@@ -107,7 +107,7 @@ def register_sse_routes(
                 # 3. Stream loop with 15-second heartbeat
                 while True:
                     try:
-                        event_data = await asyncio.wait_for(queue.get(), timeout=15.0)
+                        event_data = await asyncio.wait_for(queue.get(), timeout=2.0)
                         evt_name = "event"
                         eid = None
                         if isinstance(event_data, dict):
@@ -187,7 +187,7 @@ def register_sse_routes(
                 # 5. Live streaming loop
                 while True:
                     try:
-                        event_data = await asyncio.wait_for(queue.get(), timeout=15.0)
+                        event_data = await asyncio.wait_for(queue.get(), timeout=2.0)
                         evt_name = "log"
                         eid = None
                         if isinstance(event_data, dict):

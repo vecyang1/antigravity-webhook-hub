@@ -59,36 +59,6 @@ if "email.utils" not in sys.modules:
 
     sys.modules["email.utils"] = _LightweightEmailUtils()
 
-from hub.config import (
-    AppConfig,
-    DatabaseConfig,
-    DispatchConfig,
-    SecurityConfig,
-    ServerConfig,
-    TunnelConfig,
-    load_config,
-    validate_config,
-)
-from hub.models import (
-    ExecutionLog,
-    HTTPRequest,
-    HTTPResponse,
-    Task,
-    TaskExecution,
-    TaskStatus,
-    ValidationResult,
-    WebhookEvent,
-)
-from hub.security import (
-    compute_dedup_hash,
-    compute_payload_hash,
-    generate_hmac_signature,
-    validate_request_security,
-    verify_bearer_token,
-    verify_hmac_signature,
-)
-from hub.server import AsyncHTTPServer
-
 __version__ = "1.0.0"
 
 __all__ = [
@@ -120,3 +90,49 @@ __all__ = [
     "compute_payload_hash",
     "compute_dedup_hash",
 ]
+
+_LAZY_MODULES: dict[str, tuple[str, str]] = {
+    # Server
+    "AsyncHTTPServer": ("hub.server", "AsyncHTTPServer"),
+    # Models
+    "HTTPRequest": ("hub.models", "HTTPRequest"),
+    "HTTPResponse": ("hub.models", "HTTPResponse"),
+    "ValidationResult": ("hub.models", "ValidationResult"),
+    "WebhookEvent": ("hub.models", "WebhookEvent"),
+    "Task": ("hub.models", "Task"),
+    "TaskStatus": ("hub.models", "TaskStatus"),
+    "TaskExecution": ("hub.models", "TaskExecution"),
+    "ExecutionLog": ("hub.models", "ExecutionLog"),
+    # Config
+    "AppConfig": ("hub.config", "AppConfig"),
+    "ServerConfig": ("hub.config", "ServerConfig"),
+    "SecurityConfig": ("hub.config", "SecurityConfig"),
+    "DatabaseConfig": ("hub.config", "DatabaseConfig"),
+    "DispatchConfig": ("hub.config", "DispatchConfig"),
+    "TunnelConfig": ("hub.config", "TunnelConfig"),
+    "load_config": ("hub.config", "load_config"),
+    "validate_config": ("hub.config", "validate_config"),
+    # Security
+    "verify_hmac_signature": ("hub.security", "verify_hmac_signature"),
+    "verify_bearer_token": ("hub.security", "verify_bearer_token"),
+    "validate_request_security": ("hub.security", "validate_request_security"),
+    "generate_hmac_signature": ("hub.security", "generate_hmac_signature"),
+    "compute_payload_hash": ("hub.security", "compute_payload_hash"),
+    "compute_dedup_hash": ("hub.security", "compute_dedup_hash"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy-load public package attributes on access (PEP 562) to maintain strict <30MB RSS footprint."""
+    if name in _LAZY_MODULES:
+        mod_name, attr_name = _LAZY_MODULES[name]
+        import importlib
+        mod = importlib.import_module(mod_name)
+        val = getattr(mod, attr_name)
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module 'hub' has no attribute '{name}'")
+
+
+def __dir__() -> list[str]:
+    return __all__
