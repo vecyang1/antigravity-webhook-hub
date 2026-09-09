@@ -58,6 +58,9 @@ async def test_ssot_verification_matching_and_mismatch():
             "Full Name": {"type": "title", "title": [{"plain_text": "Alice Smith"}]},
             "Email": {"type": "email", "email": "alice@smith.org"},
             "Company": {"type": "rich_text", "rich_text": [{"plain_text": "Smith Consulting"}]},
+            "Birthday": {"type": "date", "date": {"start": "1990-05-20"}},
+            "URL": {"type": "url", "url": "https://linkedin.com/in/alice/"},
+            "Status": {"type": "select", "select": {"name": "Active"}},
         },
     }
 
@@ -66,6 +69,9 @@ async def test_ssot_verification_matching_and_mismatch():
         expected = {
             "Email": {"email": "alice@smith.org"},
             "Company": {"rich_text": [{"type": "text", "text": {"content": "Smith Consulting"}}]},
+            "Birthday": {"date": {"start": "1990-05-20"}},
+            "URL": {"url": "https://linkedin.com/in/alice"},  # Normalized URL matches trailing slash
+            "Status": {"select": {"name": "Active"}},
         }
         verified, _ = await client.verify_page_properties("page_123", expected)
         assert verified is True
@@ -76,6 +82,41 @@ async def test_ssot_verification_matching_and_mismatch():
         }
         failed, _ = await client.verify_page_properties("page_123", wrong_expected)
         assert failed is False
+
+        # Case 3: Date mismatch -> Verification fails
+        wrong_date = {
+            "Birthday": {"date": {"start": "1995-01-01"}},
+        }
+        failed_date, _ = await client.verify_page_properties("page_123", wrong_date)
+        assert failed_date is False
+
+
+@pytest.mark.asyncio
+async def test_search_candidates_romaji_name():
+    client = NotionPeopleClient(api_token="test_secret_token", database_id="fake_db")
+    contact = ContactInput(
+        name="Taro Tanaka",
+    )
+
+    mock_response = {
+        "results": [
+            {
+                "id": "page_romaji_1",
+                "properties": {
+                    "Full Name": {"type": "title", "title": [{"plain_text": "田中 太郎"}]},
+                    "Romaji Name": {"type": "rich_text", "rich_text": [{"plain_text": "Taro Tanaka"}]},
+                },
+            }
+        ]
+    }
+
+    with patch.object(client, "_request", return_value=mock_response) as mock_req:
+        candidates = await client.search_candidates(contact)
+        assert len(candidates) == 1
+        c = candidates[0]
+        assert c.page_id == "page_romaji_1"
+        assert c.score >= 70
+        assert "romaji_name_match" in c.match_reasons
 
 
 @pytest.mark.asyncio

@@ -63,6 +63,32 @@ def normalize_url_string(val: Optional[str]) -> str:
     return f"{netloc}{path}{query}"
 
 
+def format_social_url(platform: str, handle: str) -> str:
+    """Ensure handle is formatted as a valid URL for Notion url property."""
+    if not handle:
+        return ""
+    h = str(handle).strip()
+    if not h:
+        return ""
+    if h.startswith("http://") or h.startswith("https://"):
+        return h
+    raw = h.lstrip("@").strip()
+    p = platform.lower()
+    if p == "telegram":
+        return f"https://t.me/{raw}"
+    if p == "wechat":
+        return f"https://weixin.qq.com/{raw}"
+    if p == "linkedin":
+        return f"https://linkedin.com/in/{raw}"
+    if p in ("twitter", "x"):
+        return f"https://x.com/{raw}"
+    if p == "line":
+        return f"https://line.me/ti/p/{raw}"
+    if p == "instagram":
+        return f"https://instagram.com/{raw}"
+    return f"https://{raw}"
+
+
 @dataclass(slots=True)
 class FieldDiff:
     """Represents a diff on a single contact property."""
@@ -116,6 +142,13 @@ class ContactInput:
     def normalized_url(self) -> str:
         return normalize_url_string(self.url)
 
+    def get_social(self, key: str) -> str:
+        """Get social handle by platform key (case-insensitive, x/twitter aliased)."""
+        k = key.lower()
+        if k in ("x", "twitter"):
+            return self.social_handles.get("twitter") or self.social_handles.get("x") or ""
+        return self.social_handles.get(k, "")
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ContactInput:
         """Robust parser extracting contact fields from varied payload shapes."""
@@ -163,10 +196,17 @@ class ContactInput:
         ).strip()
 
         social = {}
-        for handle_key in ("wechat", "telegram", "line", "linkedin", "instagram", "twitter"):
-            val = c_dict.get(handle_key) or data.get(handle_key)
+        # Also check nested social or social_handles sub-dictionaries
+        sub_social = c_dict.get("social") or c_dict.get("social_handles") or data.get("social") or data.get("social_handles") or {}
+        if not isinstance(sub_social, dict):
+            sub_social = {}
+
+        for handle_key in ("wechat", "telegram", "line", "linkedin", "instagram", "twitter", "x"):
+            val = sub_social.get(handle_key) or c_dict.get(handle_key) or data.get(handle_key)
             if val:
                 social[handle_key] = str(val).strip()
+        if "x" in social and "twitter" not in social:
+            social["twitter"] = social["x"]
 
         return cls(
             name=get_val("name", "full_name", "Full Name", default="Unknown Person"),
@@ -244,6 +284,15 @@ class CandidateMatch:
         if ptype == "select":
             s = prop.get("select")
             return str(s.get("name") or "").strip() if s else ""
+        if ptype == "multi_select":
+            items = prop.get("multi_select", [])
+            return ", ".join(str(i.get("name", "")).strip() for i in items if i.get("name")).strip()
+        if ptype == "status":
+            st = prop.get("status")
+            return str(st.get("name") or "").strip() if st else ""
+        if ptype == "number":
+            num = prop.get("number")
+            return str(num) if num is not None else ""
         return ""
 
     def get_email(self) -> str:
@@ -257,6 +306,20 @@ class CandidateMatch:
 
     def get_birthday(self) -> str:
         return self.get_property_plain_text("Birthday")
+
+    def get_social(self, platform: str) -> str:
+        """Get social URL/handle property from Notion page."""
+        prop_map = {
+            "telegram": "Telegram",
+            "wechat": "WeChat",
+            "linkedin": "LinkedIn",
+            "twitter": "Twitter/X",
+            "x": "Twitter/X",
+            "line": "LINE",
+            "instagram": "Instagram",
+        }
+        p_name = prop_map.get(platform.lower(), "")
+        return self.get_property_plain_text(p_name) if p_name else ""
 
     def to_dict(self) -> dict[str, Any]:
         return {

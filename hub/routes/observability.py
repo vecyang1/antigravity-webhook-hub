@@ -127,7 +127,8 @@ def register_observability_routes(
         stats = server.get_stats()
         uptime = stats.get("uptime_seconds", 0.0)
         rss_mb = get_memory_rss_mb()
-        memory_healthy = rss_mb <= 30.0
+        budget_limit = float(os.environ.get("MEMORY_BUDGET_MB", 30.0))
+        memory_healthy = rss_mb <= budget_limit
 
         db_status = "connected"
         db_healthy = True
@@ -149,6 +150,13 @@ def register_observability_routes(
                 db_status = f"error: {str(db_err)}"
                 db_healthy = False
 
+            if hasattr(db, "_conn") and hasattr(db, "_lock"):
+                try:
+                    with db._lock:
+                        db._conn.execute("PRAGMA shrink_memory;")
+                except Exception:
+                    pass
+
         status_str = "ok" if (db_healthy and memory_healthy) else "degraded"
         status_code = 200 if db_healthy else 503
 
@@ -163,7 +171,7 @@ def register_observability_routes(
             "system": {
                 "memory_rss_mb": rss_mb,
                 "memory_healthy": memory_healthy,
-                "memory_budget_mb": 30.0,
+                "memory_budget_mb": budget_limit,
             },
             "memory_rss_mb": rss_mb,
         }

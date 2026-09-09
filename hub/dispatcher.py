@@ -37,6 +37,7 @@ class ExecutionResult:
     stdout: str = ""
     stderr: str = ""
     error_message: Optional[str] = None
+    result_data: Optional[dict[str, Any]] = None
 
 
 class TaskDispatcher:
@@ -275,6 +276,7 @@ class TaskDispatcher:
         exit_code: Optional[int] = None
         error_message: Optional[str] = None
         final_status = "failed"
+        task_result_data: Optional[dict[str, Any]] = None
 
         try:
             if action_type in ("agent_signal", "signal"):
@@ -333,13 +335,18 @@ class TaskDispatcher:
                     except Exception:
                         pass
 
+                is_dry_run = bool(params_dict.get("dry_run") or params_dict.get("no_apply"))
+                is_auto_apply = bool(params_dict.get("auto_apply", not is_dry_run))
+                is_notify_slack = bool(params_dict.get("notify_slack", not is_dry_run and not params_dict.get("no_slack")))
+
                 review_res = await execute_contact_review(
                     payload=params_dict,
-                    auto_apply=True,
-                    notify_slack=True,
-                    dry_run=False,
+                    auto_apply=is_auto_apply,
+                    notify_slack=is_notify_slack,
+                    dry_run=is_dry_run,
                     log_callback=log_fn,
                 )
+                task_result_data = review_res.to_dict()
 
                 if review_res.error:
                     stderr_lines.append(review_res.error)
@@ -526,6 +533,7 @@ class TaskDispatcher:
             stdout="\n".join(stdout_lines),
             stderr="\n".join(stderr_lines),
             error_message=error_message,
+            result_data=task_result_data,
         )
 
         # Reclaim memory buffers
@@ -533,5 +541,22 @@ class TaskDispatcher:
         del stderr_lines
         del task_data
         gc.collect()
+        if sys.platform == "darwin":
+            try:
+                import ctypes
+                libc = ctypes.CDLL(None)
+                libc.malloc_default_zone.restype = ctypes.c_void_p
+                libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+                libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
+                zone = libc.malloc_default_zone()
+                libc.malloc_zone_pressure_relief(zone, 0)
+            except Exception:
+                pass
+        if hasattr(self.db, "_conn") and hasattr(self.db, "_lock"):
+            try:
+                with self.db._lock:
+                    self.db._conn.execute("PRAGMA shrink_memory;")
+            except Exception:
+                pass
 
         return res_obj

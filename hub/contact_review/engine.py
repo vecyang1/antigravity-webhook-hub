@@ -18,6 +18,7 @@ from hub.contact_review.models import (
     FieldDiffAction,
     ReviewResult,
     ReviewVerdict,
+    format_social_url,
     normalize_email_address,
     normalize_phone_digits,
     normalize_url_string,
@@ -37,6 +38,52 @@ logger = logging.getLogger("hub.contact_review.engine")
 
 MIN_CANDIDATE_SCORE = 40
 STRONG_MATCH_SCORE = 70
+
+
+def property_mapping_for_field(field_name: str, value: Any) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+    """Map contact/diff field name to Notion property name and payload object."""
+    if not value or not str(value).strip():
+        return None, None
+    f = field_name.lower().strip()
+    v = str(value).strip()
+
+    if f in ("phone", "phone_number"):
+        return "Phone", make_rich_text(v)
+    elif f == "email":
+        return "Email", make_email(v)
+    elif f == "company":
+        return "Company", make_rich_text(v)
+    elif f in ("title", "role"):
+        return "Title", make_rich_text(v)
+    elif f == "city":
+        return "City", make_rich_text(v)
+    elif f == "country":
+        return "Country", make_rich_text(v)
+    elif f == "birthday":
+        return "Birthday", make_date(v)
+    elif f in ("url", "link", "website"):
+        return "URL", make_url(v)
+    elif f in ("entity", "relationship"):
+        return "Entity", make_rich_text(v)
+    elif f in ("notes", "note", "important_info"):
+        return "Note", make_rich_text(v)
+    elif f == "telegram":
+        return "Telegram", make_url(format_social_url("telegram", v))
+    elif f == "wechat":
+        return "WeChat", make_url(format_social_url("wechat", v))
+    elif f == "linkedin":
+        return "LinkedIn", make_url(format_social_url("linkedin", v))
+    elif f in ("twitter", "x"):
+        return "Twitter/X", make_url(format_social_url("twitter", v))
+    elif f == "line":
+        return "LINE", make_url(format_social_url("line", v))
+    elif f == "instagram":
+        return "Instagram", make_url(format_social_url("instagram", v))
+    elif f in ("name", "full_name"):
+        return "Full Name", make_title(v)
+    elif f in ("romaji_name", "romaji"):
+        return "Romaji Name", make_rich_text(v)
+    return None, None
 
 
 class ContactReviewEngine:
@@ -69,6 +116,18 @@ class ContactReviewEngine:
                             explanation=f"New field '{fname}' for created contact",
                         )
                     )
+            for sname in ("telegram", "wechat", "linkedin", "twitter", "line", "instagram"):
+                val = contact.get_social(sname)
+                if val:
+                    diffs.append(
+                        FieldDiff(
+                            field_name=sname,
+                            action=FieldDiffAction.SUPPLEMENT,
+                            old_value=None,
+                            new_value=val,
+                            explanation=f"New social handle '{sname}' for created contact",
+                        )
+                    )
 
             return ReviewResult(
                 verdict=ReviewVerdict.CREATE,
@@ -87,34 +146,58 @@ class ContactReviewEngine:
         # Case 2: Multiple Strong Candidates -> MERGE
         if len(high_matches) >= 2:
             canonical = high_matches[0]
-            secondary = high_matches[1]
+            secondaries = high_matches[1:]
 
             merge_diffs = []
-            # Check fields in secondary that canonical might lack
-            for prop in ("Phone", "Email", "Company", "Title", "City", "Country", "Birthday", "URL", "Entity", "Note"):
-                can_val = canonical.get_property_plain_text(prop)
-                sec_val = secondary.get_property_plain_text(prop)
-                inp_val = getattr(contact, prop.lower(), "")
+            merge_props = [
+                ("Phone", "phone"),
+                ("Email", "email"),
+                ("Company", "company"),
+                ("Title", "title"),
+                ("City", "city"),
+                ("Country", "country"),
+                ("Birthday", "birthday"),
+                ("URL", "url"),
+                ("Entity", "entity"),
+                ("Note", "notes"),
+                ("Telegram", "telegram"),
+                ("WeChat", "wechat"),
+                ("LinkedIn", "linkedin"),
+                ("Twitter/X", "twitter"),
+                ("LINE", "line"),
+                ("Instagram", "instagram"),
+            ]
+
+            for notion_prop, prop_key in merge_props:
+                can_val = canonical.get_property_plain_text(notion_prop)
+                inp_val = contact.get_social(prop_key) if prop_key in ("telegram", "wechat", "linkedin", "twitter", "line", "instagram") else getattr(contact, prop_key, "")
+
+                sec_val = ""
+                for sec in secondaries:
+                    sv = sec.get_property_plain_text(notion_prop)
+                    if sv:
+                        sec_val = sv
+                        break
 
                 effective_val = inp_val or sec_val
                 if effective_val and not can_val:
                     merge_diffs.append(
                         FieldDiff(
-                            field_name=prop.lower(),
+                            field_name=prop_key,
                             action=FieldDiffAction.SUPPLEMENT,
                             old_value=None,
                             new_value=effective_val,
-                            explanation=f"Merged '{prop}' from secondary record into canonical",
+                            explanation=f"Merged '{notion_prop}' from secondary record into canonical",
                         )
                     )
-                elif effective_val and can_val and effective_val.strip() != can_val.strip():
+                elif effective_val and can_val and effective_val.strip().lower() != can_val.strip().lower():
                     merge_diffs.append(
                         FieldDiff(
-                            field_name=prop.lower(),
+                            field_name=prop_key,
                             action=FieldDiffAction.CONFLICT,
                             old_value=can_val,
                             new_value=effective_val,
-                            explanation=f"Conflicting '{prop}' merged into notes history",
+                            explanation=f"Conflicting '{notion_prop}' preserved in notes history",
                         )
                     )
 
@@ -128,7 +211,7 @@ class ContactReviewEngine:
                 candidates=high_matches,
                 explanation=(
                     f"Found multiple candidate records in Notion ('{canonical.page_name}' score={canonical.score} "
-                    f"and '{secondary.page_name}' score={secondary.score}). "
+                    f"and '{secondaries[0].page_name}' score={secondaries[0].score}). "
                     "Action: Merge profiles into canonical record."
                 ),
             )
@@ -149,13 +232,22 @@ class ContactReviewEngine:
             ("url", "URL", "url"),
             ("entity", "Entity", "text"),
             ("notes", "Note", "text"),
+            ("telegram", "Telegram", "social_url"),
+            ("wechat", "WeChat", "social_url"),
+            ("linkedin", "LinkedIn", "social_url"),
+            ("twitter", "Twitter/X", "social_url"),
+            ("line", "LINE", "social_url"),
+            ("instagram", "Instagram", "social_url"),
         ]
 
         has_correct = False
         has_supplement = False
 
         for attr_name, notion_prop, pkind in field_mappings:
-            inp_val = getattr(contact, attr_name, "")
+            if pkind == "social_url":
+                inp_val = contact.get_social(attr_name)
+            else:
+                inp_val = getattr(contact, attr_name, "")
             if not inp_val or not str(inp_val).strip():
                 continue  # Input does not provide this field
 
@@ -188,7 +280,11 @@ class ContactReviewEngine:
             elif pkind == "email":
                 is_equivalent = normalize_email_address(cand_val) == contact.normalized_email()
             elif pkind == "url":
-                is_equivalent = normalize_url_string(cand_val) == contact.normalized_url()
+                is_equivalent = normalize_url_string(cand_val) == normalize_url_string(str(inp_val))
+            elif pkind == "social_url":
+                i_raw = str(inp_val).strip().lstrip("@").lower().rstrip("/")
+                c_raw = str(cand_val).strip().lstrip("@").lower().rstrip("/")
+                is_equivalent = (i_raw == c_raw) or (bool(i_raw) and i_raw in c_raw) or (bool(c_raw) and c_raw in i_raw)
             elif pkind == "date":
                 is_equivalent = cand_val.strip() == str(inp_val).strip()
             elif pkind == "title":
@@ -276,30 +372,21 @@ class ContactReviewEngine:
             props: dict[str, Any] = {
                 "Full Name": make_title(contact.name or "Unknown Person"),
             }
-            if contact.phone:
-                props["Phone"] = make_rich_text(contact.phone)
-            if contact.email:
-                props["Email"] = make_email(contact.email)
-            if contact.company:
-                props["Company"] = make_rich_text(contact.company)
-            if contact.title:
-                props["Title"] = make_rich_text(contact.title)
-            if contact.city:
-                props["City"] = make_rich_text(contact.city)
-            if contact.country:
-                props["Country"] = make_rich_text(contact.country)
-            if contact.birthday:
-                props["Birthday"] = make_date(contact.birthday)
-            if contact.url:
-                props["URL"] = make_url(contact.url)
-            if contact.entity:
-                props["Entity"] = make_rich_text(contact.entity)
-            if contact.notes:
-                props["Note"] = make_rich_text(contact.notes)
+            for fname in ("phone", "email", "company", "title", "city", "country", "birthday", "url", "entity", "notes"):
+                val = getattr(contact, fname, "")
+                pname, pobj = property_mapping_for_field(fname, val)
+                if pname and pobj:
+                    props[pname] = pobj
+
+            for sname in ("telegram", "wechat", "linkedin", "twitter", "line", "instagram"):
+                val = contact.get_social(sname)
+                pname, pobj = property_mapping_for_field(sname, val)
+                if pname and pobj:
+                    props[pname] = pobj
+
             if contact.source:
                 props["Source"] = make_rich_text(contact.source)
 
-            # Block children
             blocks: list[dict[str, Any]] = [
                 make_heading_block("Antigravity Contact Intake Note", level=3),
                 make_bullet_block(f"Created: {now_str}"),
@@ -319,37 +406,10 @@ class ContactReviewEngine:
 
             for d in result.diffs:
                 if d.action == FieldDiffAction.SUPPLEMENT and d.new_value:
-                    if d.field_name == "phone":
-                        props["Phone"] = make_rich_text(d.new_value)
-                        supp_notes.append(f"Phone: {d.new_value}")
-                    elif d.field_name == "email":
-                        props["Email"] = make_email(d.new_value)
-                        supp_notes.append(f"Email: {d.new_value}")
-                    elif d.field_name == "company":
-                        props["Company"] = make_rich_text(d.new_value)
-                        supp_notes.append(f"Company: {d.new_value}")
-                    elif d.field_name == "title":
-                        props["Title"] = make_rich_text(d.new_value)
-                        supp_notes.append(f"Title: {d.new_value}")
-                    elif d.field_name == "city":
-                        props["City"] = make_rich_text(d.new_value)
-                        supp_notes.append(f"City: {d.new_value}")
-                    elif d.field_name == "country":
-                        props["Country"] = make_rich_text(d.new_value)
-                        supp_notes.append(f"Country: {d.new_value}")
-                    elif d.field_name == "birthday":
-                        props["Birthday"] = make_date(d.new_value)
-                        supp_notes.append(f"Birthday: {d.new_value}")
-                    elif d.field_name == "url":
-                        props["URL"] = make_url(d.new_value)
-                        supp_notes.append(f"URL: {d.new_value}")
-                    elif d.field_name == "entity":
-                        props["Entity"] = make_rich_text(d.new_value)
-                        supp_notes.append(f"Entity: {d.new_value}")
-                    elif d.field_name == "notes":
-                        # If existing note was empty, set it
-                        props["Note"] = make_rich_text(d.new_value)
-                        supp_notes.append(f"Note: {d.new_value}")
+                    pname, pobj = property_mapping_for_field(d.field_name, d.new_value)
+                    if pname and pobj:
+                        props[pname] = pobj
+                        supp_notes.append(f"{pname}: {d.new_value}")
 
             blocks = [
                 make_heading_block(f"Antigravity Supplementary Note ({now_str})", level=3),
@@ -368,51 +428,14 @@ class ContactReviewEngine:
             audit_lines = []
 
             for d in result.diffs:
-                if d.action == FieldDiffAction.CORRECT and d.new_value:
-                    if d.field_name == "phone":
-                        props["Phone"] = make_rich_text(d.new_value)
-                    elif d.field_name == "email":
-                        props["Email"] = make_email(d.new_value)
-                    elif d.field_name == "company":
-                        props["Company"] = make_rich_text(d.new_value)
-                    elif d.field_name == "title":
-                        props["Title"] = make_rich_text(d.new_value)
-                    elif d.field_name == "city":
-                        props["City"] = make_rich_text(d.new_value)
-                    elif d.field_name == "country":
-                        props["Country"] = make_rich_text(d.new_value)
-                    elif d.field_name == "birthday":
-                        props["Birthday"] = make_date(d.new_value)
-                    elif d.field_name == "url":
-                        props["URL"] = make_url(d.new_value)
-                    elif d.field_name == "entity":
-                        props["Entity"] = make_rich_text(d.new_value)
-                    elif d.field_name == "name":
-                        props["Full Name"] = make_title(d.new_value)
-
-                    audit_lines.append(f"{d.field_name}: '{d.new_value}' (previous: '{d.old_value}')")
-
-                elif d.action == FieldDiffAction.SUPPLEMENT and d.new_value:
-                    # Also include supplemented fields if any
-                    if d.field_name == "phone":
-                        props["Phone"] = make_rich_text(d.new_value)
-                    elif d.field_name == "email":
-                        props["Email"] = make_email(d.new_value)
-                    elif d.field_name == "company":
-                        props["Company"] = make_rich_text(d.new_value)
-                    elif d.field_name == "title":
-                        props["Title"] = make_rich_text(d.new_value)
-                    elif d.field_name == "city":
-                        props["City"] = make_rich_text(d.new_value)
-                    elif d.field_name == "country":
-                        props["Country"] = make_rich_text(d.new_value)
-                    elif d.field_name == "birthday":
-                        props["Birthday"] = make_date(d.new_value)
-                    elif d.field_name == "url":
-                        props["URL"] = make_url(d.new_value)
-                    elif d.field_name == "entity":
-                        props["Entity"] = make_rich_text(d.new_value)
-                    audit_lines.append(f"{d.field_name}: '{d.new_value}' (newly supplemented)")
+                if d.action in (FieldDiffAction.CORRECT, FieldDiffAction.SUPPLEMENT) and d.new_value:
+                    pname, pobj = property_mapping_for_field(d.field_name, d.new_value)
+                    if pname and pobj:
+                        props[pname] = pobj
+                    if d.action == FieldDiffAction.CORRECT:
+                        audit_lines.append(f"{d.field_name}: '{d.new_value}' (previous: '{d.old_value}')")
+                    else:
+                        audit_lines.append(f"{d.field_name}: '{d.new_value}' (newly supplemented)")
 
             blocks = [
                 make_heading_block(f"Antigravity Contact Correction Audit ({now_str})", level=3),
@@ -431,14 +454,13 @@ class ContactReviewEngine:
             merge_lines = []
 
             for d in result.diffs:
-                if d.action in (FieldDiffAction.SUPPLEMENT, FieldDiffAction.CONFLICT) and d.new_value:
-                    if d.field_name == "phone" and not candidate.get_phone() if candidate else True:
-                        props["Phone"] = make_rich_text(d.new_value)
-                    elif d.field_name == "email" and not candidate.get_email() if candidate else True:
-                        props["Email"] = make_email(d.new_value)
-                    elif d.field_name == "company":
-                        props["Company"] = make_rich_text(d.new_value)
-                    merge_lines.append(f"{d.field_name}: '{d.new_value}'")
+                if d.action == FieldDiffAction.SUPPLEMENT and d.new_value:
+                    pname, pobj = property_mapping_for_field(d.field_name, d.new_value)
+                    if pname and pobj:
+                        props[pname] = pobj
+                    merge_lines.append(f"Supplemented {d.field_name}: '{d.new_value}'")
+                elif d.action == FieldDiffAction.CONFLICT and d.new_value:
+                    merge_lines.append(f"Conflict on {d.field_name}: secondary '{d.new_value}' (canonical retained '{d.old_value}')")
 
             blocks = [
                 make_heading_block(f"Antigravity Profile Merge Audit ({now_str})", level=3),

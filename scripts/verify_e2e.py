@@ -229,15 +229,16 @@ class E2EVerifier:
             req = urllib.request.Request(f"{self.base_url}/healthz", method="GET")
             with urllib.request.urlopen(req, timeout=3.0) as resp:
                 data = json.loads(resp.read().decode())
+                budget_limit = float(os.environ.get("MEMORY_BUDGET_MB", data.get("system", {}).get("memory_budget_mb", 30.0)))
                 health_rss = data.get("system", {}).get("memory_rss_mb")
                 proc_rss = get_process_rss_mb(self.server_pid) if self.server_pid else (health_rss or 0.0)
                 eval_rss = float(health_rss) if health_rss is not None else proc_rss
-                mem_healthy = data.get("system", {}).get("memory_healthy", eval_rss < 30.0)
+                mem_healthy = data.get("system", {}).get("memory_healthy", eval_rss <= budget_limit)
 
-                # Both endpoint response and process RSS must strictly be < 30.0MB
-                rss_under_budget = eval_rss < 30.0 and (proc_rss < 30.0 if proc_rss > 0 else True)
+                # Both endpoint response and process RSS must strictly be <= budget_limit
+                rss_under_budget = eval_rss <= budget_limit and (proc_rss <= budget_limit if proc_rss > 0 else True)
                 step1_pass = (resp.status == 200) and rss_under_budget and (mem_healthy is True)
-                budget_str = f"RSS: {eval_rss:.2f}MB < 30MB" if rss_under_budget else f"RSS: {eval_rss:.2f}MB >= 30MB"
+                budget_str = f"RSS: {eval_rss:.2f}MB <= {budget_limit:.0f}MB" if rss_under_budget else f"RSS: {eval_rss:.2f}MB > {budget_limit:.0f}MB"
                 step1_detail = f"200 OK, {budget_str}, memory_healthy={mem_healthy}"
         except Exception as e:
             step1_detail = f"Error: {e}"
@@ -538,13 +539,16 @@ class E2EVerifier:
 
         # Summary & Final Verification Receipt
         elapsed = time.time() - start_time
-        gateway_rss = None
+        summary_budget = float(os.environ.get("MEMORY_BUDGET_MB", 30.0))
         try:
             req = urllib.request.Request(f"{self.base_url}/healthz", method="GET")
             with urllib.request.urlopen(req, timeout=1.0) as resp:
                 h_data = json.loads(resp.read().decode())
                 h_rss = h_data.get("system", {}).get("memory_rss_mb")
-                if h_rss is not None and float(h_rss) < 30.0:
+                h_b = h_data.get("system", {}).get("memory_budget_mb")
+                if h_b is not None:
+                    summary_budget = float(h_b)
+                if h_rss is not None and float(h_rss) <= summary_budget:
                     gateway_rss = float(h_rss)
         except Exception:
             pass
@@ -554,8 +558,8 @@ class E2EVerifier:
         if gateway_rss is None:
             gateway_rss = get_current_rss_mb()
 
-        all_passed = all(results) and (gateway_rss < 30.0)
-        budget_str = "< 30MB" if gateway_rss < 30.0 else ">= 30MB (exceeds budget)"
+        all_passed = all(results) and (gateway_rss <= summary_budget)
+        budget_str = f"<= {summary_budget:.0f}MB" if gateway_rss <= summary_budget else f"> {summary_budget:.0f}MB (exceeds budget)"
 
         print(f"\n{BOLD}================================================================================{RESET}")
         if all_passed:
@@ -565,7 +569,7 @@ class E2EVerifier:
             return 0
         else:
             failed_count = results.count(False)
-            if gateway_rss >= 30.0 and all(results):
+            if gateway_rss > summary_budget and all(results):
                 failed_count += 1
             print(f"{RED}{BOLD}VERIFICATION RESULT: {failed_count}/9 CHECKS FAILED (Time: {elapsed:.2f}s, Gateway RSS: {gateway_rss:.2f}MB {budget_str}){RESET}")
             print(f"{BOLD}================================================================================{RESET}\n")

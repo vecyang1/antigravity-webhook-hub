@@ -160,3 +160,32 @@ def test_verdict_merge_when_multiple_strong_candidates(engine):
 
     props, blocks = engine.prepare_mutation(result, contact, candidate=cand1)
     assert len(blocks) >= 1
+    # Email was missing on cand1, so it should be populated in props
+    assert "Email" in props
+    assert props["Email"] == {"email": "nguyen@example.com"}
+    # Phone was already on cand1, so it must NOT be overwritten or corrupted
+    assert "Phone" not in props
+
+
+def test_social_handles_diff_and_mutation(engine):
+    cand = make_candidate(page_id="page_1", score=85)
+    contact = ContactInput(
+        name="Nguyen Van A",
+        phone="+84 901 111 222",
+        social_handles={
+            "telegram": "nguyen_tg",
+            "wechat": "nguyen_wx",
+        },
+    )
+    result = engine.evaluate(contact, [cand])
+    assert result.verdict == ReviewVerdict.SUPPLEMENT
+    diff_fields = [d.field_name for d in result.diffs]
+    assert "telegram" in diff_fields
+    assert "wechat" in diff_fields
+
+    props, blocks = engine.prepare_mutation(result, contact, candidate=cand)
+    assert "Telegram" in props
+    assert props["Telegram"]["url"] == "https://t.me/nguyen_tg"
+    assert "WeChat" in props
+    assert props["WeChat"]["url"] == "https://weixin.qq.com/nguyen_wx"
+    assert len(blocks) >= 1

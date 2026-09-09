@@ -17,7 +17,12 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
-from hub.contact_review.models import CandidateMatch, ContactInput, normalize_phone_digits
+from hub.contact_review.models import (
+    CandidateMatch,
+    ContactInput,
+    normalize_phone_digits,
+    normalize_url_string,
+)
 
 logger = logging.getLogger("hub.contact_review.notion")
 
@@ -201,13 +206,42 @@ class NotionPeopleClient:
             if digits and len(digits) >= 7 and digits != contact.phone.strip():
                 filter_clauses.append({"property": "Phone", "rich_text": {"contains": digits[-8:]}})
 
-        # 3. Full Name match
+        # 3. Full Name & Romaji Name match
         if contact.name and contact.name not in ("Unknown Person", ""):
-            filter_clauses.append({"property": "Full Name", "title": {"contains": contact.name.strip()}})
+            c_name = contact.name.strip()
+            filter_clauses.append({"property": "Full Name", "title": {"contains": c_name}})
+            filter_clauses.append({"property": "Romaji Name", "rich_text": {"contains": c_name}})
+            # Also handle reverse name order (e.g. "Taro Tanaka" vs "Tanaka Taro" or "Walker, Adam")
+            cleaned_parts = [p.strip().rstrip(",") for p in c_name.replace(",", " ").split() if p.strip()]
+            if len(cleaned_parts) == 2:
+                reversed_name = f"{cleaned_parts[1]} {cleaned_parts[0]}"
+                filter_clauses.append({"property": "Full Name", "title": {"contains": reversed_name}})
+                filter_clauses.append({"property": "Romaji Name", "rich_text": {"contains": reversed_name}})
 
         # 4. URL match
         if contact.url:
             filter_clauses.append({"property": "URL", "url": {"contains": contact.url.strip()}})
+
+        # 5. Social Handle match
+        if contact.social_handles:
+            for platform, handle in contact.social_handles.items():
+                if not handle:
+                    continue
+                raw_handle = handle.lstrip("@").strip()
+                if not raw_handle:
+                    continue
+                p_lower = platform.lower()
+                prop_name = {
+                    "telegram": "Telegram",
+                    "wechat": "WeChat",
+                    "linkedin": "LinkedIn",
+                    "twitter": "Twitter/X",
+                    "x": "Twitter/X",
+                    "line": "LINE",
+                    "instagram": "Instagram",
+                }.get(p_lower)
+                if prop_name:
+                    filter_clauses.append({"property": prop_name, "url": {"contains": raw_handle}})
 
         # If no search criteria available, return empty
         if not filter_clauses:
@@ -261,6 +295,17 @@ class NotionPeopleClient:
                     score += 90
                     reasons.append("phone_digits_match")
 
+            # Social Handle scoring
+            if contact.social_handles:
+                for platform, handle in contact.social_handles.items():
+                    if not handle:
+                        continue
+                    clean_h = handle.lstrip("@").strip().lower()
+                    cand_h = cand_match.get_social(platform).strip().lower()
+                    if cand_h and clean_h in cand_h:
+                        score += 85
+                        reasons.append(f"{platform.lower()}_handle_match")
+
             # URL scoring
             cand_url = cand_match.get_url()
             if contact.url and cand_url:
@@ -278,6 +323,30 @@ class NotionPeopleClient:
                 elif i_name_clean in c_name_clean or c_name_clean in i_name_clean:
                     score += 45
                     reasons.append("substring_name_match")
+                else:
+                    i_parts = [p.strip().rstrip(",") for p in i_name_clean.replace(",", " ").split() if p.strip()]
+                    c_parts = [p.strip().rstrip(",") for p in c_name_clean.replace(",", " ").split() if p.strip()]
+                    if sorted(i_parts) == sorted(c_parts) and len(i_parts) > 1:
+                        score += 65
+                        reasons.append("reordered_name_match")
+
+            # Romaji Name scoring
+            cand_romaji = cand_match.get_property_plain_text("Romaji Name")
+            if cand_romaji and contact.name and contact.name != "Unknown Person":
+                cr_clean = cand_romaji.strip().lower()
+                i_clean = contact.name.strip().lower()
+                if i_clean == cr_clean:
+                    score += 70
+                    reasons.append("romaji_name_match")
+                elif i_clean in cr_clean or cr_clean in i_clean:
+                    score += 45
+                    reasons.append("romaji_substring_match")
+                else:
+                    i_parts = [p.strip().rstrip(",") for p in i_clean.replace(",", " ").split() if p.strip()]
+                    cr_parts = [p.strip().rstrip(",") for p in cr_clean.replace(",", " ").split() if p.strip()]
+                    if sorted(i_parts) == sorted(cr_parts) and len(i_parts) > 1:
+                        score += 65
+                        reasons.append("romaji_reordered_name_match")
 
             # Company match
             cand_company = cand_match.get_property_plain_text("Company")
@@ -377,13 +446,31 @@ class NotionPeopleClient:
                 exp_val = str(expected_obj["email"] or "").strip().lower()
                 live_val = str(live_obj.get("email") or "").strip().lower()
                 if exp_val and exp_val != live_val:
+                    logger.warning("SSOT mismatch on %s: expected email '%s', got '%s'", prop_name, exp_val, live_val)
                     return False, live_props
 
             # Check url
             elif ptype == "url" and "url" in expected_obj:
-                exp_val = str(expected_obj["url"] or "").strip()
-                live_val = str(live_obj.get("url") or "").strip()
+                exp_val = normalize_url_string(expected_obj.get("url"))
+                live_val = normalize_url_string(live_obj.get("url"))
                 if exp_val and exp_val != live_val:
+                    logger.warning("SSOT mismatch on %s: expected url '%s', got '%s'", prop_name, exp_val, live_val)
+                    return False, live_props
+
+            # Check date
+            elif ptype == "date" and "date" in expected_obj:
+                exp_d = (expected_obj.get("date") or {}).get("start")
+                live_d = (live_obj.get("date") or {}).get("start")
+                if exp_d and exp_d != live_d:
+                    logger.warning("SSOT mismatch on %s: expected date '%s', got '%s'", prop_name, exp_d, live_d)
+                    return False, live_props
+
+            # Check select
+            elif ptype == "select" and "select" in expected_obj:
+                exp_s = (expected_obj.get("select") or {}).get("name")
+                live_s = (live_obj.get("select") or {}).get("name")
+                if exp_s and exp_s != live_s:
+                    logger.warning("SSOT mismatch on %s: expected select '%s', got '%s'", prop_name, exp_s, live_s)
                     return False, live_props
 
         return True, live_props

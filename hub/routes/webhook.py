@@ -233,17 +233,20 @@ def register_webhook_routes(
             latest_task = db.get_task(task_id) if db else {}
             if asyncio.iscoroutine(latest_task):
                 latest_task = await latest_task
+            resp_body = {
+                "status": exec_res.status,
+                "event_id": event_id,
+                "task_id": task_id,
+                "action_type": action_type,
+                "exit_code": exec_res.exit_code,
+                "stdout": exec_res.stdout,
+                "stderr": exec_res.stderr,
+                "task": latest_task,
+            }
+            if getattr(exec_res, "result_data", None) is not None:
+                resp_body["review_result"] = exec_res.result_data
             return HTTPResponse.json(
-                {
-                    "status": exec_res.status,
-                    "event_id": event_id,
-                    "task_id": task_id,
-                    "action_type": action_type,
-                    "exit_code": exec_res.exit_code,
-                    "stdout": exec_res.stdout,
-                    "stderr": exec_res.stderr,
-                    "task": latest_task,
-                },
+                resp_body,
                 status_code=200 if exec_res.status == "succeeded" else 500,
             )
 

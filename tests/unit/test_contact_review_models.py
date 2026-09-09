@@ -36,6 +36,19 @@ def test_url_normalization():
     assert normalize_url_string("") == ""
 
 
+def test_format_social_url():
+    from hub.contact_review.models import format_social_url
+    assert format_social_url("telegram", "@johndoe") == "https://t.me/johndoe"
+    assert format_social_url("telegram", "johndoe") == "https://t.me/johndoe"
+    assert format_social_url("wechat", "wx_id_123") == "https://weixin.qq.com/wx_id_123"
+    assert format_social_url("linkedin", "https://linkedin.com/in/custom") == "https://linkedin.com/in/custom"
+    assert format_social_url("x", "elonofficial") == "https://x.com/elonofficial"
+    assert format_social_url("twitter", "@jack") == "https://x.com/jack"
+    assert format_social_url("line", "lineid123") == "https://line.me/ti/p/lineid123"
+    assert format_social_url("instagram", "insta_user") == "https://instagram.com/insta_user"
+    assert format_social_url("telegram", "") == ""
+
+
 def test_contact_input_from_dict_flat():
     data = {
         "name": "Jane Smith",
@@ -101,6 +114,8 @@ def test_candidate_match_properties():
         "Company": {"type": "rich_text", "rich_text": [{"plain_text": "Corp LLC"}]},
         "Birthday": {"type": "date", "date": {"start": "1988-12-01"}},
         "URL": {"type": "url", "url": "https://alice.dev"},
+        "Telegram": {"type": "url", "url": "https://t.me/alice_tg"},
+        "WeChat": {"type": "url", "url": "https://weixin.qq.com/alicewx"},
     }
     m = CandidateMatch(
         page_id="page_123",
@@ -115,6 +130,8 @@ def test_candidate_match_properties():
     assert m.get_phone() == "+1 234 567 8900"
     assert m.get_birthday() == "1988-12-01"
     assert m.get_url() == "https://alice.dev"
+    assert m.get_social("telegram") == "https://t.me/alice_tg"
+    assert m.get_social("wechat") == "https://weixin.qq.com/alicewx"
     assert m.get_property_plain_text("Company") == "Corp LLC"
 
 
