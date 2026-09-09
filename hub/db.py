@@ -30,10 +30,15 @@ def _tuned_sqlite3_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
         conn.execute("PRAGMA busy_timeout = 5000;")
         conn.execute("PRAGMA synchronous = NORMAL;")
         conn.execute("PRAGMA foreign_keys = ON;")
-        conn.execute("PRAGMA cache_size = -4000;")
+        conn.execute("PRAGMA cache_size = -16;")
         conn.execute("PRAGMA mmap_size = 0;")
         conn.execute("PRAGMA temp_store = FILE;")
         conn.execute("PRAGMA wal_autocheckpoint = 20;")
+        try:
+            conn.execute("PRAGMA soft_heap_limit = 524288;")
+            conn.execute("PRAGMA shrink_memory;")
+        except Exception:
+            pass
     except Exception as e:
         logger.debug("Failed to apply initial PRAGMAs: %s", e)
     return conn
