@@ -175,6 +175,12 @@ def test_placeholder_name_detection():
     assert is_placeholder_name("某人") is True
     assert is_placeholder_name("本人") is True
     assert is_placeholder_name("谁啊") is True
+    assert is_placeholder_name("这人是谁") is True
+    assert is_placeholder_name("这个人是谁？") is True
+    assert is_placeholder_name("这位朋友") is True
+    assert is_placeholder_name("这哥们") is True
+    assert is_placeholder_name("无名氏") is True
+    assert is_placeholder_name("这个人 她女朋友大学时候就跟他在一起了") is True
     assert is_placeholder_name("Unknown Person") is True
     assert is_placeholder_name("User") is True
     assert is_placeholder_name("朋友") is True
@@ -200,6 +206,13 @@ def test_extract_real_name_from_context():
     # From notes
     notes = "Handle: @adamwalk. Bio: Adam Driver. Romanized name: Adam Walker. UNSW."
     assert extract_real_name_from_context(notes=notes) == "Adam Walker"
+
+    # From preserved alternate extraction notes
+    notes2 = "Handle: @adamwalk. Bio: Adam Driver. Romanized/alternate name preserved from extraction: Adam Walker. UNSW."
+    assert extract_real_name_from_context(notes=notes2) == "Adam Walker"
+
+    # From social handle fallback
+    assert extract_real_name_from_context(notes="Someone with handle @adamwalk and bio", social_handles={"instagram": "adamwalk"}) == "@adamwalk"
 
 
 def test_contact_input_supersedes_placeholder_with_real_name():

@@ -204,11 +204,34 @@ class ContactReviewEngine:
                         )
                     )
 
+            # Name resolution in MERGE: If canonical has placeholder title, supersede with verified real name
+            target_name = canonical.page_name
+            if is_placeholder_name(target_name):
+                verified_name = ""
+                if not is_placeholder_name(contact.name):
+                    verified_name = contact.name
+                else:
+                    for sec in secondaries:
+                        if not is_placeholder_name(sec.page_name):
+                            verified_name = sec.page_name
+                            break
+                if verified_name:
+                    target_name = verified_name
+                    merge_diffs.append(
+                        FieldDiff(
+                            field_name="name",
+                            action=FieldDiffAction.CORRECT,
+                            old_value=canonical.page_name,
+                            new_value=verified_name,
+                            explanation=f"Superseding placeholder title '{canonical.page_name}' with verified real name '{verified_name}' during merge",
+                        )
+                    )
+
             return ReviewResult(
                 verdict=ReviewVerdict.MERGE,
                 target_page_id=canonical.page_id,
                 target_page_url=canonical.page_url,
-                target_name=canonical.page_name,
+                target_name=target_name,
                 confidence_score=canonical.score,
                 diffs=merge_diffs,
                 candidates=high_matches,
@@ -478,13 +501,22 @@ class ContactReviewEngine:
             merge_lines = []
 
             for d in result.diffs:
-                if d.action == FieldDiffAction.SUPPLEMENT and d.new_value:
+                if d.action in (FieldDiffAction.SUPPLEMENT, FieldDiffAction.CORRECT) and d.new_value:
                     pname, pobj = property_mapping_for_field(d.field_name, d.new_value)
                     if pname and pobj:
                         props[pname] = pobj
-                    merge_lines.append(f"Supplemented {d.field_name}: '{d.new_value}'")
+                    if d.action == FieldDiffAction.CORRECT:
+                        merge_lines.append(f"Corrected {d.field_name}: '{d.new_value}' (was '{d.old_value}')")
+                    else:
+                        merge_lines.append(f"Supplemented {d.field_name}: '{d.new_value}'")
                 elif d.action == FieldDiffAction.CONFLICT and d.new_value:
                     merge_lines.append(f"Conflict on {d.field_name}: secondary '{d.new_value}' (canonical retained '{d.old_value}')")
+
+            # If Full Name is updated during merge, ensure Romaji Name & Source Name are synchronized
+            if "Full Name" in props:
+                full_name_val = props["Full Name"]["title"][0]["text"]["content"]
+                props["Romaji Source Name"] = make_rich_text(full_name_val)
+                props["Romaji Name"] = make_rich_text(full_name_val)
 
             blocks = [
                 make_heading_block(f"Antigravity Profile Merge Audit ({now_str})", level=3),

@@ -276,6 +276,10 @@ class AsyncHTTPServer:
                             413,
                             f"Payload size ({content_length} bytes) exceeds maximum limit ({self.max_body_bytes} bytes)",
                         )
+                        try:
+                            await asyncio.sleep(0.01)
+                        except Exception:
+                            pass
                         break
 
                     if content_length > 0:

@@ -125,3 +125,65 @@ async def test_notion_client_missing_token_raises():
     contact = ContactInput(name="Test")
     with pytest.raises((ValueError, RuntimeError)):
         await client.search_candidates(contact)
+
+
+def test_resolve_slack_token(monkeypatch):
+    from hub.contact_review.notion_client import resolve_slack_token
+
+    # 1. Explicit token takes precedence
+    assert resolve_slack_token("explicit_token_123") == "explicit_token_123"
+
+    # 2. Environment variable resolution
+    monkeypatch.setenv("SLACK_USER_TOKEN", "xoxp-test-user-token")
+    assert resolve_slack_token() == "xoxp-test-user-token"
+
+
+@pytest.mark.asyncio
+async def test_search_candidates_skips_placeholder_name_filter():
+    """Verify search_candidates does NOT query Notion with pronoun placeholders like '这个人'."""
+    client = NotionPeopleClient(api_token="test_token", database_id="fake_db")
+    contact = ContactInput(
+        name="这个人",
+        url="https://www.instagram.com/adamwalk/",
+    )
+
+    with patch.object(client, "_request", return_value={"results": []}) as mock_req:
+        await client.search_candidates(contact)
+        assert mock_req.called
+        call_payload = mock_req.call_args[0][2]
+        query_filter = call_payload.get("filter", {})
+        # Filter should only contain URL, not Full Name contains 这个人
+        filter_str = str(query_filter)
+        assert "这个人" not in filter_str
+        assert "instagram.com/adamwalk" in filter_str
+
+
+@pytest.mark.asyncio
+async def test_append_images_to_page_idempotency():
+    """Verify append_images_to_page skips files that are already attached to Notion page."""
+    client = NotionPeopleClient(api_token="test_token")
+
+    # Mock existing blocks returning an already attached image with source:F_EXISTING
+    existing_blocks_resp = {
+        "results": [
+            {
+                "id": "block_1",
+                "type": "image",
+                "image": {
+                    "caption": [{"type": "text", "plain_text": "n8n-people-image source:F_EXISTING"}],
+                    "file": {"url": "https://files.notion.so/existing.png"},
+                },
+            }
+        ]
+    }
+
+    with patch.object(client, "get_page_blocks", return_value=existing_blocks_resp), \
+         patch.object(client, "append_page_blocks") as mock_append:
+
+        # 1. Calling with the existing file should be skipped
+        res1 = await client.append_images_to_page(
+            page_id="page_1",
+            image_files=[{"id": "F_EXISTING", "name": "existing.png", "url_private_download": "https://slack.com/dl"}],
+        )
+        assert len(res1) == 0
+        mock_append.assert_not_called()

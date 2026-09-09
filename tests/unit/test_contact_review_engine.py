@@ -262,3 +262,54 @@ def test_placeholder_name_not_overwriting_real_name(engine):
     name_diff = next((d for d in result.diffs if d.field_name == "name"), None)
     if name_diff:
         assert name_diff.action == FieldDiffAction.NO_CHANGE
+
+
+def test_merge_supersedes_placeholder_title(engine):
+    """
+    Empirical test: When MERGE occurs between multiple candidates,
+    if the canonical record currently has a placeholder title like '这个人',
+    and incoming contact or secondary record has a verified real name 'Adam Walker',
+    the engine MUST decide MERGE with a CORRECT diff on name and update Full Name and Romaji Name.
+    """
+    cand_canonical = make_candidate(
+        page_id="page_canon",
+        page_name="这个人",
+        score=140,
+        properties={
+            "Full Name": {"type": "title", "title": [{"plain_text": "这个人"}]},
+            "URL": {"type": "url", "url": "https://www.instagram.com/adamwalk/"},
+            "Company": {"type": "rich_text", "rich_text": [{"plain_text": "UNSW"}]},
+        },
+    )
+    cand_secondary = make_candidate(
+        page_id="page_secondary",
+        page_name="Adam Walker",
+        score=140,
+        properties={
+            "Full Name": {"type": "title", "title": [{"plain_text": "Adam Walker"}]},
+            "URL": {"type": "url", "url": "https://www.instagram.com/adamwalk/"},
+            "Phone": {"type": "rich_text", "rich_text": [{"plain_text": "+1 415 555 0199"}]},
+        },
+    )
+
+    contact = ContactInput(
+        name="Adam Walker",
+        url="https://www.instagram.com/adamwalk/",
+    )
+
+    result = engine.evaluate(contact, [cand_canonical, cand_secondary])
+    assert result.verdict == ReviewVerdict.MERGE
+    assert result.target_name == "Adam Walker"
+
+    name_diff = next((d for d in result.diffs if d.field_name == "name"), None)
+    assert name_diff is not None
+    assert name_diff.action == FieldDiffAction.CORRECT
+    assert name_diff.new_value == "Adam Walker"
+
+    props, blocks = engine.prepare_mutation(result, contact, candidate=cand_canonical)
+    assert "Full Name" in props
+    assert props["Full Name"]["title"][0]["text"]["content"] == "Adam Walker"
+    assert "Romaji Name" in props
+    assert props["Romaji Name"]["rich_text"][0]["text"]["content"] == "Adam Walker"
+    assert "Romaji Source Name" in props
+    assert props["Romaji Source Name"]["rich_text"][0]["text"]["content"] == "Adam Walker"

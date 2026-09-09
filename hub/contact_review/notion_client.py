@@ -72,6 +72,51 @@ def resolve_notion_token() -> str:
     return ""
 
 
+def resolve_slack_token(explicit_token: Optional[str] = None) -> str:
+    """
+    Resolve Slack token from parameter, environment, local .env, or skill .env.
+    Fails closed without hardcoding secrets in source code.
+    """
+    if explicit_token and explicit_token.strip():
+        return explicit_token.strip()
+
+    # 1. Environment variables
+    for env_var in ("SLACK_USER_TOKEN", "SLACK_BOT_TOKEN", "SLACK_TOKEN"):
+        val = os.environ.get(env_var)
+        if val and val.strip():
+            return val.strip()
+
+    # 2. Local .env file
+    local_env_path = Path(".env")
+    if local_env_path.is_file():
+        for line in local_env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                if k.strip() in ("SLACK_USER_TOKEN", "SLACK_BOT_TOKEN", "SLACK_TOKEN"):
+                    val = v.strip().strip("'\"")
+                    if val:
+                        return val
+
+    # 3. Standard skill/n8n .env paths
+    candidate_paths = [
+        Path("/Users/vecsatfoxmailcom/.gemini/config/skills/webhook-hub/.env"),
+        Path("/Users/vecsatfoxmailcom/.gemini/antigravity/skills/n8n-automation/.env"),
+    ]
+    for env_p in candidate_paths:
+        if env_p.is_file():
+            for line in env_p.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    if k.strip() in ("SLACK_USER_TOKEN", "SLACK_BOT_TOKEN", "SLACK_TOKEN"):
+                        val = v.strip().strip("'\"")
+                        if val:
+                            return val
+
+    return ""
+
+
 def clean_database_id(raw_id: str) -> str:
     """Normalize Notion database ID by removing dashes if needed."""
     clean = raw_id.replace("-", "").strip()
@@ -235,8 +280,8 @@ class NotionPeopleClient:
             if digits and len(digits) >= 7 and digits != contact.phone.strip():
                 filter_clauses.append({"property": "Phone", "rich_text": {"contains": digits[-8:]}})
 
-        # 3. Full Name & Romaji Name match
-        if contact.name and contact.name not in ("Unknown Person", ""):
+        # 3. Full Name & Romaji Name match (only for verified non-placeholder names)
+        if contact.name and contact.name not in ("Unknown Person", "") and not is_placeholder_name(contact.name):
             c_name = contact.name.strip()
             filter_clauses.append({"property": "Full Name", "title": {"contains": c_name}})
             filter_clauses.append({"property": "Romaji Name", "rich_text": {"contains": c_name}})
@@ -431,6 +476,12 @@ class NotionPeopleClient:
             payload["children"] = children
         return await loop.run_in_executor(None, self._request, "POST", "pages", payload)
 
+    async def get_page_blocks(self, page_id: str, page_size: int = 100) -> dict[str, Any]:
+        """Fetch children blocks for a Notion page."""
+        loop = asyncio.get_running_loop()
+        path = f"blocks/{page_id}/children?page_size={page_size}"
+        return await loop.run_in_executor(None, self._request, "GET", path, None)
+
     async def append_page_blocks(
         self,
         page_id: str,
@@ -485,13 +536,8 @@ class NotionPeopleClient:
     async def download_slack_file(
         self, download_url: str, slack_token: Optional[str] = None
     ) -> tuple[bytes, str]:
-        """Download private file from Slack using Slack token."""
-        token = (
-            slack_token
-            or os.environ.get("SLACK_USER_TOKEN")
-            or os.environ.get("SLACK_BOT_TOKEN")
-            or "xoxp-REDACTED-REVOKED-TOKEN"
-        )
+        """Download private file from Slack using resolved Slack token."""
+        token = resolve_slack_token(slack_token)
         loop = asyncio.get_running_loop()
 
         def _dl() -> tuple[bytes, str]:
@@ -509,22 +555,64 @@ class NotionPeopleClient:
         image_urls: Optional[list[str]] = None,
         image_files: Optional[list[dict[str, Any]]] = None,
         slack_token: Optional[str] = None,
+        caption_prefix: str = "n8n-people-image",
     ) -> list[dict[str, Any]]:
         """
-        Append image blocks to page children.
+        Append image blocks to page children idempotently.
         Supports both external URLs and Slack private files (downloaded and uploaded to Notion).
+        Checks existing blocks on the page to prevent duplicate attachments.
+        Standardizes captions with 'source:{sourceKey}' compatible with helper eHRhiOJbImc7t7k6.
         """
+        existing_blocks: list[dict[str, Any]] = []
+        try:
+            children_res = await self.get_page_blocks(page_id)
+            existing_blocks = children_res.get("results", [])
+        except Exception as e:
+            logger.warning("Could not pre-fetch existing blocks for page %s: %s", page_id, e)
+
+        def is_already_attached(key: str) -> bool:
+            if not key:
+                return False
+            key_clean = key.strip().lower()
+            for b in existing_blocks:
+                b_type = b.get("type")
+                if b_type in ("image", "file", "pdf"):
+                    content = b.get(b_type, {})
+                    caption_text = "".join(
+                        p.get("plain_text") or p.get("text", {}).get("content", "")
+                        for p in content.get("caption", [])
+                    ).lower()
+                    if key_clean in caption_text:
+                        return True
+                    f_obj = content.get("file", {}) or content.get("external", {})
+                    f_url = (f_obj.get("url") or "").lower()
+                    if key_clean in f_url:
+                        return True
+            return False
+
         blocks: list[dict[str, Any]] = []
 
         # 1. External URLs
         for url in (image_urls or []):
             if url and str(url).startswith(("http://", "https://")):
-                blocks.append(make_external_image_block(url, caption="Attached Image"))
+                clean_url = str(url).strip()
+                if is_already_attached(clean_url):
+                    logger.info("Skipping image URL already attached: %s", clean_url)
+                    continue
+                caption = f"{caption_prefix} source:{clean_url}"
+                blocks.append(make_external_image_block(clean_url, caption=caption))
 
         # 2. Image files (e.g. from Slack)
         for f in (image_files or []):
             dl_url = f.get("url_private_download") or f.get("url_private") or f.get("url")
+            file_id = f.get("id") or f.get("file_id") or ""
             fname = f.get("name") or f.get("title") or "image.png"
+            source_key = file_id or fname
+
+            if is_already_attached(source_key) or (dl_url and is_already_attached(dl_url)):
+                logger.info("Skipping Slack file already attached to %s: %s (source:%s)", page_id, fname, source_key)
+                continue
+
             if dl_url:
                 try:
                     fbytes, ctype = await self.download_slack_file(dl_url, slack_token=slack_token)
@@ -533,7 +621,7 @@ class NotionPeopleClient:
                     if upload_id:
                         sent = await self.send_file_binary(upload_id, fname, fbytes, content_type=ctype)
                         if sent:
-                            caption = f.get("caption") or f"Slack Image: {fname}"
+                            caption = f"{caption_prefix} source:{source_key}"
                             blocks.append(make_file_upload_image_block(upload_id, caption=caption))
                 except Exception as dl_err:
                     logger.warning("Failed to download and upload image file %s: %s", fname, dl_err)

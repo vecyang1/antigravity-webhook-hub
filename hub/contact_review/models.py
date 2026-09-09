@@ -92,13 +92,19 @@ def format_social_url(platform: str, handle: str) -> str:
 PLACEHOLDER_NAMES: set[str] = {
     # Chinese pronouns, demonstratives, and placeholders
     "这个人", "这人", "那个人", "某人", "本人", "此人", "有人", "他人", "人家", "个人",
-    "这个", "那个", "谁", "谁啊", "这个人是谁", "未知", "联系人", "朋友", "同学",
-    "同事", "老师", "学生", "老板", "妹子", "美女", "帅哥", "男生", "女生",
-    "小哥哥", "小姐姐", "老哥", "老弟", "大叔", "阿姨", "师傅", "对方", "用户",
-    "客户", "成员", "候选人", "新人", "此用户", "该用户", "此人是谁", "不知名",
+    "这个", "那个", "谁", "谁啊", "这谁啊", "这谁", "那谁", "这个人是谁", "这人是谁", "这人是谁啊", "这人是谁呢",
+    "那个人是谁", "未知", "联系人", "朋友", "同学", "同事", "老师", "学生", "老板",
+    "妹子", "美女", "帅哥", "男生", "女生", "小哥哥", "小姐姐", "老哥", "老弟", "大叔",
+    "阿姨", "师傅", "对方", "用户", "客户", "成员", "候选人", "新人", "此用户", "该用户",
+    "此人是谁", "不知名", "不知名人士", "无名氏", "无名", "匿名", "匿名人士", "未命名",
+    "这位朋友", "那位朋友", "这个朋友", "那个朋友", "这朋友", "那朋友", "某朋友", "某位朋友",
+    "这位同学", "那位同学", "这个同学", "那个同学", "这位同事", "那位同事", "这个同事", "那个同事",
+    "这位老师", "那位老师", "这位先生", "那位先生", "这位女士", "那位女士", "这位小姐", "那位小姐",
+    "这位", "那位", "某位", "哪位", "这哥们", "这哥们儿", "那哥们", "这家伙", "那家伙", "这小伙", "这小伙子", "这姑娘",
     # English placeholders
-    "unknown person", "unknown", "user", "friend", "person", "contact", "someone",
-    "somebody", "this person", "that person", "none", "n/a", "na", "null", "undefined",
+    "unknown person", "unknown", "unknown contact", "unnamed person", "unnamed contact", "anonymous",
+    "no name", "unidentified", "user", "friend", "person", "contact", "someone", "somebody",
+    "this person", "that person", "none", "n/a", "na", "null", "undefined",
 }
 
 
@@ -109,13 +115,24 @@ def is_placeholder_name(name: Optional[str]) -> bool:
     s = str(name).strip().lower()
     if not s:
         return True
-    normalized = re.sub(r"\s+", " ", s)
+    # Strip common surrounding quotes and question/exclamation marks
+    cleaned = re.sub(r"^[\s\"'“”`*#~]+|[\s\"'“”`*#~?？!！.。;；,，]+$", "", s).strip()
+    if not cleaned:
+        return True
+    normalized = re.sub(r"\s+", " ", cleaned)
     if normalized in PLACEHOLDER_NAMES:
         return True
-    no_spaces = re.sub(r"\s+", "", s)
+    no_spaces = re.sub(r"\s+", "", cleaned)
     if no_spaces in PLACEHOLDER_NAMES:
         return True
-    if re.match(r"^(这个|那个|某|本|此|他|她|它|谁)人?$", no_spaces):
+    # Generic pronoun patterns: 这位, 那位, 某人, 这人是谁, etc.
+    if re.match(r"^(这个|这|那个|那|某|本|此|他|她|它|谁)(人|位)?(是谁|是谁啊|是谁呢|朋友|同学|同事|先生|女士)?$", no_spaces):
+        return True
+    # Sentences starting with demonstratives: e.g. "这个人 她女朋友大学时候就跟他在一起了"
+    if re.match(r"^(这个|这|那个|那|某|本|此)人?[\s,，.。!！]+", s):
+        return True
+    # Long text with sentence punctuation extracted by error
+    if len(s) > 12 and re.search(r"[，。！？；\n]", s) and not re.search(r"^[A-Za-z\s'-]+$", s):
         return True
     return False
 
@@ -127,7 +144,7 @@ def extract_real_name_from_context(
     social_handles: Optional[dict[str, str]] = None,
 ) -> str:
     """
-    Attempt to extract a real person's name from notes, OCR text, or context
+    Attempt to extract a real person's name or social handle from notes, OCR text, or context
     when the primary name was missing or set to a placeholder pronoun.
     """
     candidates: list[str] = []
@@ -135,15 +152,23 @@ def extract_real_name_from_context(
     for text in (notes, image_text, source_text):
         if not text:
             continue
-        # Profile block matching: "- Name: Adam Walker" or "Name: Adam Walker"
-        m = re.search(r"(?:^|\n)\s*[-*]?\s*(?:Name|Full Name|Romanized name|姓名|中文名|名字)\s*[:：]\s*([^\n,;]+)", text, re.IGNORECASE)
+        # Profile block matching: "- Name: Adam Walker" or "Romanized name: Adam Walker"
+        m = re.search(
+            r"(?:^|\n)\s*[-*]?\s*(?:Name|Full Name|Romanized(?:\s*/\s*alternate)?\s*name|Alternate name|English name|姓名|中文名|名字|英文名|外文名)\s*(?:is|为|是|:|=|：|\s*preserved from extraction:)\s*([^\n,;]+)",
+            text,
+            re.IGNORECASE,
+        )
         if m:
             val = m.group(1).strip()
             if not is_placeholder_name(val):
                 candidates.append(val)
 
         # Labeled patterns inside text
-        m2 = re.search(r"(?:Romanized name|姓名|中文名|名字)\s*(?:is|为|是|:|=|：)\s*([A-Za-z\s'-]{2,40}|[\u4e00-\u9fa5]{2,6})", text, re.IGNORECASE)
+        m2 = re.search(
+            r"(?:Romanized(?:\s*/\s*alternate)?\s*name|Alternate name|English name|姓名|中文名|名字|英文名)\s*(?:is|为|是|:|=|：|\s*preserved from extraction:)\s*([A-Za-z\s'-]{2,40}|[\u4e00-\u9fa5]{2,6})",
+            text,
+            re.IGNORECASE,
+        )
         if m2:
             val = m2.group(1).strip()
             if not is_placeholder_name(val):
@@ -160,6 +185,26 @@ def extract_real_name_from_context(
         cleaned = re.sub(r"[.。!！,，;；]+$", "", c).strip()
         if not is_placeholder_name(cleaned) and len(cleaned) >= 2:
             return cleaned
+
+    # Fallback to social handle (e.g. @adamwalk or handle extracted from notes/url)
+    if social_handles:
+        for p in ("instagram", "twitter", "x", "telegram", "wechat", "linkedin", "line"):
+            h = social_handles.get(p)
+            if h and not is_placeholder_name(h):
+                h_clean = h.strip()
+                if not h_clean.startswith("@") and "/" not in h_clean:
+                    h_clean = f"@{h_clean}"
+                return h_clean
+
+    # Check for handle in notes / source_text
+    for text in (notes, image_text, source_text):
+        if not text:
+            continue
+        m_handle = re.search(r"(?:^|\s)(@[A-Za-z0-9._-]{3,30})(?=[,\s.。!！;；]|$)", text)
+        if m_handle:
+            h_val = m_handle.group(1).strip()
+            if not is_placeholder_name(h_val):
+                return h_val
 
     return ""
 
