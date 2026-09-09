@@ -101,6 +101,22 @@ async def execute_contact_review(
                 result.applied = True
                 log(f"Page created successfully: {page_url} (ID: {page_id})")
 
+                # Append attached images if provided
+                if contact.image_urls or contact.image_files:
+                    try:
+                        img_count = len(contact.image_urls) + len(contact.image_files)
+                        log(f"Appending {img_count} image(s) to page {page_id}...")
+                        img_blocks = await notion.append_images_to_page(
+                            page_id=page_id,
+                            image_urls=contact.image_urls,
+                            image_files=contact.image_files,
+                            slack_token=slack.token,
+                        )
+                        result.appended_image_count = len(img_blocks)
+                        log(f"Appended {len(img_blocks)} image block(s) to Notion page.")
+                    except Exception as img_err:
+                        logger.warning("Failed to append images: %s", img_err)
+
                 # SSOT Re-Read Verification
                 log("Verifying newly created page via live Notion API re-read...")
                 verified, _ = await notion.verify_page_properties(page_id, props)
@@ -112,13 +128,30 @@ async def execute_contact_review(
                 if not page_id:
                     raise ValueError(f"Missing target_page_id for verdict {result.verdict}")
 
-                props, blocks = engine.prepare_mutation(result, contact)
+                cand = candidates[0] if candidates else None
+                props, blocks = engine.prepare_mutation(result, contact, candidate=cand)
                 if props:
                     log(f"Applying property update to page {page_id}...")
                     await notion.update_page_properties(page_id, props)
                 if blocks:
                     log(f"Appending {len(blocks)} audit block(s) to page {page_id}...")
                     await notion.append_page_blocks(page_id, blocks)
+
+                # Append attached images if provided
+                if contact.image_urls or contact.image_files:
+                    try:
+                        img_count = len(contact.image_urls) + len(contact.image_files)
+                        log(f"Appending {img_count} image(s) to page {page_id}...")
+                        img_blocks = await notion.append_images_to_page(
+                            page_id=page_id,
+                            image_urls=contact.image_urls,
+                            image_files=contact.image_files,
+                            slack_token=slack.token,
+                        )
+                        result.appended_image_count = len(img_blocks)
+                        log(f"Appended {len(img_blocks)} image block(s) to Notion page.")
+                    except Exception as img_err:
+                        logger.warning("Failed to append images: %s", img_err)
 
                 result.applied = True
                 # SSOT Re-Read Verification
@@ -129,13 +162,26 @@ async def execute_contact_review(
 
             elif result.verdict == ReviewVerdict.MERGE:
                 canonical_id = result.target_page_id
-                props, blocks = engine.prepare_mutation(result, contact)
+                cand = candidates[0] if candidates else None
+                props, blocks = engine.prepare_mutation(result, contact, candidate=cand)
                 if props:
                     log(f"Updating canonical page {canonical_id}...")
                     await notion.update_page_properties(canonical_id, props)
                 if blocks:
                     log(f"Appending merge audit history to {canonical_id}...")
                     await notion.append_page_blocks(canonical_id, blocks)
+
+                if contact.image_urls or contact.image_files:
+                    try:
+                        img_blocks = await notion.append_images_to_page(
+                            page_id=canonical_id,
+                            image_urls=contact.image_urls,
+                            image_files=contact.image_files,
+                            slack_token=slack.token,
+                        )
+                        result.appended_image_count = len(img_blocks)
+                    except Exception as img_err:
+                        logger.warning("Failed to append images to merged page: %s", img_err)
 
                 # Append tombstone notice to secondary candidates
                 for c in result.candidates[1:]:

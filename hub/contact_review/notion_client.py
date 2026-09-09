@@ -14,12 +14,14 @@ import os
 import re
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
 from hub.contact_review.models import (
     CandidateMatch,
     ContactInput,
+    is_placeholder_name,
     normalize_phone_digits,
     normalize_url_string,
 )
@@ -133,6 +135,32 @@ def make_paragraph_block(text: str) -> dict[str, Any]:
     }
 
 
+def make_external_image_block(url: str, caption: str = "") -> dict[str, Any]:
+    b: dict[str, Any] = {
+        "type": "image",
+        "image": {
+            "type": "external",
+            "external": {"url": str(url).strip()},
+        },
+    }
+    if caption:
+        b["image"]["caption"] = [{"type": "text", "text": {"content": str(caption)[:1900]}}]
+    return b
+
+
+def make_file_upload_image_block(upload_id: str, caption: str = "") -> dict[str, Any]:
+    b: dict[str, Any] = {
+        "type": "image",
+        "image": {
+            "type": "file_upload",
+            "file_upload": {"id": str(upload_id).strip()},
+        },
+    }
+    if caption:
+        b["image"]["caption"] = [{"type": "text", "text": {"content": str(caption)[:1900]}}]
+    return b
+
+
 class NotionPeopleClient:
     """Client for interacting with Notion People database."""
 
@@ -153,6 +181,7 @@ class NotionPeopleClient:
         method: str,
         path: str,
         data: Optional[dict[str, Any]] = None,
+        api_version: Optional[str] = None,
     ) -> dict[str, Any]:
         """Execute synchronous HTTP request to Notion API."""
         if not self.api_token:
@@ -163,7 +192,7 @@ class NotionPeopleClient:
         url = f"{NOTION_BASE_URL}/{path.lstrip('/')}"
         headers = {
             "Authorization": f"Bearer {self.api_token}",
-            "Notion-Version": NOTION_API_VERSION,
+            "Notion-Version": api_version or NOTION_API_VERSION,
             "Content-Type": "application/json",
             "User-Agent": "Antigravity-Webhook-Hub/1.0",
         }
@@ -313,8 +342,8 @@ class NotionPeopleClient:
                     score += 85
                     reasons.append("url_match")
 
-            # Name scoring
-            if contact.name and page_name and contact.name != "Unknown Person":
+            # Name scoring (ignore if either is a generic placeholder)
+            if contact.name and page_name and not is_placeholder_name(contact.name) and not is_placeholder_name(page_name):
                 c_name_clean = page_name.strip().lower()
                 i_name_clean = contact.name.strip().lower()
                 if i_name_clean == c_name_clean:
@@ -332,12 +361,15 @@ class NotionPeopleClient:
 
             # Romaji Name scoring
             cand_romaji = cand_match.get_property_plain_text("Romaji Name")
-            if cand_romaji and contact.name and contact.name != "Unknown Person":
+            if cand_romaji and contact.name and not is_placeholder_name(contact.name):
                 cr_clean = cand_romaji.strip().lower()
                 i_clean = contact.name.strip().lower()
                 if i_clean == cr_clean:
                     score += 70
                     reasons.append("romaji_name_match")
+                    if is_placeholder_name(page_name):
+                        score += 30
+                        reasons.append("supersedes_placeholder_title")
                 elif i_clean in cr_clean or cr_clean in i_clean:
                     score += 45
                     reasons.append("romaji_substring_match")
@@ -412,6 +444,103 @@ class NotionPeopleClient:
         return await loop.run_in_executor(
             None, self._request, "PATCH", path, {"children": blocks}
         )
+
+    async def create_file_upload(self, filename: str, content_type: str = "image/png") -> dict[str, Any]:
+        """Create a single_part file_upload reservation with Notion API."""
+        loop = asyncio.get_running_loop()
+        payload = {"mode": "single_part", "filename": filename, "content_type": content_type}
+        return await loop.run_in_executor(
+            None,
+            lambda: self._request("POST", "file_uploads", payload, api_version="2026-03-11"),
+        )
+
+    async def send_file_binary(
+        self, upload_id: str, filename: str, file_bytes: bytes, content_type: str = "image/png"
+    ) -> bool:
+        """Send the file binary multipart/form-data to Notion."""
+        loop = asyncio.get_running_loop()
+
+        def _do_send() -> bool:
+            boundary = f"----NotionBoundary{uuid.uuid4().hex}"
+            body = bytearray()
+            body.extend(f"--{boundary}\r\n".encode("utf-8"))
+            body.extend(f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode("utf-8"))
+            body.extend(f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"))
+            body.extend(file_bytes)
+            body.extend(b"\r\n")
+            body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+            url = f"{NOTION_BASE_URL}/file_uploads/{upload_id}/send"
+            headers = {
+                "Authorization": f"Bearer {self.api_token}",
+                "Notion-Version": "2026-03-11",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            }
+            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return resp.status in (200, 201, 204)
+
+        return await loop.run_in_executor(None, _do_send)
+
+    async def download_slack_file(
+        self, download_url: str, slack_token: Optional[str] = None
+    ) -> tuple[bytes, str]:
+        """Download private file from Slack using Slack token."""
+        token = (
+            slack_token
+            or os.environ.get("SLACK_USER_TOKEN")
+            or os.environ.get("SLACK_BOT_TOKEN")
+            or "xoxp-REDACTED-REVOKED-TOKEN"
+        )
+        loop = asyncio.get_running_loop()
+
+        def _dl() -> tuple[bytes, str]:
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            req = urllib.request.Request(download_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                ctype = resp.headers.get_content_type() or "image/png"
+                return resp.read(), ctype
+
+        return await loop.run_in_executor(None, _dl)
+
+    async def append_images_to_page(
+        self,
+        page_id: str,
+        image_urls: Optional[list[str]] = None,
+        image_files: Optional[list[dict[str, Any]]] = None,
+        slack_token: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Append image blocks to page children.
+        Supports both external URLs and Slack private files (downloaded and uploaded to Notion).
+        """
+        blocks: list[dict[str, Any]] = []
+
+        # 1. External URLs
+        for url in (image_urls or []):
+            if url and str(url).startswith(("http://", "https://")):
+                blocks.append(make_external_image_block(url, caption="Attached Image"))
+
+        # 2. Image files (e.g. from Slack)
+        for f in (image_files or []):
+            dl_url = f.get("url_private_download") or f.get("url_private") or f.get("url")
+            fname = f.get("name") or f.get("title") or "image.png"
+            if dl_url:
+                try:
+                    fbytes, ctype = await self.download_slack_file(dl_url, slack_token=slack_token)
+                    upload_res = await self.create_file_upload(fname, content_type=ctype)
+                    upload_id = upload_res.get("id")
+                    if upload_id:
+                        sent = await self.send_file_binary(upload_id, fname, fbytes, content_type=ctype)
+                        if sent:
+                            caption = f.get("caption") or f"Slack Image: {fname}"
+                            blocks.append(make_file_upload_image_block(upload_id, caption=caption))
+                except Exception as dl_err:
+                    logger.warning("Failed to download and upload image file %s: %s", fname, dl_err)
+
+        if blocks:
+            await self.append_page_blocks(page_id, blocks)
+        return blocks
 
     async def verify_page_properties(
         self,

@@ -19,6 +19,7 @@ from hub.contact_review.models import (
     ReviewResult,
     ReviewVerdict,
     format_social_url,
+    is_placeholder_name,
     normalize_email_address,
     normalize_phone_digits,
     normalize_url_string,
@@ -83,6 +84,8 @@ def property_mapping_for_field(field_name: str, value: Any) -> tuple[Optional[st
         return "Full Name", make_title(v)
     elif f in ("romaji_name", "romaji"):
         return "Romaji Name", make_rich_text(v)
+    elif f in ("romaji_source_name", "romaji_source"):
+        return "Romaji Source Name", make_rich_text(v)
     return None, None
 
 
@@ -288,7 +291,14 @@ class ContactReviewEngine:
             elif pkind == "date":
                 is_equivalent = cand_val.strip() == str(inp_val).strip()
             elif pkind == "title":
-                is_equivalent = cand_val.strip().lower() == str(inp_val).strip().lower()
+                cand_is_ph = is_placeholder_name(cand_val)
+                inp_is_ph = is_placeholder_name(inp_val)
+                if cand_is_ph and not inp_is_ph:
+                    is_equivalent = False
+                elif not cand_is_ph and inp_is_ph:
+                    is_equivalent = True  # Do not degrade verified real name to placeholder
+                else:
+                    is_equivalent = cand_val.strip().lower() == str(inp_val).strip().lower()
             elif pkind == "text":
                 c_clean = cand_val.strip().lower()
                 i_clean = str(inp_val).strip().lower()
@@ -306,13 +316,18 @@ class ContactReviewEngine:
                 )
             else:
                 has_correct = True
+                expl = (
+                    f"Superseding placeholder '{cand_val}' with verified real name '{inp_val}'"
+                    if attr_name == "name" and is_placeholder_name(cand_val) and not is_placeholder_name(inp_val)
+                    else f"Updating '{notion_prop}' from '{cand_val}' to '{inp_val}'"
+                )
                 diffs.append(
                     FieldDiff(
                         field_name=attr_name,
                         action=FieldDiffAction.CORRECT,
                         old_value=cand_val,
                         new_value=inp_val,
-                        explanation=f"Updating '{notion_prop}' from '{cand_val}' to '{inp_val}'",
+                        explanation=expl,
                     )
                 )
 
@@ -372,6 +387,10 @@ class ContactReviewEngine:
             props: dict[str, Any] = {
                 "Full Name": make_title(contact.name or "Unknown Person"),
             }
+            if not is_placeholder_name(contact.name):
+                props["Romaji Name"] = make_rich_text(contact.name)
+                props["Romaji Source Name"] = make_rich_text(contact.name)
+
             for fname in ("phone", "email", "company", "title", "city", "country", "birthday", "url", "entity", "notes"):
                 val = getattr(contact, fname, "")
                 pname, pobj = property_mapping_for_field(fname, val)
@@ -436,6 +455,11 @@ class ContactReviewEngine:
                         audit_lines.append(f"{d.field_name}: '{d.new_value}' (previous: '{d.old_value}')")
                     else:
                         audit_lines.append(f"{d.field_name}: '{d.new_value}' (newly supplemented)")
+
+            # If Full Name is updated from a placeholder, ensure Romaji Source Name & Romaji Name are clean
+            if "Full Name" in props and candidate:
+                props["Romaji Source Name"] = make_rich_text(contact.name)
+                props["Romaji Name"] = make_rich_text(contact.name)
 
             blocks = [
                 make_heading_block(f"Antigravity Contact Correction Audit ({now_str})", level=3),

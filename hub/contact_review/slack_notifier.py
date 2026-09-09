@@ -108,6 +108,10 @@ class SlackNotifier:
                 lines.append("\n*Changes:*")
                 lines.extend(diff_lines)
 
+        # Media attachment badge
+        if getattr(result, "appended_image_count", 0) > 0:
+            lines.append(f"🖼️ *Media*: {result.appended_image_count} image(s) attached to Notion profile")
+
         # SSOT verification badge
         if result.ssot_verified:
             lines.append("\n*SSOT Status*: Verified against Notion People CRM ✅")

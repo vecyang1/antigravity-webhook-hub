@@ -31,21 +31,27 @@ def make_candidate(
     birthday="1990-01-15",
     url="https://linkedin.com/in/nguyen",
     notes="Met at Da Nang conference",
+    properties=None,
+    page_name=None,
 ):
-    props = {
-        "Full Name": {"type": "title", "title": [{"plain_text": name}]},
-        "Phone": {"type": "rich_text", "rich_text": [{"plain_text": phone}]},
-        "Email": {"type": "email", "email": email},
-        "Company": {"type": "rich_text", "rich_text": [{"plain_text": company}]},
-        "City": {"type": "rich_text", "rich_text": [{"plain_text": city}]},
-        "Country": {"type": "rich_text", "rich_text": [{"plain_text": country}]},
-        "Birthday": {"type": "date", "date": {"start": birthday} if birthday else None},
-        "URL": {"type": "url", "url": url},
-        "Note": {"type": "rich_text", "rich_text": [{"plain_text": notes}]},
-    }
+    if properties is not None:
+        props = properties
+    else:
+        props = {
+            "Full Name": {"type": "title", "title": [{"plain_text": name}]},
+            "Phone": {"type": "rich_text", "rich_text": [{"plain_text": phone}]},
+            "Email": {"type": "email", "email": email},
+            "Company": {"type": "rich_text", "rich_text": [{"plain_text": company}]},
+            "City": {"type": "rich_text", "rich_text": [{"plain_text": city}]},
+            "Country": {"type": "rich_text", "rich_text": [{"plain_text": country}]},
+            "Birthday": {"type": "date", "date": {"start": birthday} if birthday else None},
+            "URL": {"type": "url", "url": url},
+            "Note": {"type": "rich_text", "rich_text": [{"plain_text": notes}]},
+        }
+    p_name = page_name if page_name is not None else name
     return CandidateMatch(
         page_id=page_id,
-        page_name=name,
+        page_name=p_name,
         page_url=f"https://notion.so/{page_id}",
         score=score,
         match_reasons=["test_match"],
@@ -189,3 +195,70 @@ def test_social_handles_diff_and_mutation(engine):
     assert "WeChat" in props
     assert props["WeChat"]["url"] == "https://weixin.qq.com/nguyen_wx"
     assert len(blocks) >= 1
+
+
+def test_placeholder_title_superseded_by_real_name(engine):
+    """
+    Empirical test: When an existing Notion contact has a placeholder title like '这个人',
+    and incoming contact provides a verified real name like 'Adam Walker',
+    the engine MUST decide CORRECT and update Full Name, Romaji Name, and Romaji Source Name.
+    """
+    cand = make_candidate(
+        page_id="page_adam",
+        page_name="这个人",
+        score=95,
+        properties={
+            "Full Name": {"type": "title", "title": [{"plain_text": "这个人"}]},
+            "Romaji Name": {"type": "rich_text", "rich_text": [{"plain_text": "Adam Walker"}]},
+            "Romaji Source Name": {"type": "rich_text", "rich_text": [{"plain_text": "这个人"}]},
+            "URL": {"type": "url", "url": "https://www.instagram.com/adamwalk/"},
+        },
+    )
+
+    contact = ContactInput(
+        name="Adam Walker",
+        url="https://www.instagram.com/adamwalk/",
+    )
+
+    result = engine.evaluate(contact, [cand])
+    assert result.verdict == ReviewVerdict.CORRECT
+
+    name_diff = next(d for d in result.diffs if d.field_name == "name")
+    assert name_diff.action == FieldDiffAction.CORRECT
+    assert name_diff.old_value == "这个人"
+    assert name_diff.new_value == "Adam Walker"
+    assert "Superseding placeholder" in name_diff.explanation
+
+    props, blocks = engine.prepare_mutation(result, contact, candidate=cand)
+    assert "Full Name" in props
+    assert props["Full Name"]["title"][0]["text"]["content"] == "Adam Walker"
+    assert "Romaji Source Name" in props
+    assert props["Romaji Source Name"]["rich_text"][0]["text"]["content"] == "Adam Walker"
+    assert "Romaji Name" in props
+    assert props["Romaji Name"]["rich_text"][0]["text"]["content"] == "Adam Walker"
+
+
+def test_placeholder_name_not_overwriting_real_name(engine):
+    """
+    Protection test: If incoming contact has a placeholder like '这个人'
+    and existing candidate has a verified real name like 'Adam Walker',
+    the engine must NOT degrade the real name to the placeholder.
+    """
+    cand = make_candidate(
+        page_id="page_adam",
+        page_name="Adam Walker",
+        score=95,
+        properties={
+            "Full Name": {"type": "title", "title": [{"plain_text": "Adam Walker"}]},
+        },
+    )
+
+    contact = ContactInput(
+        name="这个人",
+        url="https://www.instagram.com/adamwalk/",
+    )
+
+    result = engine.evaluate(contact, [cand])
+    name_diff = next((d for d in result.diffs if d.field_name == "name"), None)
+    if name_diff:
+        assert name_diff.action == FieldDiffAction.NO_CHANGE

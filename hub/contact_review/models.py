@@ -89,6 +89,81 @@ def format_social_url(platform: str, handle: str) -> str:
     return f"https://{raw}"
 
 
+PLACEHOLDER_NAMES: set[str] = {
+    # Chinese pronouns, demonstratives, and placeholders
+    "这个人", "这人", "那个人", "某人", "本人", "此人", "有人", "他人", "人家", "个人",
+    "这个", "那个", "谁", "谁啊", "这个人是谁", "未知", "联系人", "朋友", "同学",
+    "同事", "老师", "学生", "老板", "妹子", "美女", "帅哥", "男生", "女生",
+    "小哥哥", "小姐姐", "老哥", "老弟", "大叔", "阿姨", "师傅", "对方", "用户",
+    "客户", "成员", "候选人", "新人", "此用户", "该用户", "此人是谁", "不知名",
+    # English placeholders
+    "unknown person", "unknown", "user", "friend", "person", "contact", "someone",
+    "somebody", "this person", "that person", "none", "n/a", "na", "null", "undefined",
+}
+
+
+def is_placeholder_name(name: Optional[str]) -> bool:
+    """Check if name is empty or matches a generic placeholder/pronoun."""
+    if not name:
+        return True
+    s = str(name).strip().lower()
+    if not s:
+        return True
+    normalized = re.sub(r"\s+", " ", s)
+    if normalized in PLACEHOLDER_NAMES:
+        return True
+    no_spaces = re.sub(r"\s+", "", s)
+    if no_spaces in PLACEHOLDER_NAMES:
+        return True
+    if re.match(r"^(这个|那个|某|本|此|他|她|它|谁)人?$", no_spaces):
+        return True
+    return False
+
+
+def extract_real_name_from_context(
+    notes: str = "",
+    source_text: str = "",
+    image_text: str = "",
+    social_handles: Optional[dict[str, str]] = None,
+) -> str:
+    """
+    Attempt to extract a real person's name from notes, OCR text, or context
+    when the primary name was missing or set to a placeholder pronoun.
+    """
+    candidates: list[str] = []
+
+    for text in (notes, image_text, source_text):
+        if not text:
+            continue
+        # Profile block matching: "- Name: Adam Walker" or "Name: Adam Walker"
+        m = re.search(r"(?:^|\n)\s*[-*]?\s*(?:Name|Full Name|Romanized name|姓名|中文名|名字)\s*[:：]\s*([^\n,;]+)", text, re.IGNORECASE)
+        if m:
+            val = m.group(1).strip()
+            if not is_placeholder_name(val):
+                candidates.append(val)
+
+        # Labeled patterns inside text
+        m2 = re.search(r"(?:Romanized name|姓名|中文名|名字)\s*(?:is|为|是|:|=|：)\s*([A-Za-z\s'-]{2,40}|[\u4e00-\u9fa5]{2,6})", text, re.IGNORECASE)
+        if m2:
+            val = m2.group(1).strip()
+            if not is_placeholder_name(val):
+                candidates.append(val)
+
+    if image_text:
+        m3 = re.search(r"\bProfile:\s*(?:\n\s*[-*]?\s*Name:\s*([^\n]+))", image_text, re.IGNORECASE)
+        if m3:
+            val = m3.group(1).strip()
+            if not is_placeholder_name(val):
+                candidates.append(val)
+
+    for c in candidates:
+        cleaned = re.sub(r"[.。!！,，;；]+$", "", c).strip()
+        if not is_placeholder_name(cleaned) and len(cleaned) >= 2:
+            return cleaned
+
+    return ""
+
+
 @dataclass(slots=True)
 class FieldDiff:
     """Represents a diff on a single contact property."""
@@ -129,6 +204,8 @@ class ContactInput:
     source_url: str = ""
     image_text: str = ""
     social_handles: dict[str, str] = field(default_factory=dict)
+    image_files: list[dict[str, Any]] = field(default_factory=list)
+    image_urls: list[str] = field(default_factory=list)
     slack_channel: str = ""
     slack_thread_ts: str = ""
     slack_user: str = ""
@@ -208,8 +285,57 @@ class ContactInput:
         if "x" in social and "twitter" not in social:
             social["twitter"] = social["x"]
 
+        name_val = get_val("name", "full_name", "Full Name", default="Unknown Person")
+        notes_val = get_val("notes", "note", "important_info", "Note")
+        source_text_val = get_val("source_text", "text", "raw_text")
+        image_text_val = get_val("image_text", "image_response", "ocr_text")
+
+        # Supersede placeholder pronoun / generic name if real name found in context
+        if is_placeholder_name(name_val):
+            real_name = extract_real_name_from_context(
+                notes=notes_val,
+                source_text=source_text_val,
+                image_text=image_text_val,
+                social_handles=social,
+            )
+            if real_name:
+                name_val = real_name
+
+        # Parse image files and URLs
+        raw_files = (
+            data.get("image_files")
+            or data.get("files")
+            or c_dict.get("image_files")
+            or c_dict.get("files")
+            or []
+        )
+        if isinstance(raw_files, str):
+            try:
+                raw_files = json.loads(raw_files)
+            except Exception:
+                raw_files = []
+        if not isinstance(raw_files, list):
+            raw_files = [raw_files] if isinstance(raw_files, dict) else []
+        image_files = [f for f in raw_files if isinstance(f, dict)]
+
+        raw_urls = (
+            data.get("image_urls")
+            or data.get("images")
+            or c_dict.get("image_urls")
+            or c_dict.get("images")
+            or []
+        )
+        if isinstance(raw_urls, str):
+            try:
+                raw_urls = json.loads(raw_urls)
+            except Exception:
+                raw_urls = [raw_urls]
+        if not isinstance(raw_urls, list):
+            raw_urls = [str(raw_urls)] if raw_urls else []
+        image_urls = [str(u).strip() for u in raw_urls if u and str(u).strip().startswith(("http://", "https://"))]
+
         return cls(
-            name=get_val("name", "full_name", "Full Name", default="Unknown Person"),
+            name=name_val,
             phone=get_val("phone", "phone_number", "Phone"),
             email=get_val("email", "Email"),
             company=get_val("company", "Company"),
@@ -219,12 +345,14 @@ class ContactInput:
             birthday=get_val("birthday", "Birthday"),
             url=get_val("url", "URL", "link"),
             entity=get_val("entity", "relationship", "Entity"),
-            notes=get_val("notes", "note", "important_info", "Note"),
+            notes=notes_val,
             source=get_val("source", "Source", default="Slack"),
-            source_text=get_val("source_text", "text", "raw_text"),
+            source_text=source_text_val,
             source_url=get_val("source_url"),
-            image_text=get_val("image_text", "image_response", "ocr_text"),
+            image_text=image_text_val,
             social_handles=social,
+            image_files=image_files,
+            image_urls=image_urls,
             slack_channel=slack_channel,
             slack_thread_ts=slack_thread_ts,
             slack_user=slack_user,
@@ -248,6 +376,8 @@ class ContactInput:
             "source_url": self.source_url,
             "image_text": self.image_text,
             "social_handles": self.social_handles,
+            "image_files": self.image_files,
+            "image_urls": self.image_urls,
             "slack_channel": self.slack_channel,
             "slack_thread_ts": self.slack_thread_ts,
             "slack_user": self.slack_user,
@@ -346,6 +476,7 @@ class ReviewResult:
     applied: bool = False
     ssot_verified: bool = False
     slack_notified: bool = False
+    appended_image_count: int = 0
     error: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -361,5 +492,6 @@ class ReviewResult:
             "applied": self.applied,
             "ssot_verified": self.ssot_verified,
             "slack_notified": self.slack_notified,
+            "appended_image_count": self.appended_image_count,
             "error": self.error,
         }

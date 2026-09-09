@@ -10,6 +10,8 @@ from hub.contact_review.models import (
     FieldDiffAction,
     ReviewResult,
     ReviewVerdict,
+    extract_real_name_from_context,
+    is_placeholder_name,
     normalize_email_address,
     normalize_phone_digits,
     normalize_url_string,
@@ -163,3 +165,83 @@ def test_review_result_serialization():
     assert d["ssot_verified"] is True
     assert len(d["diffs"]) == 1
     assert d["diffs"][0]["action"] == "supplement"
+
+
+def test_placeholder_name_detection():
+    """Verify is_placeholder_name flags pronouns and generic placeholders."""
+    assert is_placeholder_name("这个人") is True
+    assert is_placeholder_name("这人") is True
+    assert is_placeholder_name("那个人") is True
+    assert is_placeholder_name("某人") is True
+    assert is_placeholder_name("本人") is True
+    assert is_placeholder_name("谁啊") is True
+    assert is_placeholder_name("Unknown Person") is True
+    assert is_placeholder_name("User") is True
+    assert is_placeholder_name("朋友") is True
+    assert is_placeholder_name("") is True
+    assert is_placeholder_name(None) is True
+
+    # Real names must NOT be flagged
+    assert is_placeholder_name("Adam Walker") is False
+    assert is_placeholder_name("胡国正") is False
+    assert is_placeholder_name("Alice Johnson") is False
+
+
+def test_extract_real_name_from_context():
+    """Verify extracting real names from notes, OCR context, and source text."""
+    # From OCR context
+    ocr_text = """**Image 1 (Instagram Profile):**
+**Profile:**
+- Name: Adam Walker
+- Handle: @adamwalk
+- Bio: Adam Driver"""
+    assert extract_real_name_from_context(image_text=ocr_text) == "Adam Walker"
+
+    # From notes
+    notes = "Handle: @adamwalk. Bio: Adam Driver. Romanized name: Adam Walker. UNSW."
+    assert extract_real_name_from_context(notes=notes) == "Adam Walker"
+
+
+def test_contact_input_supersedes_placeholder_with_real_name():
+    """
+    Empirical test: When incoming payload sets name to '这个人' (pronoun placeholder),
+    but OCR context or notes contains 'Adam Walker',
+    ContactInput.from_dict MUST supersede the placeholder with 'Adam Walker'.
+    """
+    payload = {
+        "source": "slack_people",
+        "contact": {
+            "name": "这个人",
+            "url": "https://www.instagram.com/adamwalk/",
+            "note": "Handle: @adamwalk. Bio: Adam Driver. Romanized name: Adam Walker.",
+        },
+        "source_text": "这个人 她女朋友大学时候就跟他在一起了",
+        "image_text": "**Profile:**\n- Name: Adam Walker\n- Handle: @adamwalk",
+    }
+    c = ContactInput.from_dict(payload)
+    assert c.name == "Adam Walker"
+    assert c.url == "https://www.instagram.com/adamwalk/"
+    assert c.source == "slack_people"
+
+
+def test_contact_input_multi_image_parsing():
+    """Verify ContactInput.from_dict parses multiple image files and URLs."""
+    payload = {
+        "contact": {
+            "name": "Adam Walker",
+        },
+        "image_files": [
+            {"id": "F1", "name": "img1.png", "url_private_download": "https://files.slack.com/1"},
+            {"id": "F2", "name": "img2.jpg", "url_private_download": "https://files.slack.com/2"},
+        ],
+        "image_urls": [
+            "https://example.com/photo1.png",
+            "https://example.com/photo2.png",
+        ],
+    }
+    c = ContactInput.from_dict(payload)
+    assert len(c.image_files) == 2
+    assert c.image_files[0]["id"] == "F1"
+    assert c.image_files[1]["id"] == "F2"
+    assert len(c.image_urls) == 2
+    assert c.image_urls[0] == "https://example.com/photo1.png"
