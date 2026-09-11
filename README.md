@@ -241,7 +241,18 @@ Accepts incoming webhook payloads. Returns `202 Accepted` immediately upon crypt
 ### Observability & UI Endpoints
 
 #### `GET /dashboard` or `GET /ui`
-Observable Web Dashboard and Activity Console (embedded single-page application with dark mode UI, live Server-Sent Events activity feed, search/filter controls, and interactive test simulation drawer).
+Observable Web Dashboard and Activity Console:
+- **UI/UX Pro Max Terminal Log Drawer**: Syntax-highlighted log viewer with dedicated line number gutter (`.log-gutter`), semantic level badges (`INFO`, `WARN`, `ERROR`, `SUCCESS`), timestamp and file path highlighting, embedded/full JSON syntax highlighting and pretty formatting (`<> Pretty JSON`), full ANSI terminal color sequences, real-time live search with `<mark>` match highlighting and count badge, wrap/nowrap toggle, auto-scroll lock, copy-to-clipboard, execution duration header, and exit code pill badges. Pure inline SVGs (zero emojis).
+- **Test Event Auto-Hide / Filter**: Toggle between `Real Only (Tests Hidden)`, `All Events`, and `Tests Only` with persistent localStorage memory and SSOT count alignment.
+- **Multi-Tier Dashboard Authentication**: Protect sensitive dashboard views via Cloudflare Access Zero Trust JWT assertions (`cf-access-jwt-assertion`), HTTP Basic Auth (`Authorization: Basic ...`), and token fallback (`Authorization: Bearer ...`, `?token=...`, `X-Dashboard-Token`). Configurable via environment variables:
+  ```ini
+  DASHBOARD_AUTH_ENABLED=true
+  DASHBOARD_BASIC_AUTH_USER=admin
+  DASHBOARD_BASIC_AUTH_PASS=your_secure_password
+  DASHBOARD_AUTH_TOKEN=your_secure_dashboard_token
+  DASHBOARD_CF_ACCESS_AUD=your_cloudflare_access_aud_tag
+  DASHBOARD_ALLOWED_EMAILS=user@example.com,admin@worldinspirelab.com
+  ```
 
 #### `GET /healthz` or `GET /health`
 Returns system liveness, database status, and memory RSS validation (supports both GET and HEAD methods for uptime monitors).
