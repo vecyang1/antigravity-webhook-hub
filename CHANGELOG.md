@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-09-11
+
+### Changed
+- **Cadence Sentinel Rescheduled to 6 Times Daily (`CAD-20260911-webhook-hub-sentinel`)**:
+  - Rescheduled Antigravity sidecar (`~/.gemini/config/sidecars/webhook-hub-sentinel/sidecar.json`) and 2nd Brain cadence registry (`00 - System/registries/cadence-commands.md`) to run every 4 hours (`0 */4 * * *` / 6 times per day: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00).
+  - Maintained 12-check E2E verification, memory RSS budget validation (<30MB), unprocessed task auto-sweep, and Chinese reporting.
+  - Verified with `cadence_ctl doctor --strict` (0 errors, 0 warnings) and `audit_cadence_registry.py --strict` (0 errors across 64 cards).
+
+### Fixed
+- **Root-Cause Elimination of Error Alert Floods ("Coolify VPS Dashboard")**:
+  - Investigated recurring error emails (`[Antigravity Webhook Hub] [🔴 Down]`) from `Coolify VPS Dashboard <notification@globalgrowthco.com>`.
+  - Identified source as self-hosted Uptime Kuma (Monitor #84) deployed under Coolify on VPS `openclaw-eu` routing via Cloudflare Tunnel (`webhook.worldinspirelab.com/healthz`).
+  - Diagnosed root cause: aggressive 60s probe interval with 2 retries (total 120s buffer). When the MacBook slept or rebooted, probe failed twice and triggered false alert emails.
+  - Patched `scripts/kuma_apply.py` in `26.08.16-adnova-cli` to support per-monitor `maxretries` and `retry_interval`, and tuned Monitor #84 to `interval: 300`, `maxretries: 4`, `retry_interval: 60` (~9-minute grace period).
+  - Applied changes to live Kuma database and verified contract passes: zero false alert emails during sleep, reboots, or Wi-Fi reconnects.
+  - Unloaded failing launchd plist and ensured Webhook Hub daemon runs cleanly via `./bin/webhook-hub start -d` (PID: 12118, RSS: 19.22MB <= 30MB, all 12 E2E checks passed).
+
 ## [1.6.0] - 2026-09-11
 
 ### Added
