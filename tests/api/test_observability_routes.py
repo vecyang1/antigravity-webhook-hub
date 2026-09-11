@@ -139,3 +139,148 @@ async def test_task_detail_and_404_handling(obs_server: Any):
         assert resp_404.status_code == 404
         data_404 = resp_404.json()
         assert "not_found" in data_404.get("error", "").lower() or "error" in data_404
+
+
+async def test_health_alias_endpoint(obs_server: Any):
+    """MAT-033: GET /health returns 200 OK aliasing /healthz for Coolify health monitor."""
+    base_url, server, db = obs_server
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{base_url}/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("status") == "ok"
+
+
+async def test_dashboard_endpoints(obs_server: Any):
+    """Tier 1: GET /dashboard, /ui, and / with text/html return embedded SPA HTML."""
+    base_url, server, db = obs_server
+
+    async with httpx.AsyncClient() as client:
+        # /dashboard
+        resp_dash = await client.get(f"{base_url}/dashboard")
+        assert resp_dash.status_code == 200
+        assert "text/html" in resp_dash.headers.get("content-type", "")
+        assert "Antigravity Webhook Hub" in resp_dash.text
+        assert "<svg" in resp_dash.text
+
+        # /ui
+        resp_ui = await client.get(f"{base_url}/ui")
+        assert resp_ui.status_code == 200
+        assert "text/html" in resp_ui.headers.get("content-type", "")
+
+        # GET / with Accept: text/html content negotiation
+        resp_root = await client.get(f"{base_url}/", headers={"Accept": "text/html,application/xhtml+xml"})
+        assert resp_root.status_code == 200
+        assert "text/html" in resp_root.headers.get("content-type", "")
+
+
+async def test_tasks_summary_endpoint(obs_server: Any):
+    """Tier 1: GET /tasks/summary aggregates counts directly from SQLite SSOT."""
+    base_url, server, db = obs_server
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{base_url}/tasks/summary")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("status") == "success"
+        assert "by_status" in data
+        assert "by_source" in data
+        assert "by_action" in data
+        assert "total_tasks" in data
+
+
+async def test_tasks_search_and_filter_routes(obs_server: Any):
+    """Tier 1: GET /tasks supports search ?q= and filters ?source= and ?status=."""
+    base_url, server, db = obs_server
+
+    # Create dummy events and tasks in db
+    if db is not None:
+        db.insert_webhook_event({
+            "event_id": "evt_filter_001",
+            "source": "github",
+            "payload_hash": "a" * 64,
+            "headers_json": "{}",
+            "raw_payload": "{}",
+            "method": "POST",
+            "path": "/webhook/github",
+            "status": "received",
+        })
+        db.insert_task({
+            "task_id": "tsk_filter_001",
+            "event_id": "evt_filter_001",
+            "command": "echo alpha",
+            "source": "github",
+            "action_type": "cli",
+            "status": "queued",
+        })
+        db.insert_webhook_event({
+            "event_id": "evt_filter_002",
+            "source": "slack_people",
+            "payload_hash": "b" * 64,
+            "headers_json": "{}",
+            "raw_payload": "{}",
+            "method": "POST",
+            "path": "/webhook/slack_people",
+            "status": "received",
+        })
+        db.insert_task({
+            "task_id": "tsk_filter_002",
+            "event_id": "evt_filter_002",
+            "command": "echo beta",
+            "source": "slack_people",
+            "action_type": "contact_review",
+            "status": "succeeded",
+        })
+
+    async with httpx.AsyncClient() as client:
+        # Filter by source
+        resp_src = await client.get(f"{base_url}/tasks?source=github")
+        assert resp_src.status_code == 200
+        data_src = resp_src.json()
+        assert any(t.get("source") == "github" for t in data_src.get("tasks", []))
+
+        # Search query ?q=
+        resp_q = await client.get(f"{base_url}/tasks?q=alpha")
+        assert resp_q.status_code == 200
+        data_q = resp_q.json()
+        assert len(data_q.get("tasks", [])) >= 1
+        assert any("alpha" in (t.get("command") or "") for t in data_q.get("tasks", []))
+
+
+async def test_task_rerun_endpoint(obs_server: Any):
+    """Tier 1: POST /tasks/{id}/rerun resets task to queued in SQLite SSOT."""
+    base_url, server, db = obs_server
+
+    if db is not None:
+        db.insert_webhook_event({
+            "event_id": "evt_rerun_100",
+            "source": "test",
+            "payload_hash": "c" * 64,
+            "headers_json": "{}",
+            "raw_payload": "{}",
+            "method": "POST",
+            "path": "/webhook/test",
+            "status": "received",
+        })
+        db.insert_task({
+            "task_id": "tsk_rerun_test_100",
+            "event_id": "evt_rerun_100",
+            "command": "echo rerun",
+            "source": "test",
+            "status": "failed",
+            "exit_code": 1,
+            "error_message": "Simulated failure",
+        })
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(f"{base_url}/tasks/tsk_rerun_test_100/rerun")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("status") == "queued"
+        assert data.get("task_id") == "tsk_rerun_test_100"
+
+        # Verify SSOT reflection
+        task_ref = db.get_task("tsk_rerun_test_100")
+        assert task_ref["status"] == "queued"
+        assert task_ref["error_message"] is None

@@ -216,7 +216,16 @@ def register_observability_routes(
         )
 
     async def handle_root(req: HTTPRequest) -> HTTPResponse:
-        """GET /: Root service descriptor and gateway status."""
+        """GET /: Root service descriptor, dashboard negotiation, and gateway status."""
+        accept_header = req.headers.get("accept", "").lower()
+        if "text/html" in accept_header:
+            try:
+                from hub.routes.dashboard import render_dashboard_html
+                html = render_dashboard_html(config, db)
+                return HTTPResponse.text(html, status_code=200, content_type="text/html; charset=utf-8")
+            except Exception as e:
+                logger.warning("Failed to render dashboard on root: %s", e)
+
         stats = server.get_stats()
         uptime = stats.get("uptime_seconds", 0.0)
         return HTTPResponse.json(
@@ -226,16 +235,29 @@ def register_observability_routes(
                 "version": "1.0.0",
                 "uptime_seconds": round(uptime, 2),
                 "endpoints": {
+                    "dashboard": "/dashboard",
                     "health": "/healthz",
+                    "health_alias": "/health",
                     "readiness": "/ready",
                     "metrics": "/metrics",
                     "webhook": "/webhook",
                     "tasks": "/tasks",
+                    "tasks_summary": "/tasks/summary",
                     "events": "/events/stream",
                 },
             },
             status_code=200,
         )
+
+    async def handle_dashboard(req: HTTPRequest) -> HTTPResponse:
+        """GET /dashboard & GET /ui: Render Observable Activities Web Dashboard."""
+        try:
+            from hub.routes.dashboard import render_dashboard_html
+            html = render_dashboard_html(config, db)
+            return HTTPResponse.text(html, status_code=200, content_type="text/html; charset=utf-8")
+        except Exception as e:
+            logger.warning("Failed to render dashboard: %s", e)
+            return HTTPResponse.error(f"Dashboard error: {e}", status_code=500)
 
     # Delegate task management routes to dedicated hub.routes.tasks module if not already registered
     if ("GET", "/tasks") not in getattr(server, "_exact_routes", {}):
@@ -247,5 +269,8 @@ def register_observability_routes(
 
     server.add_route("GET", "/", handle_root)
     server.add_route("GET", "/healthz", handle_healthz)
+    server.add_route("GET", "/health", handle_healthz)
     server.add_route("GET", "/ready", handle_ready)
     server.add_route("GET", "/metrics", handle_metrics)
+    server.add_route("GET", "/dashboard", handle_dashboard)
+    server.add_route("GET", "/ui", handle_dashboard)

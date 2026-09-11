@@ -253,6 +253,20 @@ def register_webhook_routes(
         if dispatcher is not None:
             await dispatcher.enqueue(task_id)
 
+        if broker is not None:
+            try:
+                await broker.publish("events", {
+                    "event_type": "task_created",
+                    "task_id": task_id,
+                    "event_id": event_id,
+                    "source": source,
+                    "action_type": action_type,
+                    "status": "queued",
+                    "timestamp": time.time(),
+                })
+            except Exception:
+                pass
+
         # 8. Immediate HTTP 202 Accepted Response
         return HTTPResponse.json(
             {

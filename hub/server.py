@@ -828,3 +828,9 @@ def wire_routes(
         register_sse_routes(server, config, db, broker)
     except ImportError:
         pass
+
+    try:
+        from hub.routes.dashboard import register_dashboard_routes
+        register_dashboard_routes(server, config, db, broker, dispatcher)
+    except ImportError:
+        pass

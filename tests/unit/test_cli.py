@@ -52,7 +52,7 @@ def test_build_parser_subcommands():
     ]
     assert len(subparsers_action) == 1
     choices = subparsers_action[0].choices
-    expected_subcommands = {"start", "stop", "status", "logs", "test-send", "verify"}
+    expected_subcommands = {"start", "stop", "status", "logs", "test-send", "verify", "dashboard", "rerun"}
     assert expected_subcommands.issubset(set(choices.keys()))
 
 
@@ -528,5 +528,65 @@ def test_cmd_sweep_no_auto_retry_and_source_flags(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "DISABLED" in captured.out
     db.close()
+
+
+def test_cmd_dashboard_output(capsys):
+    """Verify `webhook-hub dashboard` command outputs local and tunnel URLs."""
+    code = main(["dashboard"])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "Antigravity Webhook Hub" in captured.out
+    assert "http://127.0.0.1:9423/dashboard" in captured.out
+    assert "https://webhook.worldinspirelab.com:9423/dashboard" in captured.out
+
+    # JSON mode
+    code_json = main(["dashboard", "--json"])
+    assert code_json == 0
+    cap_json = capsys.readouterr()
+    data = json.loads(cap_json.out)
+    assert "local_url" in data
+    assert "tunnel_url" in data
+
+
+def test_cmd_rerun_direct_sqlite(tmp_path, capsys):
+    """Verify `webhook-hub rerun` directly modifies SQLite SSOT when gateway is offline."""
+    db_file = tmp_path / "test_cli_rerun.db"
+    db = DatabaseManager(str(db_file), cache_size=-16)
+    db.init_schema()
+
+    db.insert_webhook_event({
+        "event_id": "evt_cli_rerun_1",
+        "source": "test",
+        "payload_hash": "d" * 64,
+        "headers_json": "{}",
+        "raw_payload": "{}",
+        "method": "POST",
+        "path": "/webhook/test",
+        "status": "received",
+    })
+    db.insert_task({
+        "task_id": "tsk_cli_rerun_1",
+        "event_id": "evt_cli_rerun_1",
+        "command": "echo cli_rerun",
+        "source": "test",
+        "status": "failed",
+        "exit_code": 1,
+        "error_message": "failed previously",
+    })
+
+    # Execute rerun CLI command targeting offline SQLite db
+    code = main(["rerun", "tsk_cli_rerun_1", "--db", str(db_file)])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "tsk_cli_rerun_1" in captured.out
+    assert "queued" in captured.out
+
+    # Verify task state transitioned to queued
+    updated = db.get_task("tsk_cli_rerun_1")
+    assert updated["status"] == "queued"
+    assert updated["error_message"] is None
+    assert updated["retry_count"] == 1
+    db.close()
+
 
 

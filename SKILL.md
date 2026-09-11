@@ -22,6 +22,11 @@ All commands run via `./bin/webhook-hub <subcommand>` or `python3 -m hub <subcom
 ./bin/webhook-hub status --json        # Machine-readable JSON status for agents
 ./bin/webhook-hub stop                 # Gracefully terminate daemon via PID file
 
+# Dashboard & Observable Console
+./bin/webhook-hub dashboard            # Print local & tunnel URLs + server liveness
+./bin/webhook-hub dashboard --open     # Open embedded SPA dashboard in default browser
+./bin/webhook-hub rerun <task_id>      # Re-enqueue failed/interrupted task into dispatcher
+
 # Inspection & Streaming
 ./bin/webhook-hub logs --lines 20      # Read last 20 execution logs from SQLite
 ./bin/webhook-hub logs --task tsk_123  # Inspect single task execution output
@@ -50,16 +55,21 @@ All commands run via `./bin/webhook-hub <subcommand>` or `python3 -m hub <subcom
 
 | Method | Path | Description | Success Code | Rejection Codes |
 |---|---|---|---|---|
-| `GET` | `/` | Root service descriptor & running status | `200 OK` | - |
+| `GET` | `/` | Root service descriptor or SPA HTML (`Accept: text/html`) | `200 OK` | - |
+| `GET` | `/dashboard` | Observable Activity Web Dashboard (embedded SPA) | `200 OK` | - |
+| `GET` | `/ui` | Dashboard alias | `200 OK` | - |
 | `GET` | `/healthz` | Liveness & memory budget check | `200 OK` | `503 Service Unavailable` |
+| `GET` | `/health` | Liveness health check (Coolify monitor alias) | `200 OK` | `503 Service Unavailable` |
 | `GET` | `/ready` | Dispatcher & DB readiness probe | `200 OK` | `503 Service Unavailable` |
 | `GET` | `/metrics` | Prometheus metrics (or JSON via `Accept`) | `200 OK` | - |
 | `POST` | `/webhook` | Default ingress for webhook events | `202 Accepted` | `400`, `401`, `413` |
 | `POST` | `/webhook/{source}` | Source-tagged ingress (e.g., github, stripe) | `202 Accepted` | `400`, `401`, `413` |
-| `GET` | `/tasks` | Query historical tasks (`?status=&limit=`) | `200 OK` | `400 Bad Request` |
+| `GET` | `/tasks` | Query historical tasks (`?status=&source=&q=&limit=`) | `200 OK` | `400 Bad Request` |
 | `GET` | `/tasks/{id}` | Detailed task metadata & output logs | `200 OK` | `404 Not Found` |
-| `GET` | `/tasks/unprocessed` | Query unprocessed, orphaned, and stale tasks (`?stale_seconds=&source=&limit=`) | `200 OK` | `400 Bad Request` |
-| `POST` | `/tasks/sweep` | Sweep, recover, and re-enqueue unprocessed tasks into dispatcher | `200 OK` | `400 Bad Request` |
+| `POST` | `/tasks/{id}/rerun` | Re-enqueue existing task into SQLite SSOT & dispatcher | `200 OK` | `404 Not Found` |
+| `GET` | `/tasks/summary` | Aggregate metrics derived directly from SQLite SSOT | `200 OK` | - |
+| `GET` | `/tasks/unprocessed` | Query unprocessed, orphaned, and stale tasks | `200 OK` | `400 Bad Request` |
+| `POST` | `/tasks/sweep` | Sweep, recover, and re-enqueue unprocessed tasks | `200 OK` | `400 Bad Request` |
 | `GET` | `/events/stream` | Server-Sent Events live event stream | `200 OK` | - |
 | `GET` | `/tasks/{id}/stream` | SSE stream scoped to specific task | `200 OK` | `404 Not Found` |
 
@@ -221,5 +231,13 @@ When a Mac sleeps or loses battery for hours (e.g. 3 hours), in-flight tasks and
 3. **Orphaned Webhook Rehydration**: Any `webhook_events` with `status = 'received'` that never had a task created (e.g., sudden power loss) are promoted to tasks and enqueued.
 4. **Interrupted Task Retry**: Any tasks that failed with network/restart/timeout signatures are automatically retried up to `max_retries`.
 5. **On-Demand Sweeping**: Agents or cron jobs can inspect or trigger recovery via `./bin/webhook-hub sweep` (or `POST /tasks/sweep`) at any time.
+
+## 9. Antigravity Sidebar & Observable Activity Console
+
+Activities triggered by Webhook Hub are observable through two synchronized surfaces:
+
+1. **Antigravity IDE Sidebar**: Registered as scheduled sentinel `webhook-hub-sentinel` (Cadence Card `CAD-20260911-webhook-hub-sentinel`). When incoming webhooks trigger `agent_signal` or review tasks, event snapshots are recorded to `~/.gemini/antigravity/sidecar_data/webhook-hub-sentinel/events/*.json`, making activities directly visible in the IDE's Scheduled Tasks / Sidecars panel.
+2. **Embedded Web Console (`/dashboard` & `/ui`)**: Zero-dependency dark slate web interface with live SSE streaming (`/events/stream`), real-time RSS memory gauge (<30MB budget), task filtering, live stdout/stderr inspection drawer, one-click re-run, and interactive webhook simulator.
+
 
 

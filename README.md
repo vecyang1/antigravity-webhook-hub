@@ -154,10 +154,13 @@ The CLI is invoked via `./bin/webhook-hub` or `python3 -m hub`.
 | `start` | Start the gateway server | `-d` / `--daemon`, `-p` / `--port`, `--host`, `--db`, `--pidfile` |
 | `stop` | Gracefully terminate running instance | `-p` / `--pidfile`, `-f` / `--force`, `-t` / `--timeout` |
 | `status` | Query process status and `/healthz` metrics | `--json`, `-p` / `--port`, `--host`, `--pidfile` |
+| `dashboard` | View or open Observable Web Dashboard (`/dashboard`) | `--open`, `--host`, `-p` / `--port`, `--json` |
+| `rerun` | Re-enqueue failed/interrupted task into dispatcher | `task_id`, `--host`, `-p` / `--port`, `--db`, `--json` |
+| `sweep` | Sweep & recover unprocessed/stale tasks | `--dry-run`, `--json`, `--source`, `--limit` |
 | `logs` | Inspect SQLite logs or stream live SSE | `-f` / `--follow`, `-t` / `--task`, `-n` / `--lines`, `--db` |
 | `test-send` | Cryptographically sign and send test webhook | `--action`, `--command`, `--secret`, `--token`, `--tamper` |
 | `review-contact` | Review and merge contact into Notion CRM SSOT | `--name`, `--phone`, `--dry-run`, `--json`, `--payload` |
-| `verify` | Execute standalone 9-step E2E verification | `--host`, `--port`, `--secret` |
+| `verify` | Execute standalone E2E verification suite | `--host`, `--port`, `--secret` |
 
 ### Examples
 
@@ -169,20 +172,29 @@ The CLI is invoked via `./bin/webhook-hub` or `python3 -m hub`.
 ./bin/webhook-hub status
 ./bin/webhook-hub status --json
 
-# 3. Send legitimate test webhook signed with HMAC-SHA256
+# 3. Open Observable Activity Web Dashboard
+./bin/webhook-hub dashboard --open
+
+# 4. Re-run an existing task
+./bin/webhook-hub rerun tsk_01918a24bc10
+
+# 5. Sweep unprocessed / stale tasks (Mac sleep recovery)
+./bin/webhook-hub sweep --dry-run
+
+# 6. Send legitimate test webhook signed with HMAC-SHA256
 ./bin/webhook-hub test-send --action cli --command "echo 'Webhook received'"
 
-# 4. Tail historical execution logs from SQLite
+# 7. Tail historical execution logs from SQLite
 ./bin/webhook-hub logs --lines 50
 
-# 5. Follow live SSE event stream
+# 8. Follow live SSE event stream
 ./bin/webhook-hub logs --follow
 
-# 6. Intelligent Contact Review against Notion CRM SSOT
+# 9. Intelligent Contact Review against Notion CRM SSOT
 ./bin/webhook-hub review-contact --name "Adam Walker" --phone "+1 415 555 0199" --dry-run
 ./bin/webhook-hub review-contact --payload '{"name": "Alice Smith", "email": "alice@example.com"}'
 
-# 7. Gracefully terminate daemon
+# 10. Gracefully terminate daemon
 ./bin/webhook-hub stop
 ```
 

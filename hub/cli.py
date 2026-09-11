@@ -130,6 +130,7 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
     from hub.broker import EventBroker
     from hub.db import DatabaseManager
     from hub.dispatcher import TaskDispatcher
+    from hub.routes.dashboard import register_dashboard_routes
     from hub.routes.observability import register_observability_routes
     from hub.routes.sse import register_sse_routes
     from hub.routes.tasks import register_task_routes
@@ -179,6 +180,7 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
     register_task_routes(server, config, db_mgr, dispatcher, broker)
     register_observability_routes(server, config, db_mgr, broker, dispatcher)
     register_sse_routes(server, config, db_mgr, broker)
+    register_dashboard_routes(server, config, db_mgr, broker, dispatcher)
 
     # 6. Start HTTP Server
     try:
@@ -1010,6 +1012,144 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     return 0
 
 
+# ==============================================================================
+# SUBCOMMAND: dashboard (ui)
+# ==============================================================================
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Handle `webhook-hub dashboard` (or `ui`) command."""
+    import urllib.request
+
+    host = getattr(args, "host", "127.0.0.1")
+    port = getattr(args, "port", 9423)
+    local_url = f"http://{host}:{port}/dashboard"
+    tunnel_url = "https://webhook.worldinspirelab.com:9423/dashboard"
+
+    health_url = f"http://{host}:{port}/healthz"
+    is_running = False
+    try:
+        req = urllib.request.Request(health_url, method="GET")
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            if resp.status in (200, 503):
+                is_running = True
+    except Exception:
+        pass
+
+    if getattr(args, "json", False):
+        import json
+        print(json.dumps({
+            "status": "running" if is_running else "stopped",
+            "local_url": local_url,
+            "tunnel_url": tunnel_url,
+            "host": host,
+            "port": port,
+        }, indent=2))
+        return 0
+
+    print("==================================================")
+    print("  Antigravity Webhook Hub — Observable Activity Console")
+    print("==================================================")
+    print(f"  Status:      {'ONLINE' if is_running else 'OFFLINE (Start with ./bin/webhook-hub start -d)'}")
+    print(f"  Local URL:   {local_url}")
+    print(f"  Tunnel URL:  {tunnel_url}")
+    print("==================================================")
+
+    if getattr(args, "open", False):
+        try:
+            import subprocess
+            subprocess.run(["open", local_url], check=False)
+            print("  Opened dashboard in default browser.")
+        except Exception as e:
+            print(f"  Could not open browser: {e}")
+
+    return 0
+
+
+def _add_dashboard_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--host", default="127.0.0.1", help="Target server host")
+    parser.add_argument("--port", "-p", type=int, default=9423, help="Target server port")
+    parser.add_argument("--open", action="store_true", help="Open the dashboard in the default browser")
+    parser.add_argument("--json", action="store_true", help="Output URL info in JSON format")
+
+
+# ==============================================================================
+# SUBCOMMAND: rerun
+# ==============================================================================
+
+def cmd_rerun(args: argparse.Namespace) -> int:
+    """Handle `webhook-hub rerun <task_id>` command."""
+    import json
+    import urllib.request
+    import urllib.error
+
+    task_id = args.task_id
+    host = getattr(args, "host", "127.0.0.1")
+    port = getattr(args, "port", 9423)
+    target_url = f"http://{host}:{port}/tasks/{task_id}/rerun"
+
+    db_arg = getattr(args, "db", None)
+
+    # 1. Try running server via HTTP if no explicit --db was specified
+    if db_arg is None:
+        try:
+            req = urllib.request.Request(target_url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                if resp.status == 200:
+                    body = json.loads(resp.read().decode("utf-8"))
+                    if getattr(args, "json", False):
+                        print(json.dumps(body, indent=2))
+                    else:
+                        print(f"Task {task_id} successfully re-enqueued (live gateway).")
+                    return 0
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                print(f"Error: Task {task_id} not found on server.", file=sys.stderr)
+                return 1
+        except Exception:
+            pass
+
+    # 2. Fallback to direct DB update if offline
+    from hub.db import DatabaseManager
+    db_path = getattr(args, "db", None)
+    if not db_path:
+        try:
+            cfg = load_config(config_path=getattr(args, "config", None), env_path=getattr(args, "env_file", None))
+            db_path = cfg.database.path
+        except Exception:
+            db_path = "data/webhook_hub.db"
+
+    try:
+        db_mgr = DatabaseManager(db_path)
+        task = db_mgr.get_task(task_id)
+        if not task:
+            print(f"Error: Task {task_id} not found in database ({db_path}).", file=sys.stderr)
+            return 1
+        ok = db_mgr.rerun_task(task_id)
+        if ok:
+            if getattr(args, "json", False):
+                print(json.dumps({"status": "queued", "task_id": task_id, "mode": "direct_sqlite"}, indent=2))
+            else:
+                print(f"Task {task_id} reset to 'queued' in SQLite ({db_path}).")
+                print("Start the daemon to execute: ./bin/webhook-hub start -d")
+            return 0
+        else:
+            print(f"Error: Failed to reset task {task_id}.", file=sys.stderr)
+            return 1
+    except Exception as err:
+        print(f"Error accessing database {db_path}: {err}", file=sys.stderr)
+        return 1
+
+
+def _add_rerun_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("task_id", help="Task ID to re-enqueue and rerun")
+    parser.add_argument("--host", default="127.0.0.1", help="Gateway host when connecting to live server")
+    parser.add_argument("--port", "-p", type=int, default=9423, help="Gateway port when connecting to live server")
+    parser.add_argument("--db", type=str, default=None, help="Path to SQLite database file when offline")
+    parser.add_argument("--config", "-c", type=str, default=None, help="Path to config.yaml file")
+    parser.add_argument("--env-file", type=str, default=None, help="Path to .env file")
+    parser.add_argument("--json", action="store_true", help="Output result in JSON format")
+
+
 def _add_sweep_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dry-run", action="store_true", help="Inspect unprocessed tasks without executing or modifying state")
     parser.add_argument("--json", action="store_true", help="Format output as JSON for AI agents")
@@ -1204,6 +1344,12 @@ def build_parser() -> Any:
     p_sweep = subparsers.add_parser("sweep", aliases=["pick-unprocessed", "recover"], help="Auto-pick and recover unprocessed messages and tasks")
     _add_sweep_args(p_sweep)
 
+    p_dashboard = subparsers.add_parser("dashboard", aliases=["ui"], help="Open or display Webhook Hub Observable Dashboard URL")
+    _add_dashboard_args(p_dashboard)
+
+    p_rerun = subparsers.add_parser("rerun", help="Re-enqueue an existing task for re-execution")
+    _add_rerun_args(p_rerun)
+
     return parser
 
 
@@ -1216,6 +1362,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     known_commands = {
         "start", "stop", "status", "logs", "test-send", "verify",
         "review-contact", "contact-review", "sweep", "pick-unprocessed", "recover",
+        "dashboard", "ui", "rerun",
         "-h", "--help"
     }
     if argv and argv[0] not in known_commands and argv[0].startswith("-"):
@@ -1304,6 +1451,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         del p
         gc.collect()
         return cmd_sweep(args)
+
+    elif subcommand in ("dashboard", "ui"):
+        p = argparse.ArgumentParser(prog="webhook-hub dashboard")
+        _add_dashboard_args(p)
+        args = p.parse_args(sub_args)
+        args.subcommand = "dashboard"
+        del p
+        gc.collect()
+        return cmd_dashboard(args)
+
+    elif subcommand == "rerun":
+        p = argparse.ArgumentParser(prog="webhook-hub rerun")
+        _add_rerun_args(p)
+        args = p.parse_args(sub_args)
+        args.subcommand = "rerun"
+        del p
+        gc.collect()
+        return cmd_rerun(args)
 
     else:
         parser = build_parser()

@@ -32,8 +32,12 @@ def register_task_routes(
         return
 
     async def handle_tasks_list(req: HTTPRequest) -> HTTPResponse:
-        """GET /tasks: List tasks with optional status filtering and pagination."""
+        """GET /tasks: List tasks with optional status, source, action, search filtering and pagination."""
         status_filter = req.query_params.get("status")
+        source_filter = req.query_params.get("source")
+        action_filter = req.query_params.get("action_type") or req.query_params.get("action")
+        search_query = req.query_params.get("q") or req.query_params.get("search")
+
         try:
             limit = min(max(1, int(req.query_params.get("limit", 50))), 500)
         except (ValueError, TypeError):
@@ -49,23 +53,36 @@ def register_task_routes(
 
         if db is not None and hasattr(db, "execute_read"):
             try:
-                if status_filter:
-                    tasks = await db.execute_read(
-                        "SELECT * FROM tasks WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                        (status_filter, limit, offset),
-                    )
-                    count_rows = await db.execute_read(
-                        "SELECT COUNT(*) as cnt FROM tasks WHERE status = ?",
-                        (status_filter,),
-                    )
-                else:
-                    tasks = await db.execute_read(
-                        "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                        (limit, offset),
-                    )
-                    count_rows = await db.execute_read("SELECT COUNT(*) as cnt FROM tasks")
+                where_clauses: list[str] = []
+                params: list[Any] = []
 
-                total_count = count_rows[0].get("cnt", len(tasks)) if count_rows else len(tasks)
+                if status_filter:
+                    where_clauses.append("status = ?")
+                    params.append(status_filter)
+                if source_filter:
+                    where_clauses.append("source = ?")
+                    params.append(source_filter)
+                if action_filter:
+                    where_clauses.append("action_type = ?")
+                    params.append(action_filter)
+                if search_query:
+                    where_clauses.append(
+                        "(task_id LIKE ? OR event_id LIKE ? OR command LIKE ? OR target_action LIKE ?)"
+                    )
+                    pattern = f"%{search_query.strip()}%"
+                    params.extend([pattern, pattern, pattern, pattern])
+
+                where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+                count_sql = f"SELECT COUNT(*) as cnt FROM tasks {where_sql}"
+                query_sql = f"SELECT * FROM tasks {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+
+                count_params = list(params)
+                fetch_params = list(params) + [limit, offset]
+
+                count_rows = await db.execute_read(count_sql, tuple(count_params))
+                total_count = count_rows[0].get("cnt", 0) if count_rows else 0
+
+                tasks = await db.execute_read(query_sql, tuple(fetch_params))
             except Exception as e:
                 logger.warning("Error querying tasks list: %s", e)
 
@@ -199,6 +216,21 @@ def register_task_routes(
 
         if dispatcher is not None:
             await dispatcher.enqueue(task_id)
+
+        if broker is not None:
+            try:
+                import time
+                await broker.publish("events", {
+                    "event_type": "task_created",
+                    "task_id": task_id,
+                    "event_id": event_id,
+                    "source": source,
+                    "action_type": action_type,
+                    "status": "queued",
+                    "timestamp": time.time(),
+                })
+            except Exception:
+                pass
 
         return HTTPResponse.json(
             {
@@ -354,8 +386,133 @@ def register_task_routes(
 
         return HTTPResponse.error("Neither dispatcher nor db available for sweep", status_code=500)
 
+    async def handle_tasks_summary(req: HTTPRequest) -> HTTPResponse:
+        """GET /tasks/summary & GET /activities/summary: Aggregate metrics derived directly from SQLite SSOT."""
+        counts_by_status = {
+            "received": 0,
+            "queued": 0,
+            "running": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "timed_out": 0,
+            "cancelled": 0,
+        }
+        counts_by_source: dict[str, int] = {}
+        counts_by_action: dict[str, int] = {}
+        total_tasks = 0
+        total_events = 0
+
+        if db is not None and hasattr(db, "execute_read"):
+            try:
+                status_rows = await db.execute_read(
+                    "SELECT status, COUNT(*) as cnt FROM tasks GROUP BY status"
+                )
+                for r in status_rows:
+                    st = r.get("status")
+                    cnt = int(r.get("cnt", 0))
+                    if st in counts_by_status:
+                        counts_by_status[st] = cnt
+                    total_tasks += cnt
+
+                source_rows = await db.execute_read(
+                    "SELECT source, COUNT(*) as cnt FROM tasks GROUP BY source ORDER BY cnt DESC LIMIT 10"
+                )
+                for r in source_rows:
+                    src = r.get("source") or "default"
+                    counts_by_source[src] = int(r.get("cnt", 0))
+
+                action_rows = await db.execute_read(
+                    "SELECT action_type, COUNT(*) as cnt FROM tasks GROUP BY action_type ORDER BY cnt DESC LIMIT 10"
+                )
+                for r in action_rows:
+                    act = r.get("action_type") or "cli"
+                    counts_by_action[act] = int(r.get("cnt", 0))
+
+                evt_rows = await db.execute_read("SELECT COUNT(*) as cnt FROM webhook_events")
+                if evt_rows:
+                    total_events = int(evt_rows[0].get("cnt", 0))
+            except Exception as e:
+                logger.warning("Error aggregating tasks summary: %s", e)
+
+        return HTTPResponse.json(
+            {
+                "status": "success",
+                "total_tasks": total_tasks,
+                "total_events": total_events,
+                "by_status": counts_by_status,
+                "by_source": counts_by_source,
+                "by_action": counts_by_action,
+            },
+            status_code=200,
+        )
+
+    async def handle_task_rerun(req: HTTPRequest, task_id: str) -> HTTPResponse:
+        """POST /tasks/{task_id}/rerun: Re-enqueue an existing task into SQLite SSOT and dispatcher."""
+        if db is None:
+            return HTTPResponse.error("Database not available", status_code=500)
+
+        task = db.get_task(task_id)
+        if asyncio.iscoroutine(task):
+            task = await task
+
+        if not task:
+            return HTTPResponse.error(f"Task {task_id} not found", status_code=404)
+
+        if hasattr(db, "rerun_task"):
+            rerun_res = db.rerun_task(task_id)
+            if asyncio.iscoroutine(rerun_res):
+                await rerun_res
+        elif hasattr(db, "execute_write"):
+            await db.execute_write(
+                """
+                UPDATE tasks
+                SET status = 'queued',
+                    retry_count = retry_count + 1,
+                    exit_code = NULL,
+                    error_message = NULL,
+                    result_json = NULL,
+                    started_at = NULL,
+                    completed_at = NULL,
+                    queued_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            )
+
+        if dispatcher is not None:
+            await dispatcher.enqueue(task_id)
+
+        if broker is not None:
+            try:
+                import time
+                await broker.publish("events", {
+                    "event_type": "status_change",
+                    "task_id": task_id,
+                    "status": "queued",
+                    "timestamp": time.time(),
+                })
+            except Exception:
+                pass
+
+        updated_task = db.get_task(task_id)
+        if asyncio.iscoroutine(updated_task):
+            updated_task = await updated_task
+
+        return HTTPResponse.json(
+            {
+                "status": "queued",
+                "task_id": task_id,
+                "task": dict(updated_task) if updated_task else {},
+            },
+            status_code=200,
+        )
+
     server.add_route("GET", "/tasks", handle_tasks_list)
+    server.add_route("GET", "/tasks/summary", handle_tasks_summary)
+    server.add_route("GET", "/activities/summary", handle_tasks_summary)
     server.add_route("GET", "/tasks/unprocessed", handle_unprocessed_tasks)
     server.add_route("POST", "/tasks/sweep", handle_sweep_tasks)
     server.add_route("GET", "/tasks/{task_id}", handle_task_detail)
+    server.add_route("POST", "/tasks/{task_id}/rerun", handle_task_rerun)
     server.add_route("POST", "/tasks", handle_create_task)

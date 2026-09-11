@@ -552,6 +552,36 @@ class DatabaseManager:
             finally:
                 cur.close()
 
+    def rerun_task(self, task_id: str) -> bool:
+        """
+        Reset a task to 'queued' state, clear execution/error fields,
+        and increment retry_count for re-execution.
+        """
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'queued',
+                        retry_count = retry_count + 1,
+                        exit_code = NULL,
+                        error_message = NULL,
+                        result_json = NULL,
+                        started_at = NULL,
+                        completed_at = NULL,
+                        queued_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE task_id = ?;
+                    """,
+                    (task_id,),
+                )
+                affected = cur.rowcount
+                self._commit_and_shrink()
+                return affected > 0
+            finally:
+                cur.close()
+
     def recover_orphaned_tasks(self) -> int:
         """
         Boot-time crash recovery:

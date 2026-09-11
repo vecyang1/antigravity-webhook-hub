@@ -476,6 +476,16 @@ class TaskDispatcher:
         task_result_data: Optional[dict[str, Any]] = None
 
         try:
+            # Parse action_params from action_params_json or action_params dict
+            action_params: dict[str, Any] = {}
+            if task_data.get("action_params_json"):
+                try:
+                    action_params = json.loads(task_data["action_params_json"])
+                except Exception:
+                    pass
+            elif isinstance(task_data.get("action_params"), dict):
+                action_params = task_data["action_params"]
+
             if action_type in ("agent_signal", "signal"):
                 # Antigravity AI agent task signal dispatch
                 signals_dir_val = task_data.get("target_action")
@@ -488,6 +498,7 @@ class TaskDispatcher:
 
                 signals_dir.mkdir(parents=True, exist_ok=True)
 
+                prompt_val = action_params.get("prompt") or task_data.get("prompt") or task_data.get("command") or task_id
                 signal_content = {
                     "signal_version": "1.0",
                     "signal_id": f"sig_{uuid.uuid4().hex[:12]}",
@@ -496,8 +507,8 @@ class TaskDispatcher:
                     "source": task_data.get("source", "default"),
                     "action": task_data.get("action", action_type),
                     "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    "prompt": task_data.get("prompt", ""),
-                    "payload": task_data.get("payload", {}),
+                    "prompt": prompt_val,
+                    "payload": action_params.get("payload") or task_data.get("payload", {}),
                 }
 
                 tmp_path = signals_dir / f"{task_id}.tmp"
@@ -507,6 +518,32 @@ class TaskDispatcher:
 
                 stdout_lines.append(f"Emitted agent signal: {final_path}")
                 self._record_log(task_id, "stdout", stdout_lines[-1], execution_id=execution_id)
+
+                # Record observable activity in Antigravity sidecar data so it shows in Antigravity sidebar
+                try:
+                    sidecar_events_dir = Path.home() / ".gemini" / "antigravity" / "sidecar_data" / "webhook-hub-sentinel" / "events"
+                    sidecar_events_dir.mkdir(parents=True, exist_ok=True)
+                    now_ms = str(int(time.time() * 1000))
+                    ts_name = time.strftime("%Y%m%d_%H%M%S", time.gmtime()) + f".{int(now_ms[-3:]):03d}.json"
+                    event_payload = {
+                        "timestampMs": now_ms,
+                        "commandInvocationTimestampMs": now_ms,
+                        "error": "",
+                        "payload": {
+                            "newConversation": {
+                                "prompt": f"Antigravity Webhook Activity [{task_data.get('source', 'webhook')}]: {prompt_val}",
+                                "conversationId": str(uuid.uuid4()),
+                                "taskId": task_id,
+                                "source": task_data.get("source", "default"),
+                                "action": action_type,
+                            }
+                        }
+                    }
+                    (sidecar_events_dir / ts_name).write_text(json.dumps(event_payload), encoding="utf-8")
+                    stdout_lines.append(f"Recorded Antigravity sidebar activity: {ts_name}")
+                except Exception as sidecar_err:
+                    logger.debug("Failed to emit Antigravity sidecar activity event: %s", sidecar_err)
+
                 final_status = "succeeded"
             elif action_type in ("contact_review", "review_contact", "contact-review"):
                 # Antigravity Contact Review native in-process dispatch with live SSE and DB streaming
