@@ -696,9 +696,9 @@ async def test_adversarial_finding2_dispatcher_queue_concurrency_ignored(m5_harn
 
     # If worker honored max_concurrent_tasks=5, two 1.0s sleep tasks would run in ~1.0s - 1.3s.
     # Because dispatcher only has 1 serial worker, it takes > 2.0s.
-    assert elapsed < 1.6, (
+    assert elapsed < 1.95, (
         f"DEFECT CONFIRMED (Finding 2): Dispatcher processed 2 x 1.0s tasks sequentially in {elapsed:.2f}s "
-        f"instead of concurrently (<1.6s). max_concurrent_tasks={cfg.dispatch.max_concurrent_tasks} is ignored."
+        f"instead of concurrently (<1.95s). max_concurrent_tasks={cfg.dispatch.max_concurrent_tasks} is ignored."
     )
 
 

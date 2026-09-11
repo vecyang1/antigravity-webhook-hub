@@ -1086,11 +1086,25 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
   <!-- Type-safe Client Logic adhering to SSOT & Unidirectional Data Flow -->
   <script>
+    function getStoredFilterMode() {{
+      try {{
+        return localStorage.getItem('antigravity_hub_filter_mode') || 'real';
+      }} catch (_) {{
+        return 'real';
+      }}
+    }}
+
+    function setStoredFilterMode(mode) {{
+      try {{
+        localStorage.setItem('antigravity_hub_filter_mode', mode);
+      }} catch (_) {{}}
+    }}
+
     // State management: SSOT - local state is strictly derived from API responses
     const state = {{
       tasks: [],
       categoryFilter: 'all',
-      eventFilterMode: localStorage.getItem('antigravity_hub_filter_mode') || 'real',
+      eventFilterMode: getStoredFilterMode(),
       searchQuery: '',
       activeTaskId: null,
       drawerEventSource: null,
@@ -1157,7 +1171,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         }} else if (state.categoryFilter === 'contact-review') {{
           url += '&source=contact-review';
         }} else if (state.categoryFilter === 'uptime-kuma') {{
-          url += '&source=uptime-kuma';
+          url += '&source=uptime_kuma';
         }} else if (state.categoryFilter === 'cli') {{
           url += '&action_type=cli';
         }} else if (state.categoryFilter === 'failed') {{
@@ -1213,8 +1227,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
       document.getElementById('countAll').innerText = totalTasks;
       document.getElementById('countAgent').innerText = (summary.by_action || {{}}).agent_signal || 0;
-      document.getElementById('countContact').innerText = (summary.by_source || {{}})['contact-review'] || 0;
-      document.getElementById('countKuma').innerText = (summary.by_source || {{}})['uptime-kuma'] || 0;
+      document.getElementById('countContact').innerText = (summary.by_source || {{}})['contact-review'] || (summary.by_source || {{}})['contact_review'] || 0;
+      document.getElementById('countKuma').innerText = (summary.by_source || {{}})['uptime_kuma'] || (summary.by_source || {{}})['uptime-kuma'] || 0;
       document.getElementById('countCli').innerText = (summary.by_action || {{}}).cli || 0;
       document.getElementById('countFailed').innerText = (byStatus.failed || 0) + (byStatus.timed_out || 0);
 
@@ -1290,7 +1304,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
     function setEventFilterMode(mode) {{
       state.eventFilterMode = mode;
-      localStorage.setItem('antigravity_hub_filter_mode', mode);
+      setStoredFilterMode(mode);
       syncFilterUI();
       if (mode === 'real') {{
         showToast('Filter: Showing real production activities only', 'info');
@@ -1320,15 +1334,20 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
       const toggleBtn = document.getElementById('toggleFilterBtn');
       const toggleText = document.getElementById('toggleFilterText');
+      const eyeIcon = document.getElementById('filterEyeIcon');
+
       if (mode === 'real') {{
         if (toggleBtn) toggleBtn.classList.add('btn-filter-active');
         if (toggleText) toggleText.innerText = 'Real Only (Tests Hidden)';
+        if (eyeIcon) eyeIcon.innerHTML = '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/>';
       }} else if (mode === 'test') {{
         if (toggleBtn) toggleBtn.classList.remove('btn-filter-active');
         if (toggleText) toggleText.innerText = 'Tests Only';
+        if (eyeIcon) eyeIcon.innerHTML = '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>';
       }} else {{
         if (toggleBtn) toggleBtn.classList.remove('btn-filter-active');
         if (toggleText) toggleText.innerText = 'All Events (Show All)';
+        if (eyeIcon) eyeIcon.innerHTML = '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>';
       }}
     }}
 

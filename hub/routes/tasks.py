@@ -70,8 +70,15 @@ def register_task_routes(
                     where_clauses.append("status = ?")
                     params.append(status_filter)
                 if source_filter:
-                    where_clauses.append("source = ?")
-                    params.append(source_filter)
+                    if source_filter in ("uptime_kuma", "uptime-kuma"):
+                        where_clauses.append("(source = ? OR source = ?)")
+                        params.extend(["uptime_kuma", "uptime-kuma"])
+                    elif source_filter in ("contact_review", "contact-review"):
+                        where_clauses.append("(source = ? OR source = ?)")
+                        params.extend(["contact_review", "contact-review"])
+                    else:
+                        where_clauses.append("source = ?")
+                        params.append(source_filter)
                 if action_filter:
                     where_clauses.append("action_type = ?")
                     params.append(action_filter)

@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Integrated 12-check E2E verification (`./bin/webhook-hub verify`), automated bug diagnosis in `webhook-hub.log`, auto-remediation, and full Chinese output for the daily health sweep.
 
 ### Fixed
+- **SQL & Model Filter Synchronization & UI Consistency (`hub/models.py`, `hub/routes/tasks.py`)**:
+  - Fully aligned `TEST_EVENT_SQL_FILTER` and `is_test_task`, eliminating the discrepancy where SQL counted 10 real tasks while in-memory filtering returned 7 tasks (due to synthetic params like `sync-test`, `slack_supplementary_test`, `live-verification-test`).
+  - Corrected `total_count` aggregation on `GET /tasks?filter_test=real` and `real_tasks` / `test_tasks` on `GET /tasks/summary` so metrics grid cards, table pill counts, and activity feeds display identical counts.
+- **SQL LIKE Underscore Wildcard & False Positive Elimination (`hub/models.py`)**:
+  - Replaced unescaped SQL wildcard patterns (`LIKE '%_test_%'`) with `ESCAPE '/'` literal matching (`LIKE '%/_test/_%' ESCAPE '/'`) and tokenized string matching in Python (`re.split`), preventing words like `latest_updates` from being falsely classified as test events.
+  - Replaced loose `"nonce"` substring matching with structured JSON key matching (`"nonce":`), preventing words like `announcement` from being hidden from production feeds.
+  - Added explicit override support (`is_test: false` / `is_test: true`) in both SQL and Python.
+- **Uptime Kuma Dashboard Integration & Source Normalization (`hub/routes/dashboard.py`, `hub/routes/tasks.py`)**:
+  - Normalized `source_filter` to accept both `uptime_kuma` (database standard) and `uptime-kuma` (route slug standard), restoring the Uptime Kuma sidebar counter from 0 to 3 and enabling click-through activity filtering.
+  - Wrapped `localStorage` access in safe try/catch fallbacks to protect incognito and strict-privacy browser contexts, and added dynamic SVG eye icon toggling.
 - **Cloudflare Tunnel Dashboard URL Standard Port 443 (`hub/cli.py`, `tests/unit/test_cli.py`)**:
   - Corrected tunnel dashboard URL from `https://webhook.worldinspirelab.com:9423/dashboard` to `https://webhook.worldinspirelab.com/dashboard`, eliminating non-standard port 9423 on public Cloudflare Tunnel ingress while preserving port 9423 on local loopback URL (`http://127.0.0.1:9423/dashboard`).
   - Updated CLI unit test expectation in `tests/unit/test_cli.py`.

@@ -532,12 +532,95 @@ async def test_tasks_test_event_filtering_and_classification(dashboard_test_app:
         assert "tsk_synth_sweeper" in test_ids
         assert all(t["is_test"] is True for t in data_test["tasks"])
 
-        # GET /tasks/summary includes real_tasks and test_tasks
+        # Verify total and count alignment
+        assert data_real["total"] == len(data_real["tasks"])
         resp_summary = await client.get(f"{base_url}/tasks/summary")
         assert resp_summary.status_code == 200
         summary = resp_summary.json()
-        assert "real_tasks" in summary
-        assert "test_tasks" in summary
-        assert summary["real_tasks"] >= 1
+        assert summary["real_tasks"] == data_real["total"]
         assert summary["test_tasks"] >= 4
+
+
+async def test_edge_case_classification_no_false_positives(dashboard_test_app: dict[str, Any]):
+    """Ensure natural language keywords (e.g. announcement) and valid sources (e.g. latest) are not false-positive test events."""
+    base_url = dashboard_test_app["base_url"]
+    db: DatabaseManager = dashboard_test_app["db"]
+
+    # 1. Payload with 'announcement' (contains substring 'nonce') should be REAL
+    db.insert_task({
+        "task_id": "tsk_real_announcement",
+        "event_id": "evt_real_announcement",
+        "command": "bin/webhook-hub notify",
+        "source": "latest_updates",
+        "action_type": "cli",
+        "action_params_json": json.dumps({"topic": "Important company announcement", "user": "alice"}),
+        "status": "succeeded",
+    })
+
+    # 2. Synthetic verification tasks from test suites
+    db.insert_task({
+        "task_id": "tsk_synth_sync_test",
+        "event_id": "evt_synth_sync_test",
+        "command": "bin/webhook-hub review-contact",
+        "source": "contact-review",
+        "action_type": "contact_review",
+        "action_params_json": json.dumps({"source": "sync-test", "notes": "Testing sync parameter return value"}),
+        "status": "succeeded",
+    })
+    db.insert_task({
+        "task_id": "tsk_synth_slack_suppl",
+        "event_id": "evt_synth_slack_suppl",
+        "command": "bin/webhook-hub review-contact",
+        "source": "contact-review",
+        "action_type": "contact_review",
+        "action_params_json": json.dumps({"source": "slack_supplementary_test", "channel_id": "C096KR96AF7"}),
+        "status": "succeeded",
+    })
+
+    # 3. Explicit override: is_test: false
+    db.insert_task({
+        "task_id": "tsk_override_real",
+        "event_id": "evt_override_real",
+        "command": "echo 'custom task'",
+        "source": "api",
+        "action_type": "cli",
+        "action_params_json": json.dumps({"command": "echo 'custom task'", "is_test": False}),
+        "status": "succeeded",
+    })
+
+    # 4. Uptime Kuma tasks (both uptime_kuma and uptime-kuma source filters)
+    db.insert_task({
+        "task_id": "tsk_uptime_alert_1",
+        "event_id": "evt_uptime_alert_1",
+        "command": 'python3 "audit_maintenance_alert_triage.py"',
+        "source": "uptime_kuma",
+        "action_type": "cli",
+        "action_params_json": json.dumps({"msg": "HTTP 500", "monitor": {"name": "Webhook"}}),
+        "status": "succeeded",
+    })
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{base_url}/tasks?filter_test=real")
+        assert resp.status_code == 200
+        real_tasks = resp.json()["tasks"]
+        real_ids = {t["task_id"] for t in real_tasks}
+
+        # Announcement task is NOT a test event
+        assert "tsk_real_announcement" in real_ids
+        # Synthetic tasks are correctly filtered
+        assert "tsk_synth_sync_test" not in real_ids
+        assert "tsk_synth_slack_suppl" not in real_ids
+        # Explicit override is respected
+        assert "tsk_override_real" in real_ids
+
+        # Test source_filter normalization for uptime-kuma vs uptime_kuma
+        resp_kuma_dash = await client.get(f"{base_url}/tasks?source=uptime-kuma")
+        assert resp_kuma_dash.status_code == 200
+        kuma_dash_ids = {t["task_id"] for t in resp_kuma_dash.json()["tasks"]}
+        assert "tsk_uptime_alert_1" in kuma_dash_ids
+
+        resp_kuma_under = await client.get(f"{base_url}/tasks?source=uptime_kuma")
+        assert resp_kuma_under.status_code == 200
+        kuma_under_ids = {t["task_id"] for t in resp_kuma_under.json()["tasks"]}
+        assert "tsk_uptime_alert_1" in kuma_under_ids
 

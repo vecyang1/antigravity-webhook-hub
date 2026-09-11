@@ -7,6 +7,7 @@ with minimal memory footprint (<30MB budget).
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -376,26 +377,65 @@ class ExecutionLog:
 
 
 TEST_EVENT_SQL_FILTER = """(
-    command LIKE 'echo %'
-    OR target_action LIKE 'echo %'
-    OR source LIKE '%test%'
-    OR source LIKE '%verifier%'
-    OR source LIKE '%simulator%'
-    OR task_id LIKE '%test%'
-    OR event_id LIKE '%test%'
-    OR event_id LIKE '%orphan%'
-    OR action_params_json LIKE '%"nonce":%'
-    OR action_params_json LIKE '%''nonce'':%'
-    OR action_params_json LIKE '%"dry_run": true%'
-    OR action_params_json LIKE '%"dry_run":true%'
-    OR command LIKE '%CF_TUNNEL%'
-    OR command LIKE '%BEARER_AUTH%'
-    OR command LIKE '%PUBLIC_CF_TUNNEL%'
-    OR command LIKE '%PUBLIC_VERIFY%'
-    OR command LIKE '%REVERIFY%'
-    OR command LIKE '%sweeper_recovered%'
-    OR command LIKE '%dedup_test%'
-    OR command LIKE '%time.sleep%'
+    action_params_json NOT LIKE '%"is_test": false%'
+    AND action_params_json NOT LIKE '%"is_test":false%'
+    AND action_params_json NOT LIKE '%"is_test": 0%'
+    AND (
+        command LIKE 'echo %'
+        OR target_action LIKE 'echo %'
+        OR source LIKE 'test/_%' ESCAPE '/'
+        OR source LIKE '%/_test' ESCAPE '/'
+        OR source LIKE '%/_test/_%' ESCAPE '/'
+        OR source LIKE 'test-%'
+        OR source LIKE '%-test'
+        OR source LIKE '%-test-%'
+        OR source = 'test'
+        OR source = 'tests'
+        OR source LIKE '%verifier%'
+        OR source LIKE '%simulator%'
+        OR task_id LIKE '%test%'
+        OR event_id LIKE '%test%'
+        OR event_id LIKE '%orphan%'
+        OR command LIKE '%dedup_test%'
+        OR target_action LIKE '%dedup_test%'
+        OR command LIKE '%step2_evt_verify%'
+        OR target_action LIKE '%step2_evt_verify%'
+        OR command LIKE '%verify_step%'
+        OR target_action LIKE '%verify_step%'
+        OR command LIKE '%sweeper_recovered%'
+        OR target_action LIKE '%sweeper_recovered%'
+        OR command LIKE '%cf_tunnel_e2e_verified%'
+        OR command LIKE '%bearer_auth_public_verified%'
+        OR command LIKE '%public_cf_tunnel_verified%'
+        OR command LIKE '%public_verify_success%'
+        OR command LIKE '%reverify_success%'
+        OR command LIKE '%stress test pass%'
+        OR command LIKE '%hello from m4 test%'
+        OR command LIKE '%hello challenger%'
+        OR command LIKE '%test webhook payload%'
+        OR command LIKE '%time.sleep%'
+        OR action_params_json LIKE '%"nonce":%'
+        OR action_params_json LIKE '%"nonce" :%'
+        OR action_params_json LIKE '%''nonce'':%'
+        OR action_params_json LIKE '%"dry_run": true%'
+        OR action_params_json LIKE '%"dry_run":true%'
+        OR action_params_json LIKE '%"dry_run": 1%'
+        OR action_params_json LIKE '%''dry_run'': true%'
+        OR action_params_json LIKE '%"is_test": true%'
+        OR action_params_json LIKE '%"is_test":true%'
+        OR action_params_json LIKE '%"is_test": 1%'
+        OR action_params_json LIKE '%test contact review verification%'
+        OR action_params_json LIKE '%test-verify@worldinspirelab.com%'
+        OR action_params_json LIKE '%cloudflare-tunnel-test%'
+        OR action_params_json LIKE '%live-verification-test%'
+        OR action_params_json LIKE '%sync-test%'
+        OR action_params_json LIKE '%manual_simulator%'
+        OR action_params_json LIKE '%slack_supplementary_test%'
+        OR action_params_json LIKE '%testing tunnel ingress connectivity%'
+        OR action_params_json LIKE '%testing sync parameter return value%'
+        OR action_params_json LIKE '%testing uptime kuma ingress%'
+        OR action_params_json LIKE '%live public tunnel probe%'
+    )
 )"""
 
 
@@ -411,23 +451,40 @@ def is_test_task(task: Optional[dict[str, Any]]) -> bool:
     target_action = str(task.get("target_action") or "").strip()
     raw_params = task.get("action_params_json") or task.get("action_params") or ""
 
+    parsed_params: Optional[dict[str, Any]] = None
     if isinstance(raw_params, dict):
+        parsed_params = raw_params
         try:
             params_str = json.dumps(raw_params)
         except Exception:
             params_str = str(raw_params)
     else:
         params_str = str(raw_params).strip()
+        try:
+            parsed = json.loads(params_str)
+            if isinstance(parsed, dict):
+                parsed_params = parsed
+        except Exception:
+            parsed_params = None
 
+    params_lower = params_str.lower()
     cmd_lower = command.lower()
     target_lower = target_action.lower()
+
+    # Explicit override in params if provided
+    if isinstance(parsed_params, dict):
+        if parsed_params.get("is_test") is True:
+            return True
+        if parsed_params.get("is_test") is False:
+            return False
 
     # 1. ID checks
     if "test" in task_id or "test" in event_id or "orphan" in event_id:
         return True
 
-    # 2. Source checks (synthetic E2E runners, simulators, test-send CLI)
-    if any(k in source for k in ("test", "simulator", "verifier")):
+    # 2. Source checks (synthetic E2E runners, simulators, test-send CLI; avoid word collisions)
+    source_tokens = re.split(r"[_\-/\.]", source)
+    if any(t in ("test", "tests", "verifier", "simulator") for t in source_tokens) or source == "test":
         return True
 
     # 3. Command / target_action checks
@@ -452,13 +509,19 @@ def is_test_task(task: Optional[dict[str, Any]]) -> bool:
     )):
         return True
 
-    # 4. Action params / payload checks
+    # 4. Action params / payload checks (avoid loose substring collisions like 'announcement')
     if params_str:
-        params_lower = params_str.lower()
-        if '"nonce":' in params_lower or "'nonce':" in params_lower or "nonce" in params_lower:
-            return True
-        if '"dry_run": true' in params_lower or '"dry_run":true' in params_lower or "'dry_run': true" in params_lower:
-            return True
+        if isinstance(parsed_params, dict):
+            if "nonce" in parsed_params:
+                return True
+            if parsed_params.get("dry_run") in (True, 1, "true"):
+                return True
+        else:
+            if '"nonce":' in params_lower or "'nonce':" in params_lower or '"nonce" :' in params_lower:
+                return True
+            if '"dry_run": true' in params_lower or '"dry_run":true' in params_lower or "'dry_run': true" in params_lower or '"dry_run": 1' in params_lower:
+                return True
+
         if any(k in params_lower for k in (
             "test contact review verification",
             "test-verify@worldinspirelab.com",
