@@ -27,6 +27,30 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     return _render(config, db)
 
 
+def render_unauthorized_html(auth_res: Any) -> str:
+    """Render a premium dark-mode 401 Unauthorized page adhering to /ui-ux-pro-max styling."""
+    return (
+        f"<!DOCTYPE html><html lang=\"en\" class=\"dark\"><head><meta charset=\"UTF-8\">"
+        f"<title>401 Unauthorized — Antigravity Webhook Hub</title>"
+        f"<style>body{{background:#090d16;color:#f8fafc;font-family:system-ui,-apple-system,sans-serif;"
+        f"display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:20px;}}"
+        f".card{{background:#0f172a;padding:32px 36px;border-radius:12px;border:1px solid #1e293b;"
+        f"max-width:440px;width:100%;text-align:center;box-shadow:0 10px 25px -5px rgba(0,0,0,0.5);}}"
+        f"h1{{font-size:18px;margin:0 0 8px 0;color:#ef4444;font-weight:600;}}"
+        f"p{{color:#94a3b8;font-size:14px;line-height:1.6;margin:0 0 20px 0;}}"
+        f".badge{{display:inline-block;padding:4px 10px;border-radius:9999px;font-size:12px;font-weight:500;"
+        f"background:rgba(239,68,68,0.15);color:#fca5a5;border:1px solid rgba(239,68,68,0.25);margin-bottom:16px;}}"
+        f"code{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;background:#1e293b;"
+        f"padding:2px 6px;border-radius:4px;color:#cbd5e1;}}</style></head>"
+        f"<body><div class=\"card\">"
+        f"<div class=\"badge\">Authentication Required</div>"
+        f"<h1>Access Denied</h1>"
+        f"<p>{auth_res.message}</p>"
+        f"<p style=\"font-size:12px;color:#64748b;\">Reason: <code>{auth_res.reason}</code></p>"
+        f"</div></body></html>"
+    )
+
+
 def register_dashboard_routes(
     server: AsyncHTTPServer,
     config: AppConfig,
@@ -56,26 +80,7 @@ def register_dashboard_routes(
                 "WWW-Authenticate": realm,
                 "Content-Type": "text/html; charset=utf-8",
             }
-            body = (
-                f"<!DOCTYPE html><html lang=\"en\" class=\"dark\"><head><meta charset=\"UTF-8\">"
-                f"<title>401 Unauthorized — Antigravity Webhook Hub</title>"
-                f"<style>body{{background:#090d16;color:#f8fafc;font-family:system-ui,-apple-system,sans-serif;"
-                f"display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:20px;}}"
-                f".card{{background:#0f172a;padding:32px 36px;border-radius:12px;border:1px solid #1e293b;"
-                f"max-width:440px;width:100%;text-align:center;box-shadow:0 10px 25px -5px rgba(0,0,0,0.5);}}"
-                f"h1{{font-size:18px;margin:0 0 8px 0;color:#ef4444;font-weight:600;}}"
-                f"p{{color:#94a3b8;font-size:14px;line-height:1.6;margin:0 0 20px 0;}}"
-                f".badge{{display:inline-block;padding:4px 10px;border-radius:9999px;font-size:12px;font-weight:500;"
-                f"background:rgba(239,68,68,0.15);color:#fca5a5;border:1px solid rgba(239,68,68,0.25);margin-bottom:16px;}}"
-                f"code{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;background:#1e293b;"
-                f"padding:2px 6px;border-radius:4px;color:#cbd5e1;}}</style></head>"
-                f"<body><div class=\"card\">"
-                f"<div class=\"badge\">Authentication Required</div>"
-                f"<h1>Access Denied</h1>"
-                f"<p>{auth_res.message}</p>"
-                f"<p style=\"font-size:12px;color:#64748b;\">Reason: <code>{auth_res.reason}</code></p>"
-                f"</div></body></html>"
-            )
+            body = render_unauthorized_html(auth_res)
             return HTTPResponse(status_code=auth_res.status_code or 401, headers=headers, body=body.encode("utf-8"))
 
         from hub.routes.dashboard_template import render_dashboard_html as _render

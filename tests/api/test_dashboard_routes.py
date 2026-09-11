@@ -663,16 +663,23 @@ async def test_dashboard_log_drawer_ui_ux_rendering(dashboard_test_app: dict[str
         assert "logLevelFilter" in html
         assert "btnToggleWrap" in html
         assert "btnToggleAutoScroll" in html
+        assert "btnTogglePrettyJson" in html
         assert "btnCopyLogs" in html
         assert "logMatchesCount" in html
 
         # 3. Badges & Syntax Highlighting
         assert "drawerDurationBadge" in html
         assert "drawerMetaDuration" in html
+        assert "badge-duration" in html
         assert "renderExitBadge" in html
         assert "log-lvl-info" in html
         assert "log-lvl-error" in html
         assert "log-json-key" in html
+        assert "is-pretty-json" in html
+        assert "log-traceback-title" in html
+        assert "log-traceback-line" in html
+        assert "log-traceback-func" in html
+        assert "log-traceback-exc" in html
         assert "parseAnsi" in html
         assert "is-traceback" in html
 
@@ -828,5 +835,155 @@ async def test_dashboard_authentication_basic_and_token(free_port: int, temp_db_
             assert r_hdr.status_code == 200
     finally:
         await server.stop()
+
+
+async def test_dashboard_log_formatter_unit_and_safety():
+    """
+    Directly execute the dashboard's JavaScript log formatter in Node.js to verify:
+    1. Zero tag collision when JSON stdout contains log levels (e.g. {"status": "SUCCESS"}).
+    2. Search query highlighting never corrupts HTML tag names or attributes (e.g. searching "span" or "class").
+    3. ANSI escape sequences correctly close all open spans and strip non-SGR sequences.
+    4. Python and JS stack traces syntax-highlight headers, file frames, lines, functions, and exceptions.
+    5. Embedded and full JSON parsing correctly detects JSON payloads.
+    """
+    from hub.routes.dashboard_template import render_dashboard_html
+    import subprocess
+    import tempfile
+    import os
+    import re
+
+    html = render_dashboard_html()
+    scripts = re.findall(r"<script>(.*?)</script>", html, re.DOTALL)
+    assert len(scripts) > 0, "No <script> tags found in dashboard HTML"
+
+    runner_script = f"""
+global.window = {{
+    addEventListener: () => {{}},
+    removeEventListener: () => {{}},
+    location: {{ href: 'http://localhost/' }}
+}};
+global.document = {{
+    getElementById: () => null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    createElement: () => ({{
+        style: {{}},
+        appendChild: () => {{}},
+        classList: {{ add: () => {{}}, remove: () => {{}} }}
+    }}),
+    addEventListener: () => {{}}
+}};
+global.localStorage = {{
+    getItem: () => null,
+    setItem: () => {{}},
+    removeItem: () => {{}}
+}};
+global.navigator = {{
+    clipboard: {{ writeText: async () => {{}} }}
+}};
+
+{scripts[0]}
+
+const assert = require('assert');
+
+// 1. JSON with embedded log levels: NO collision with HTML class attributes
+const jsonLine = '{{"status": "SUCCESS", "code": 200, "path": "/api/v1/health"}}';
+const formattedJson = formatLogLineHtml(jsonLine, 'stdout');
+assert(!formattedJson.includes('<span class="log-json-str">"<span class="'), 'Collision detected in JSON formatting');
+assert(formattedJson.includes('log-json-key'), 'Missing log-json-key');
+assert(formattedJson.includes('log-json-str'), 'Missing log-json-str');
+assert(formattedJson.includes('log-lvl-success'), 'Missing log-lvl-success');
+
+// 2. Safe search highlighting: NEVER corrupts tags
+const sampleRow = formatLogLineHtml('[INFO] Process completed with span tag in class', 'stdout');
+const searchSpan = highlightSearchQuery(sampleRow, 'span');
+assert(!searchSpan.includes('<<mark'), 'Corrupted tag name with search query');
+assert(!searchSpan.includes('class="<mark'), 'Corrupted class attribute with search query');
+assert(searchSpan.includes('<mark class="log-search-match">span</mark>'), 'Failed to match text content');
+
+const searchClass = highlightSearchQuery(sampleRow, 'class');
+assert(!searchClass.includes('<span <mark'), 'Corrupted span tag with class query');
+assert(searchClass.includes('<mark class="log-search-match">class</mark>'), 'Failed to match class text');
+
+// 3. ANSI escapes: all spans closed
+const ansiText = '\\u001b[1m\\u001b[32m[PASS]\\u001b[0m All tests passed';
+const formattedAnsi = formatLogLineHtml(ansiText, 'stdout');
+assert(formattedAnsi.includes('ansi-bold'), 'Missing ansi-bold');
+assert(formattedAnsi.includes('ansi-32'), 'Missing ansi-32');
+const openCount = (formattedAnsi.match(/<span/g) || []).length;
+const closeCount = (formattedAnsi.match(/<\\/span>/g) || []).length;
+assert.strictEqual(openCount, closeCount, 'Imbalanced HTML spans in ANSI rendering');
+
+// 4. Traceback highlighting
+const tbHeader = formatLogLineHtml('Traceback (most recent call last):', 'stderr');
+assert(tbHeader.includes('log-traceback-title'), 'Missing traceback title class');
+
+const tbFrame = formatLogLineHtml('  File "/opt/app/main.py", line 42, in handle_task', 'stderr');
+assert(tbFrame.includes('log-path'), 'Missing file path class in frame');
+assert(tbFrame.includes('log-traceback-line'), 'Missing line number class in frame');
+assert(tbFrame.includes('log-traceback-func'), 'Missing function name class in frame');
+
+const tbExc = formatLogLineHtml('ValueError: Invalid configuration option provided', 'stderr');
+assert(tbExc.includes('log-lvl-error'), 'Missing exception level error class');
+assert(tbExc.includes('log-traceback-msg'), 'Missing exception message class');
+
+// 5. JSON detection
+const parsedFull = tryParseJson('{{"test": 123}}');
+assert(parsedFull && parsedFull.type === 'full', 'Failed to detect full JSON');
+
+const parsedEmbedded = tryParseJson('[INFO] Result: {{"status": "ok"}}');
+assert(parsedEmbedded && parsedEmbedded.type === 'embedded', 'Failed to detect embedded JSON');
+
+console.log("NODE_EVAL_ALL_PASSED");
+"""
+
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+        f.write(runner_script)
+        temp_path = f.name
+
+    try:
+        proc = subprocess.run(["node", temp_path], capture_output=True, text=True, check=True)
+        assert "NODE_EVAL_ALL_PASSED" in proc.stdout
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
+async def test_observability_unauthorized_rendering(free_port: int, temp_db_path: str):
+    """Verify handle_root and handle_dashboard in observability.py render the styled 401 card."""
+    from hub.routes.observability import register_observability_routes
+    from hub.routes.dashboard import render_unauthorized_html
+    from hub.security import ValidationResult
+
+    config = AppConfig()
+    config.server.port = free_port
+    config.server.host = "127.0.0.1"
+    config.database.path = temp_db_path
+    config.dashboard.auth_enabled = True
+    config.dashboard.basic_auth_user = "secadmin"
+    config.dashboard.basic_auth_pass = "pass12345"
+
+    server = AsyncHTTPServer(config.server)
+    register_observability_routes(server, config)
+    await server.start()
+
+    base_url = f"http://127.0.0.1:{free_port}"
+    try:
+        async with httpx.AsyncClient() as client:
+            # GET / with text/html -> 401 styled card
+            r_root = await client.get(f"{base_url}/", headers={"Accept": "text/html"})
+            assert r_root.status_code == 401
+            assert "Authentication Required" in r_root.text
+            assert "Access Denied" in r_root.text
+            assert "WWW-Authenticate" in r_root.headers
+
+            # GET /dashboard without auth -> 401 styled card
+            r_dash = await client.get(f"{base_url}/dashboard", headers={"Accept": "text/html"})
+            assert r_dash.status_code == 401
+            assert "Authentication Required" in r_dash.text
+            assert "Access Denied" in r_dash.text
+    finally:
+        await server.stop()
+
 
 

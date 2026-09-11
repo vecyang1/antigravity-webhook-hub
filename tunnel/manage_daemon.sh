@@ -13,6 +13,13 @@ case "$1" in
     export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     export PYTHONUNBUFFERED=1
     cd "$PROJECT_DIR" || exit 1
+    # Clean stale PID file if process not running
+    if [ -f "$PID_FILE" ]; then
+      OLD_PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
+      if [ -n "$OLD_PID" ] && ! kill -0 "$OLD_PID" 2>/dev/null; then
+        rm -f "$PID_FILE"
+      fi
+    fi
     exec "$PYTHON_BIN" -B "$PROJECT_DIR/bin/webhook-hub" start --host 127.0.0.1 --port 9423 --db data/webhook_hub.db --pidfile .webhook-hub.pid
     ;;
   start)
@@ -36,7 +43,10 @@ case "$1" in
     ;;
   enable-autostart)
     echo "Enabling macOS auto-start on login (LaunchAgent)..."
-    pkill -f "webhook-hub start" 2>/dev/null || true
+    "$PROJECT_DIR/bin/webhook-hub" stop 2>/dev/null || true
+    pkill -f "webhook-hub" 2>/dev/null || true
+    sleep 1
+    rm -f "$PID_FILE"
     mkdir -p "$HOME/Library/LaunchAgents"
     cp "$SRC_PLIST" "$TARGET_PLIST"
     launchctl unload "$TARGET_PLIST" 2>/dev/null || true
@@ -53,7 +63,9 @@ case "$1" in
     echo "Disabling macOS auto-start..."
     launchctl unload "$TARGET_PLIST" 2>/dev/null || true
     rm -f "$TARGET_PLIST"
-    pkill -f "webhook-hub start" 2>/dev/null || true
+    "$PROJECT_DIR/bin/webhook-hub" stop 2>/dev/null || true
+    pkill -f "webhook-hub" 2>/dev/null || true
+    rm -f "$PID_FILE"
     echo "Daemon stopped and auto-start disabled."
     ;;
   *)

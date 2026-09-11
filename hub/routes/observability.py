@@ -224,13 +224,9 @@ def register_observability_routes(
                 auth_res = verify_dashboard_auth(req, config)
                 if not auth_res.is_valid:
                     realm = 'Basic realm="Antigravity Webhook Hub Dashboard"'
+                    from hub.routes.dashboard import render_unauthorized_html
                     headers = {"WWW-Authenticate": realm, "Content-Type": "text/html; charset=utf-8"}
-                    body = (
-                        f"<!DOCTYPE html><html lang=\"en\" class=\"dark\"><head><meta charset=\"UTF-8\">"
-                        f"<title>401 Unauthorized — Antigravity Webhook Hub</title></head>"
-                        f"<body style=\"background:#090d16;color:#f8fafc;font-family:sans-serif;padding:40px;\">"
-                        f"<h1>Authentication Required</h1><p>{auth_res.message}</p></body></html>"
-                    )
+                    body = render_unauthorized_html(auth_res)
                     return HTTPResponse(status_code=auth_res.status_code or 401, headers=headers, body=body.encode("utf-8"))
 
                 from hub.routes.dashboard import render_dashboard_html
@@ -278,13 +274,9 @@ def register_observability_routes(
                         headers=headers,
                     )
 
+                from hub.routes.dashboard import render_unauthorized_html
                 headers = {"WWW-Authenticate": realm, "Content-Type": "text/html; charset=utf-8"}
-                body = (
-                    f"<!DOCTYPE html><html lang=\"en\" class=\"dark\"><head><meta charset=\"UTF-8\">"
-                    f"<title>401 Unauthorized — Antigravity Webhook Hub</title></head>"
-                    f"<body style=\"background:#090d16;color:#f8fafc;font-family:sans-serif;padding:40px;\">"
-                    f"<h1>Authentication Required</h1><p>{auth_res.message}</p></body></html>"
-                )
+                body = render_unauthorized_html(auth_res)
                 return HTTPResponse(status_code=auth_res.status_code or 401, headers=headers, body=body.encode("utf-8"))
 
             from hub.routes.dashboard import render_dashboard_html

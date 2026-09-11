@@ -789,7 +789,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     }}
     /* Terminal Gutter & Lines */
     .terminal-window {{
-      background: #050811;
+      background: #040711;
       border: 1px solid #1e293b;
       border-radius: 8px;
       flex: 1;
@@ -803,10 +803,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       display: flex;
       flex-direction: column;
       box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.6);
-      scroll-behavior: smooth;
     }}
     .terminal-inner {{
       min-width: 100%;
+      width: max-content;
       padding: 6px 0;
     }}
     .log-row {{
@@ -814,30 +814,41 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       align-items: flex-start;
       min-height: 20px;
       width: 100%;
+      min-width: 100%;
       transition: background 0.1s ease;
       border-left: 3px solid transparent;
     }}
     .log-row:hover {{
-      background: rgba(255, 255, 255, 0.035);
+      background: rgba(255, 255, 255, 0.04);
     }}
     .log-row.is-stderr {{
-      background: rgba(239, 68, 68, 0.04);
+      background: rgba(239, 68, 68, 0.06);
+      border-left-color: rgba(239, 68, 68, 0.5);
     }}
     .log-row.is-traceback {{
-      background: rgba(239, 68, 68, 0.08);
+      background: rgba(239, 68, 68, 0.12);
       border-left-color: #ef4444;
     }}
+    .log-row.is-pretty-json {{
+      background: rgba(15, 23, 42, 0.4);
+    }}
     .log-gutter {{
-      width: 44px;
-      min-width: 44px;
+      width: 46px;
+      min-width: 46px;
       padding: 0 8px 0 4px;
       text-align: right;
       color: #475569;
+      background: #080d1a;
       font-size: 11px;
       user-select: none;
+      -webkit-user-select: none;
       border-right: 1px solid #1e293b;
       flex-shrink: 0;
       line-height: 1.6;
+    }}
+    .log-gutter-sub {{
+      color: #334155;
+      font-size: 10px;
     }}
     .log-text {{
       flex: 1;
@@ -931,17 +942,51 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       padding: 0 2px;
       box-shadow: 0 0 6px rgba(245, 158, 11, 0.7);
     }}
+    /* Traceback syntax */
+    .log-traceback-title {{
+      color: #f87171;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }}
+    .log-traceback-line {{
+      color: #38bdf8;
+      font-weight: 600;
+    }}
+    .log-traceback-func {{
+      color: #c084fc;
+      font-weight: 600;
+    }}
+    .log-traceback-exc {{
+      color: #f87171;
+      font-weight: 700;
+      margin-right: 4px;
+    }}
+    .log-traceback-msg {{
+      color: #fca5a5;
+    }}
+    .badge-duration {{
+      background: rgba(59, 130, 246, 0.12);
+      color: #93c5fd;
+      border: 1px solid rgba(59, 130, 246, 0.25);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }}
     /* ANSI Colors */
-    .ansi-black {{ color: #64748b; }}
-    .ansi-red {{ color: #f87171; }}
-    .ansi-green {{ color: #34d399; }}
-    .ansi-yellow {{ color: #fbbf24; }}
-    .ansi-blue {{ color: #60a5fa; }}
-    .ansi-magenta {{ color: #c084fc; }}
-    .ansi-cyan {{ color: #38bdf8; }}
-    .ansi-white {{ color: #f8fafc; }}
+    .ansi-black, .ansi-30, .ansi-90 {{ color: #64748b; }}
+    .ansi-red, .ansi-31, .ansi-91 {{ color: #f87171; }}
+    .ansi-green, .ansi-32, .ansi-92 {{ color: #34d399; }}
+    .ansi-yellow, .ansi-33, .ansi-93 {{ color: #fbbf24; }}
+    .ansi-blue, .ansi-34, .ansi-94 {{ color: #60a5fa; }}
+    .ansi-magenta, .ansi-35, .ansi-95 {{ color: #c084fc; }}
+    .ansi-cyan, .ansi-36, .ansi-96 {{ color: #38bdf8; }}
+    .ansi-white, .ansi-37, .ansi-97 {{ color: #f8fafc; }}
     .ansi-bold {{ font-weight: 700; }}
     .ansi-dim {{ opacity: 0.6; }}
+    .ansi-italic {{ font-style: italic; }}
+    .ansi-underline {{ text-decoration: underline; }}
     /* Modal */
     .modal-overlay {{
       position: fixed;
@@ -1370,6 +1415,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
               <span>Auto-Scroll</span>
             </button>
+            <button class="log-tool-btn active" id="btnTogglePrettyJson" onclick="togglePrettyJson()" title="Toggle pretty indentation for JSON lines">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+              <span>Pretty JSON</span>
+            </button>
             <button class="log-tool-btn" id="btnCopyLogs" onclick="copyDrawerLogs()" title="Copy logs to clipboard">
               <svg id="copyLogsIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               <span id="copyLogsLabel">Copy</span>
@@ -1461,6 +1510,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       drawerLevelFilter: 'all',
       drawerWrapLines: true,
       drawerAutoScroll: true,
+      drawerPrettyJson: true,
+      drawerDurationTimer: null,
       drawerRenderScheduled: false,
     }};
 
@@ -1780,25 +1831,68 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       }});
     }}
 
-    function parseAnsi(text) {{
+    function parseAnsi(text, tokens) {{
       if (!text || (text.indexOf('\u001b[') === -1 && text.indexOf('\\u001b[') === -1 && text.indexOf('\\033[') === -1 && text.indexOf('\x1b[') === -1)) {{
         return text;
       }}
-      return text.replace(/(?:\u001b|\x1b|\\u001b|\\x1b|\\033)\\[([0-9;]+)m/g, (match, codes) => {{
-        const parts = codes.split(';');
-        let classes = [];
-        for (const c of parts) {{
-          const num = parseInt(c, 10);
-          if (num === 0) classes = ['ansi-reset'];
-          else if (num === 1) classes.push('ansi-bold');
-          else if (num === 2) classes.push('ansi-dim');
-          else if (num >= 30 && num <= 37) classes.push('ansi-' + num);
-          else if (num >= 90 && num <= 97) classes.push('ansi-' + (num - 60));
+      const ansiRegex = /(?:\u001b|\x1b|\\u001b|\\x1b|\\033)\\[([0-9;]*)([A-Za-z])/g;
+      let openSpans = 0;
+      let out = '';
+      let lastIndex = 0;
+      let match;
+
+      while ((match = ansiRegex.exec(text)) !== null) {{
+        out += text.slice(lastIndex, match.index);
+        lastIndex = ansiRegex.lastIndex;
+        const command = match[2];
+        if (command !== 'm') continue;
+
+        const parts = (match[1] || '0').split(';').map(p => parseInt(p, 10) || 0);
+        for (let i = 0; i < parts.length; i++) {{
+          const code = parts[i];
+          if (code === 0) {{
+            while (openSpans > 0) {{
+              const id = tokens.length;
+              tokens.push('</span>');
+              out += '\x01TOK' + id + '\x02';
+              openSpans--;
+            }}
+          }} else if (code === 1) {{
+            const id = tokens.length;
+            tokens.push('<span class="ansi-bold">');
+            out += '\x01TOK' + id + '\x02';
+            openSpans++;
+          }} else if (code === 2) {{
+            const id = tokens.length;
+            tokens.push('<span class="ansi-dim">');
+            out += '\x01TOK' + id + '\x02';
+            openSpans++;
+          }} else if (code === 3) {{
+            const id = tokens.length;
+            tokens.push('<span class="ansi-italic">');
+            out += '\x01TOK' + id + '\x02';
+            openSpans++;
+          }} else if (code === 4) {{
+            const id = tokens.length;
+            tokens.push('<span class="ansi-underline">');
+            out += '\x01TOK' + id + '\x02';
+            openSpans++;
+          }} else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {{
+            const id = tokens.length;
+            tokens.push('<span class="ansi-' + code + '">');
+            out += '\x01TOK' + id + '\x02';
+            openSpans++;
+          }}
         }}
-        if (classes.includes('ansi-reset')) return '</span>';
-        if (classes.length) return `<span class="${{classes.join(' ')}}">`;
-        return '';
-      }});
+      }}
+      out += text.slice(lastIndex);
+      while (openSpans > 0) {{
+        const id = tokens.length;
+        tokens.push('</span>');
+        out += '\x01TOK' + id + '\x02';
+        openSpans--;
+      }}
+      return out;
     }}
 
     function detectLogLevel(text, stream) {{
@@ -1812,12 +1906,75 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       return 'default';
     }}
 
+    function escapeLogText(str) {{
+      if (!str) return '';
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }}
+
     function formatLogLineHtml(rawText, stream) {{
       if (!rawText && rawText !== '') return '';
-      let s = escapeHtml(rawText);
-      s = parseAnsi(s);
+      let tokens = [];
+      function addTok(html) {{
+        const id = tokens.length;
+        tokens.push(html);
+        return '\x01TOK' + id + '\x02';
+      }}
 
-      // Log levels
+      let s = escapeLogText(rawText);
+      s = parseAnsi(s, tokens);
+
+      // 1. Python & JS Stack Trace Highlights
+      s = s.replace(/Traceback \\(most recent call last\\):/g, (m) => {{
+        return addTok('<span class="log-traceback-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="display:inline-block;vertical-align:middle;margin-right:4px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' + m + '</span>');
+      }});
+
+      s = s.replace(/File "([^"]+)", line (\\d+)(?:, in (.+))?/g, (m, file, line, func) => {{
+        let res = 'File "' + addTok('<span class="log-path">' + file + '</span>') + '", line ' + addTok('<span class="log-traceback-line">' + line + '</span>');
+        if (func) res += ', in ' + addTok('<span class="log-traceback-func">' + func + '</span>');
+        return res;
+      }});
+
+      s = s.replace(/^(\\s*)([A-Z][a-zA-Z0-9]*(?:Error|Exception|Exit|Warning)):(.*)$/g, (m, indent, exc, rest) => {{
+        return indent + addTok('<span class="log-lvl log-lvl-error">' + exc + ':</span>') + addTok('<span class="log-traceback-msg">' + rest + '</span>');
+      }});
+
+      s = s.replace(/^(\\s*at )(?:async )?([a-zA-Z0-9_\\.$<>]+ )?\\(([^:\\)]+):(\\d+):(\\d+)\\)/g, (m, atPrefix, func, file, line, col) => {{
+        let res = atPrefix;
+        if (func) res += addTok('<span class="log-traceback-func">' + func.trim() + '</span>') + ' (';
+        else res += '(';
+        res += addTok('<span class="log-path">' + file + '</span>') + ':' + addTok('<span class="log-traceback-line">' + line + ':' + col + '</span>') + ')';
+        return res;
+      }});
+
+      // 2. Embedded JSON formatting
+      s = s.replace(/"([a-zA-Z0-9_\\-]+)"\\s*:/g, (m, k) => {{
+        return addTok('<span class="log-json-key">"' + k + '"</span>') + ':';
+      }});
+      s = s.replace(/(:\\s*)"([^"\\\\]*)"/g, (m, pfx, v) => {{
+        const upper = v.trim().toUpperCase();
+        let lvlCls = '';
+        if (upper === 'INFO') lvlCls = 'log-lvl-info';
+        else if (upper === 'WARN' || upper === 'WARNING') lvlCls = 'log-lvl-warn';
+        else if (upper === 'ERROR' || upper === 'FATAL' || upper === 'FAIL' || upper === 'FAILED') lvlCls = 'log-lvl-error';
+        else if (upper === 'SUCCESS' || upper === 'PASS' || upper === 'PASSED') lvlCls = 'log-lvl-success';
+        else if (upper === 'DEBUG') lvlCls = 'log-lvl-debug';
+
+        if (lvlCls) {{
+          return pfx + addTok('<span class="log-json-str ' + lvlCls + '">"' + v + '"</span>');
+        }}
+        return pfx + addTok('<span class="log-json-str">"' + v + '"</span>');
+      }});
+      s = s.replace(/(:\\s*)(-?\\d+(?:\\.\\d+)?)([, \\n\\r}}\\]])/g, (m, pfx, num, term) => {{
+        return pfx + addTok('<span class="log-json-num">' + num + '</span>') + term;
+      }});
+      s = s.replace(/(:\\s*)(true|false)([, \\n\\r}}\\]])/g, (m, pfx, b, term) => {{
+        return pfx + addTok('<span class="log-json-bool">' + b + '</span>') + term;
+      }});
+      s = s.replace(/(:\\s*)(null)([, \\n\\r}}\\]])/g, (m, pfx, n, term) => {{
+        return pfx + addTok('<span class="log-json-null">' + n + '</span>') + term;
+      }});
+
+      // 3. Log Levels ([INFO], [WARN], [ERROR], [DEBUG], [SUCCESS], PASS, FAIL)
       s = s.replace(/(\\[(?:INFO|DEBUG|WARN|WARNING|ERROR|FATAL|SUCCESS)\\]|\\b(?:INFO|WARN|WARNING|ERROR|FATAL|DEBUG|SUCCESS|PASS|FAIL|PASSED|FAILED)\\b)/g, (match) => {{
         const clean = match.replace(/[\\[\\]]/g, '').toUpperCase();
         let cls = '';
@@ -1826,38 +1983,75 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         else if (clean === 'ERROR' || clean === 'FATAL' || clean === 'FAIL' || clean === 'FAILED') cls = 'log-lvl-error';
         else if (clean === 'SUCCESS' || clean === 'PASS' || clean === 'PASSED') cls = 'log-lvl-success';
         else if (clean === 'DEBUG') cls = 'log-lvl-debug';
-        return cls ? `<span class="log-lvl ${{cls}}">${{match}}</span>` : match;
+        return cls ? addTok('<span class="log-lvl ' + cls + '">' + match + '</span>') : match;
       }});
 
-      // Timestamps
-      s = s.replace(/\\b(\\d{{4}}-\\d{{2}}-\\d{{2}}[T ]\\d{{2}}:\\d{{2}}:\\d{{2}}(?:\\.\\d+)?(?:Z|[+-]\\d{{2}}:?\\d{{2}})?|\\d{{2}}:\\d{{2}}:\\d{{2}}(?:\\.\\d+)?)\\b/g, '<span class="log-ts">$1</span>');
+      // 4. Timestamps
+      s = s.replace(/\\b(\\d{{4}}-\\d{{2}}-\\d{{2}}[T ]\\d{{2}}:\\d{{2}}:\\d{{2}}(?:\\.\\d+)?(?:Z|[+-]\\d{{2}}:?\\d{{2}})?|\\d{{2}}:\\d{{2}}:\\d{{2}}(?:\\.\\d+)?)\\b/g, (m) => {{
+        return addTok('<span class="log-ts">' + m + '</span>');
+      }});
 
-      // File paths & commands
-      s = s.replace(/(^|[\\s"'\\(\\[\\{{])((?:\\/[a-zA-Z0-9_\\.-]+)+|[a-zA-Z0-9_\\.-]+\\/(?:[a-zA-Z0-9_\\.-]+\\/)*[a-zA-Z0-9_\\.-]+\\.(?:py|json|md|yaml|yml|log|sh|txt|html|js|ts)(?::\\d+)?)\\b/g, '$1<span class="log-path">$2</span>');
+      // 5. URLs & Paths
+      s = s.replace(/(https?:\\/\\/[^\\s"'<>]+)/g, (m) => {{
+        return addTok('<span class="log-path">' + m + '</span>');
+      }});
+      s = s.replace(/(^|[\\s"'`\\(\\[\\{{])((?:\\/[a-zA-Z0-9_\\.-]+)+|[a-zA-Z0-9_\\.-]+\\/(?:[a-zA-Z0-9_\\.-]+\\/)*[a-zA-Z0-9_\\.-]+\\.(?:py|json|md|yaml|yml|log|sh|txt|html|js|ts)(?::\\d+)?)\\b/g, (m, pfx, p) => {{
+        return pfx + addTok('<span class="log-path">' + p + '</span>');
+      }});
 
-      // HTTP Methods & URLs
-      s = s.replace(/\\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\\b/g, '<span class="log-method">$1</span>');
-      s = s.replace(/(https?:\\/\\/[^\\s"'<>]+)/g, '<span class="log-path">$1</span>');
+      // 6. HTTP Methods
+      s = s.replace(/\\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\\b/g, (m) => {{
+        return addTok('<span class="log-method">' + m + '</span>');
+      }});
 
-      // JSON formatting inside logs
-      s = s.replace(/"([a-zA-Z0-9_\\-]+)":/g, '<span class="log-json-key">"$1"</span>:');
-      s = s.replace(/:\\s*"([^"]*)"/g, ': <span class="log-json-str">"$1"</span>');
-      s = s.replace(/:\\s*(-?\\d+(?:\\.\\d+)?)([, \\n\\r}}\\]])/g, ': <span class="log-json-num">$1</span>$2');
-      s = s.replace(/:\\s*(true|false)([, \\n\\r}}\\]])/g, ': <span class="log-json-bool">$1</span>$2');
-      s = s.replace(/:\\s*(null)([, \\n\\r}}\\]])/g, ': <span class="log-json-null">$1</span>$2');
-
+      // Restore all shielded tokens
+      while (s.includes('\x01TOK')) {{
+        s = s.replace(/\\x01TOK(\\d+)\\x02/g, (_, id) => tokens[id]);
+      }}
       return s;
     }}
 
     function highlightSearchQuery(htmlText, rawQuery) {{
       if (!rawQuery) return htmlText;
-      const escapedQ = escapeHtml(rawQuery);
+      const escapedQ = escapeLogText(rawQuery).replace(/[-\\[\\]{{}}()*+?.,\\\\^$|#\\s]/g, '\\\\$&');
       try {{
-        const regex = new RegExp('(' + escapedQ.replace(/[-\\[\\]{{}}()*+?.,\\\\^$|#\\s]/g, '\\\\$&') + ')', 'gi');
-        return htmlText.replace(regex, '<mark class="log-search-match">$1</mark>');
+        const regex = new RegExp('(<[^>]+>|&[a-zA-Z0-9#]+;)|(' + escapedQ + ')', 'gi');
+        return htmlText.replace(regex, (m, tagOrEntity, matchText) => {{
+          if (tagOrEntity) return tagOrEntity;
+          return '<mark class="log-search-match">' + matchText + '</mark>';
+        }});
       }} catch (_) {{
         return htmlText;
       }}
+    }}
+
+    function tryParseJson(text) {{
+      if (!text) return null;
+      const trimmed = text.trim();
+      if ((trimmed.startsWith('{{') && trimmed.endsWith('}}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {{
+        try {{
+          const obj = JSON.parse(trimmed);
+          return {{ type: 'full', data: obj }};
+        }} catch (_) {{}}
+      }}
+      const braceIdx = text.indexOf('{{');
+      if (braceIdx >= 0) {{
+        const candidate = text.slice(braceIdx).trim();
+        if (candidate.endsWith('}}')) {{
+          try {{
+            const obj = JSON.parse(candidate);
+            return {{ type: 'embedded', prefix: text.slice(0, braceIdx), data: obj }};
+          }} catch (_) {{}}
+        }}
+      }}
+      return null;
+    }}
+
+    function togglePrettyJson() {{
+      state.drawerPrettyJson = !state.drawerPrettyJson;
+      const btn = document.getElementById('btnTogglePrettyJson');
+      if (btn) btn.classList.toggle('active', state.drawerPrettyJson);
+      renderDrawerLogs();
     }}
 
     function renderDrawerLogs() {{
@@ -1885,17 +2079,46 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           }}
         }}
 
-        let contentHtml = formatLogLineHtml(line.text, line.stream);
-        if (q) {{
-          contentHtml = highlightSearchQuery(contentHtml, state.drawerSearchQuery);
-        }}
-
         const isTraceback = line.text.includes('Traceback (most recent call last):') || line.text.startsWith('  File "') || /\\w+Error:/.test(line.text);
         const rowClass = 'log-row' + (line.stream === 'stderr' ? ' is-stderr' : '') + (isTraceback ? ' is-traceback' : '');
 
-        visibleRows.push(
-          `<div class="${{rowClass}}"><div class="log-gutter">${{line.lineNum}}</div><div class="log-text">${{contentHtml}}</div></div>`
-        );
+        // Pretty JSON expansion when enabled
+        const jsonMatch = state.drawerPrettyJson ? tryParseJson(line.text) : null;
+        if (jsonMatch) {{
+          if (jsonMatch.type === 'full') {{
+            const prettyLines = JSON.stringify(jsonMatch.data, null, 2).split('\\n');
+            prettyLines.forEach((pLine, pIdx) => {{
+              let pContent = formatLogLineHtml(pLine, line.stream);
+              if (q) pContent = highlightSearchQuery(pContent, state.drawerSearchQuery);
+              const gutterContent = pIdx === 0 ? line.lineNum : '<span class="log-gutter-sub">·</span>';
+              visibleRows.push(
+                `<div class="${{rowClass}} is-pretty-json"><div class="log-gutter">${{gutterContent}}</div><div class="log-text">${{pContent}}</div></div>`
+              );
+            }});
+          }} else if (jsonMatch.type === 'embedded') {{
+            let pfxContent = formatLogLineHtml(jsonMatch.prefix, line.stream);
+            if (q) pfxContent = highlightSearchQuery(pfxContent, state.drawerSearchQuery);
+            visibleRows.push(
+              `<div class="${{rowClass}}"><div class="log-gutter">${{line.lineNum}}</div><div class="log-text">${{pfxContent}}</div></div>`
+            );
+            const prettyLines = JSON.stringify(jsonMatch.data, null, 2).split('\\n');
+            prettyLines.forEach((pLine) => {{
+              let pContent = formatLogLineHtml(pLine, line.stream);
+              if (q) pContent = highlightSearchQuery(pContent, state.drawerSearchQuery);
+              visibleRows.push(
+                `<div class="${{rowClass}} is-pretty-json"><div class="log-gutter"><span class="log-gutter-sub">·</span></div><div class="log-text">${{pContent}}</div></div>`
+              );
+            }});
+          }}
+        }} else {{
+          let contentHtml = formatLogLineHtml(line.text, line.stream);
+          if (q) {{
+            contentHtml = highlightSearchQuery(contentHtml, state.drawerSearchQuery);
+          }}
+          visibleRows.push(
+            `<div class="${{rowClass}}"><div class="log-gutter">${{line.lineNum}}</div><div class="log-text">${{contentHtml}}</div></div>`
+          );
+        }}
       }});
 
       const matchBadge = document.getElementById('logMatchesCount');
@@ -1954,18 +2177,31 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     }}
 
     async function copyDrawerLogs() {{
-      if (!state.drawerLogs.length) {{
-        showToast('No logs to copy', 'info');
+      const q = state.drawerSearchQuery ? state.drawerSearchQuery.toLowerCase() : '';
+      const levelFilter = state.drawerLevelFilter || 'all';
+      const linesToCopy = state.drawerLogs.filter(line => {{
+        if (levelFilter === 'error' && line.level !== 'error') return false;
+        if (levelFilter === 'warn' && line.level !== 'error' && line.level !== 'warn') return false;
+        if (levelFilter === 'info' && line.level !== 'error' && line.level !== 'warn' && line.level !== 'info') return false;
+        if (q && !line.text.toLowerCase().includes(q)) return false;
+        return true;
+      }});
+
+      if (!linesToCopy.length) {{
+        showToast('No matching logs to copy', 'info');
         return;
       }}
-      const visibleText = state.drawerLogs.map(l => l.text).join('\\n');
+      const visibleText = linesToCopy.map(l => l.text).join('\\n');
       try {{
         await navigator.clipboard.writeText(visibleText);
         const copyLabel = document.getElementById('copyLogsLabel');
         const copyIcon = document.getElementById('copyLogsIcon');
         if (copyLabel) copyLabel.innerText = 'Copied!';
         if (copyIcon) copyIcon.innerHTML = '<polyline points="20 6 9 17 4 12"/>';
-        showToast(`Copied ${{state.drawerLogs.length}} lines to clipboard`, 'info');
+        const countMsg = linesToCopy.length === state.drawerLogs.length
+          ? `Copied ${{linesToCopy.length}} lines to clipboard`
+          : `Copied ${{linesToCopy.length}} filtered lines to clipboard`;
+        showToast(countMsg, 'info');
         setTimeout(() => {{
           if (copyLabel) copyLabel.innerText = 'Copy';
           if (copyIcon) copyIcon.innerHTML = '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>';
@@ -2044,6 +2280,18 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       }}
     }}
 
+    function updateDrawerDurationBadge(durStr) {{
+      const durBadge = document.getElementById('drawerDurationBadge');
+      if (!durBadge) return;
+      if (durStr && durStr !== '--') {{
+        durBadge.style.display = 'inline-flex';
+        durBadge.className = 'badge badge-duration';
+        durBadge.innerHTML = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span>' + durStr + '</span>';
+      }} else {{
+        durBadge.style.display = 'none';
+      }}
+    }}
+
     function renderExitBadge(code, status) {{
       const badge = document.getElementById('drawerExitBadge');
       if (!badge) return;
@@ -2064,7 +2312,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         badge.innerHTML = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg><span>exit 0</span>';
       }} else if (numCode < 0) {{
         badge.className = 'badge badge-warning';
-        badge.innerText = 'SIG (' + numCode + ')';
+        badge.innerHTML = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><span>SIG (' + numCode + ')</span>';
       }} else {{
         badge.className = 'badge badge-failed';
         badge.innerHTML = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg><span>exit ' + numCode + '</span>';
@@ -2077,6 +2325,11 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       state.drawerSearchQuery = '';
       state.drawerLevelFilter = 'all';
       state.drawerAutoScroll = true;
+
+      if (state.drawerDurationTimer) {{
+        clearInterval(state.drawerDurationTimer);
+        state.drawerDurationTimer = null;
+      }}
 
       const searchInput = document.getElementById('logSearchInput');
       if (searchInput) searchInput.value = '';
@@ -2105,14 +2358,19 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           
           const durStr = formatTaskDuration(task.created_at, task.completed_at);
           document.getElementById('drawerMetaDuration').innerText = durStr;
-          const durBadge = document.getElementById('drawerDurationBadge');
-          if (durBadge) {{
-            if (durStr !== '--') {{
-              durBadge.style.display = 'inline-flex';
-              durBadge.innerText = durStr;
-            }} else {{
-              durBadge.style.display = 'none';
-            }}
+          updateDrawerDurationBadge(durStr);
+
+          if (task.status === 'running') {{
+            state.drawerDurationTimer = setInterval(() => {{
+              if (state.activeTaskId !== taskId) {{
+                clearInterval(state.drawerDurationTimer);
+                state.drawerDurationTimer = null;
+                return;
+              }}
+              const liveDur = formatTaskDuration(task.created_at, null);
+              document.getElementById('drawerMetaDuration').innerText = liveDur;
+              updateDrawerDurationBadge(liveDur);
+            }}, 1000);
           }}
 
           const cmdEl = document.getElementById('drawerMetaCommand');
@@ -2178,6 +2436,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         taskSse.addEventListener('completed', (e) => {{
           handleChunk(e);
           if (liveIndicator) liveIndicator.style.display = 'none';
+          if (state.drawerDurationTimer) {{
+            clearInterval(state.drawerDurationTimer);
+            state.drawerDurationTimer = null;
+          }}
           refreshTasksDebounced(100);
         }});
         taskSse.onmessage = handleChunk;
@@ -2190,6 +2452,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     function closeDrawer() {{
       document.getElementById('drawerOverlay').classList.remove('open');
       document.getElementById('taskDrawer').classList.remove('open');
+      if (state.drawerDurationTimer) {{
+        clearInterval(state.drawerDurationTimer);
+        state.drawerDurationTimer = null;
+      }}
       if (state.drawerEventSource) {{
         state.drawerEventSource.close();
         state.drawerEventSource = null;

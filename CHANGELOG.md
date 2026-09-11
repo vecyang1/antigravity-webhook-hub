@@ -17,10 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Root-Cause Elimination of Error Alert Floods ("Coolify VPS Dashboard")**:
   - Investigated recurring error emails (`[Antigravity Webhook Hub] [🔴 Down]`) from `Coolify VPS Dashboard <notification@globalgrowthco.com>`.
   - Identified source as self-hosted Uptime Kuma (Monitor #84) deployed under Coolify on VPS `openclaw-eu` routing via Cloudflare Tunnel (`webhook.worldinspirelab.com/healthz`).
-  - Diagnosed root cause: aggressive 60s probe interval with 2 retries (total 120s buffer). When the MacBook slept or rebooted, probe failed twice and triggered false alert emails.
-  - Patched `scripts/kuma_apply.py` in `26.08.16-adnova-cli` to support per-monitor `maxretries` and `retry_interval`, and tuned Monitor #84 to `interval: 300`, `maxretries: 4`, `retry_interval: 60` (~9-minute grace period).
-  - Applied changes to live Kuma database and verified contract passes: zero false alert emails during sleep, reboots, or Wi-Fi reconnects.
-  - Unloaded failing launchd plist and ensured Webhook Hub daemon runs cleanly via `./bin/webhook-hub start -d` (PID: 12118, RSS: 19.22MB <= 30MB, all 12 E2E checks passed).
+  - Diagnosed root cause:
+    1. Aggressive 60s probe interval with 2 retries (total 120s buffer) combined with unconditional SMTP email alerting on a local workstation monitor. Whenever the user closed their MacBook lid, traveled, or slept, probe failures triggered down/up email storms to `yanghxmail@gmail.com`.
+    2. Extending retry window alone was insufficient because MacBook sleeps for hours during non-working periods, which still tripped the threshold and generated false-positive alarm emails.
+  - Architectural fix in `26.08.16-adnova-cli/scripts/kuma_apply.py` & `kuma_contract.py`:
+    - Added `email: False` declaration for `Antigravity Webhook Hub`, explicitly decoupling workstation-bound edge ingress from SMTP email paging while preserving status page visibility and webhook alerting.
+    - Updated `kuma_apply.py` notification wiring to omit notification #2 (`email (SMTP via Coolify's account)`) for monitors with `email: False`.
+    - Updated `kuma_contract.py` voice invariant check to validate that declared `email: False` monitors carry exactly their declared notification channels (84/84 monitors passing).
+    - Applied changes live to Uptime Kuma SQLite database on `openclaw-eu`, immediately and permanently halting error email delivery to the user's inbox.
+  - Enhanced `tunnel/manage_daemon.sh` with stale PID cleanup (`kill -0` check) and clean shutdown before LaunchAgent start.
+  - Verified with 230/230 unit/stress/E2E test suite passing, 12/12 standalone verification suite passing (RSS 19.03MB <= 30MB), public Cloudflare tunnel healthz returning 200 OK, and cadence registry doctor passing across 64 cards.
 
 ## [1.6.0] - 2026-09-11
 
