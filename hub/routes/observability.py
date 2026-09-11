@@ -220,6 +220,19 @@ def register_observability_routes(
         accept_header = req.headers.get("accept", "").lower()
         if "text/html" in accept_header:
             try:
+                from hub.security import verify_dashboard_auth
+                auth_res = verify_dashboard_auth(req, config)
+                if not auth_res.is_valid:
+                    realm = 'Basic realm="Antigravity Webhook Hub Dashboard"'
+                    headers = {"WWW-Authenticate": realm, "Content-Type": "text/html; charset=utf-8"}
+                    body = (
+                        f"<!DOCTYPE html><html lang=\"en\" class=\"dark\"><head><meta charset=\"UTF-8\">"
+                        f"<title>401 Unauthorized — Antigravity Webhook Hub</title></head>"
+                        f"<body style=\"background:#090d16;color:#f8fafc;font-family:sans-serif;padding:40px;\">"
+                        f"<h1>Authentication Required</h1><p>{auth_res.message}</p></body></html>"
+                    )
+                    return HTTPResponse(status_code=auth_res.status_code or 401, headers=headers, body=body.encode("utf-8"))
+
                 from hub.routes.dashboard import render_dashboard_html
                 html = render_dashboard_html(config, db)
                 return HTTPResponse.text(html, status_code=200, content_type="text/html; charset=utf-8")
@@ -252,6 +265,28 @@ def register_observability_routes(
     async def handle_dashboard(req: HTTPRequest) -> HTTPResponse:
         """GET /dashboard & GET /ui: Render Observable Activities Web Dashboard."""
         try:
+            from hub.security import verify_dashboard_auth
+            auth_res = verify_dashboard_auth(req, config)
+            if not auth_res.is_valid:
+                realm = 'Basic realm="Antigravity Webhook Hub Dashboard"'
+                accept = req.header("accept") or ""
+                if "application/json" in accept.lower():
+                    headers = {"WWW-Authenticate": realm} if auth_res.status_code == 401 else {}
+                    return HTTPResponse.json(
+                        {"error": "unauthorized", "message": auth_res.message, "reason": auth_res.reason},
+                        status_code=auth_res.status_code or 401,
+                        headers=headers,
+                    )
+
+                headers = {"WWW-Authenticate": realm, "Content-Type": "text/html; charset=utf-8"}
+                body = (
+                    f"<!DOCTYPE html><html lang=\"en\" class=\"dark\"><head><meta charset=\"UTF-8\">"
+                    f"<title>401 Unauthorized — Antigravity Webhook Hub</title></head>"
+                    f"<body style=\"background:#090d16;color:#f8fafc;font-family:sans-serif;padding:40px;\">"
+                    f"<h1>Authentication Required</h1><p>{auth_res.message}</p></body></html>"
+                )
+                return HTTPResponse(status_code=auth_res.status_code or 401, headers=headers, body=body.encode("utf-8"))
+
             from hub.routes.dashboard import render_dashboard_html
             html = render_dashboard_html(config, db)
             return HTTPResponse.text(html, status_code=200, content_type="text/html; charset=utf-8")

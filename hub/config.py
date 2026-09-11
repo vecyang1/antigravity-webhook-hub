@@ -82,6 +82,17 @@ class ObservabilityConfig:
 
 
 @dataclass(slots=True)
+class DashboardConfig:
+    auth_enabled: bool = False
+    basic_auth_user: str = ""
+    basic_auth_pass: str = ""
+    auth_token: str = ""
+    cloudflare_access_aud: str = ""
+    cloudflare_access_team: str = "veecccc"
+    allowed_emails: list[str] = field(default_factory=lambda: ["yanghxmail@gmail.com"])
+
+
+@dataclass(slots=True)
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
@@ -90,6 +101,7 @@ class AppConfig:
     tunnel: TunnelConfig = field(default_factory=TunnelConfig)
     sweeper: SweeperConfig = field(default_factory=SweeperConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
+    dashboard: DashboardConfig = field(default_factory=DashboardConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -141,6 +153,15 @@ class AppConfig:
                 "sidecar_slug": self.observability.sidecar_slug,
                 "emit_sidecar_events": self.observability.emit_sidecar_events,
                 "sidecar_data_dir": self.observability.sidecar_data_dir,
+            },
+            "dashboard": {
+                "auth_enabled": self.dashboard.auth_enabled,
+                "basic_auth_user": self.dashboard.basic_auth_user,
+                "has_basic_auth_pass": bool(self.dashboard.basic_auth_pass),
+                "has_auth_token": bool(self.dashboard.auth_token),
+                "cloudflare_access_aud": self.dashboard.cloudflare_access_aud,
+                "cloudflare_access_team": self.dashboard.cloudflare_access_team,
+                "allowed_emails": self.dashboard.allowed_emails,
             },
         }
 
@@ -445,6 +466,32 @@ def load_config(
     if "ANTIGRAVITY_SIDECAR_DATA_DIR" in combined_env:
         cfg.observability.sidecar_data_dir = str(combined_env["ANTIGRAVITY_SIDECAR_DATA_DIR"])
 
+    # Dashboard & Zero Trust Auth
+    if "DASHBOARD_AUTH_ENABLED" in combined_env:
+        cfg.dashboard.auth_enabled = _to_bool(combined_env["DASHBOARD_AUTH_ENABLED"])
+    if "DASHBOARD_BASIC_AUTH_USER" in combined_env:
+        cfg.dashboard.basic_auth_user = str(combined_env["DASHBOARD_BASIC_AUTH_USER"])
+    elif "DASHBOARD_AUTH_USER" in combined_env:
+        cfg.dashboard.basic_auth_user = str(combined_env["DASHBOARD_AUTH_USER"])
+    if "DASHBOARD_BASIC_AUTH_PASS" in combined_env:
+        cfg.dashboard.basic_auth_pass = str(combined_env["DASHBOARD_BASIC_AUTH_PASS"])
+    elif "DASHBOARD_AUTH_PASSWORD" in combined_env:
+        cfg.dashboard.basic_auth_pass = str(combined_env["DASHBOARD_AUTH_PASSWORD"])
+    if "DASHBOARD_AUTH_TOKEN" in combined_env:
+        cfg.dashboard.auth_token = str(combined_env["DASHBOARD_AUTH_TOKEN"])
+    if "CLOUDFLARE_ACCESS_AUD" in combined_env:
+        cfg.dashboard.cloudflare_access_aud = str(combined_env["CLOUDFLARE_ACCESS_AUD"])
+    elif "DASHBOARD_CF_ACCESS_AUD" in combined_env:
+        cfg.dashboard.cloudflare_access_aud = str(combined_env["DASHBOARD_CF_ACCESS_AUD"])
+    if "CLOUDFLARE_ACCESS_TEAM" in combined_env:
+        cfg.dashboard.cloudflare_access_team = str(combined_env["CLOUDFLARE_ACCESS_TEAM"])
+    if "DASHBOARD_ALLOWED_EMAILS" in combined_env:
+        emails_raw = combined_env["DASHBOARD_ALLOWED_EMAILS"]
+        if isinstance(emails_raw, str):
+            cfg.dashboard.allowed_emails = [e.strip() for e in emails_raw.split(",") if e.strip()]
+        elif isinstance(emails_raw, list):
+            cfg.dashboard.allowed_emails = emails_raw
+
     # 5. Apply CLI / Explicit overrides (highest precedence)
     if cli_overrides:
         for k, v in cli_overrides.items():
@@ -494,6 +541,14 @@ def load_config(
                         setattr(cfg.observability, k, _to_bool(v))
                     else:
                         setattr(cfg.observability, k, v)
+                elif hasattr(cfg.dashboard, k):
+                    curr = getattr(cfg.dashboard, k)
+                    if isinstance(curr, bool):
+                        setattr(cfg.dashboard, k, _to_bool(v))
+                    elif isinstance(curr, list) and isinstance(v, str):
+                        setattr(cfg.dashboard, k, [x.strip() for x in v.split(",") if x.strip()])
+                    else:
+                        setattr(cfg.dashboard, k, v)
 
     return cfg
 

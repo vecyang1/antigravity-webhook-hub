@@ -8,12 +8,14 @@ and Bearer token fallback.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
+import json
 import time
-from typing import Optional
+from typing import Any, Optional
 
-from hub.config import SecurityConfig
+from hub.config import AppConfig, SecurityConfig
 from hub.models import HTTPRequest, ValidationResult
 
 
@@ -319,3 +321,209 @@ def validate_request_security(
             message=f"Unsupported auth_mode configured: {mode}",
             status_code=500,
         )
+
+
+def decode_jwt_unverified(jwt_token: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """
+    Decode a JWT's header and payload without external crypto libraries.
+    Used for reading claims (aud, email, exp) from Cloudflare Access JWT assertions.
+    """
+    parts = jwt_token.strip().split(".")
+    if len(parts) != 3:
+        raise ValueError("Invalid JWT format (expected 3 dot-separated segments)")
+
+    def b64url_decode(s: str) -> bytes:
+        padding = "=" * ((4 - len(s) % 4) % 4)
+        return base64.urlsafe_b64decode(s + padding)
+
+    header = json.loads(b64url_decode(parts[0]).decode("utf-8"))
+    payload = json.loads(b64url_decode(parts[1]).decode("utf-8"))
+    return header, payload
+
+
+def verify_dashboard_auth(
+    request: HTTPRequest,
+    config: AppConfig,
+    current_time: Optional[float] = None,
+) -> ValidationResult:
+    """
+    Authenticate requests targeting the Webhook Hub Observable Dashboard (/dashboard, /ui, /tasks).
+    Precedence hierarchy:
+    1. Cloudflare Access Headers (Cf-Access-Jwt-Assertion + Cf-Access-Authenticated-User-Email, Service Tokens)
+    2. HTTP Basic Auth (Authorization: Basic <base64(user:pass)>)
+    3. Token Fallback (Authorization: Bearer <token>, ?token=<token>, X-Dashboard-Token)
+    If dashboard auth is not configured / not enabled, access is permitted by default for local development.
+    """
+    dash_cfg = getattr(config, "dashboard", None)
+    now = current_time if current_time is not None else time.time()
+
+    # 1. Cloudflare Access JWT Assertion verification
+    cf_jwt = request.header("cf-access-jwt-assertion")
+    cf_email = request.header("cf-access-authenticated-user-email")
+
+    if cf_jwt:
+        try:
+            _, payload = decode_jwt_unverified(cf_jwt)
+            exp = payload.get("exp")
+            if exp is not None and float(exp) < now:
+                return ValidationResult(
+                    is_valid=False,
+                    reason="cf_access_token_expired",
+                    message="Cloudflare Access JWT assertion has expired",
+                    status_code=401,
+                )
+
+            # Validate AUD if configured
+            expected_aud = getattr(dash_cfg, "cloudflare_access_aud", "") if dash_cfg else ""
+            if expected_aud:
+                jwt_aud = payload.get("aud")
+                aud_list = jwt_aud if isinstance(jwt_aud, list) else [jwt_aud]
+                if expected_aud not in aud_list:
+                    return ValidationResult(
+                        is_valid=False,
+                        reason="cf_access_aud_mismatch",
+                        message=f"Cloudflare Access AUD '{jwt_aud}' does not match expected AUD '{expected_aud}'",
+                        status_code=401,
+                    )
+
+            # Validate email if allowed_emails configured
+            user_email = payload.get("email") or cf_email or ""
+            allowed_emails = getattr(dash_cfg, "allowed_emails", []) if dash_cfg else []
+            if allowed_emails and user_email:
+                if user_email not in allowed_emails:
+                    return ValidationResult(
+                        is_valid=False,
+                        reason="cf_access_email_not_allowed",
+                        message=f"User email '{user_email}' is not in allowed dashboard users list",
+                        status_code=403,
+                    )
+
+            return ValidationResult(
+                is_valid=True,
+                reason="verified_cloudflare_access",
+                message=f"Authenticated via Cloudflare Access as {user_email}",
+                status_code=200,
+            )
+        except Exception as e:
+            return ValidationResult(
+                is_valid=False,
+                reason="invalid_cf_access_jwt",
+                message=f"Failed to parse Cloudflare Access JWT: {e}",
+                status_code=401,
+            )
+
+    # Check Cloudflare Access Service Token headers
+    cf_client_id = request.header("cf-access-client-id")
+    cf_client_secret = request.header("cf-access-client-secret")
+    if cf_client_id and cf_client_secret:
+        return ValidationResult(
+            is_valid=True,
+            reason="verified_cf_service_token",
+            message="Authenticated via Cloudflare Access Service Token",
+            status_code=200,
+        )
+
+    # 2. HTTP Basic Auth
+    auth_header = request.header("authorization")
+    if auth_header and auth_header.strip().lower().startswith("basic "):
+        b64_creds = auth_header.strip()[6:].strip()
+        try:
+            decoded = base64.b64decode(b64_creds).decode("utf-8")
+            if ":" in decoded:
+                user, pwd = decoded.split(":", 1)
+                exp_user = getattr(dash_cfg, "basic_auth_user", "") if dash_cfg else ""
+                exp_pwd = getattr(dash_cfg, "basic_auth_pass", "") if dash_cfg else ""
+
+                if exp_user and exp_pwd:
+                    user_ok = hmac.compare_digest(user.encode("utf-8"), exp_user.encode("utf-8"))
+                    pwd_ok = hmac.compare_digest(pwd.encode("utf-8"), exp_pwd.encode("utf-8"))
+                    if user_ok and pwd_ok:
+                        return ValidationResult(
+                            is_valid=True,
+                            reason="verified_basic_auth",
+                            message=f"Authenticated via HTTP Basic Auth as '{user}'",
+                            status_code=200,
+                        )
+                    else:
+                        return ValidationResult(
+                            is_valid=False,
+                            reason="invalid_basic_credentials",
+                            message="Invalid username or password",
+                            status_code=401,
+                        )
+        except Exception:
+            return ValidationResult(
+                is_valid=False,
+                reason="malformed_basic_auth",
+                message="Malformed Basic authorization header",
+                status_code=401,
+            )
+
+    # 3. Token Fallback (Bearer header, ?token= param, or X-Dashboard-Token)
+    exp_token = (
+        getattr(dash_cfg, "auth_token", "") if dash_cfg and dash_cfg.auth_token
+        else (getattr(config.security, "bearer_token", "") if hasattr(config, "security") else "")
+    )
+
+    provided_token = None
+    if auth_header and auth_header.strip().lower().startswith("bearer "):
+        provided_token = auth_header.strip()[7:].strip()
+    elif request.header("x-dashboard-token"):
+        provided_token = request.header("x-dashboard-token").strip()
+    elif request.header("x-auth-token"):
+        provided_token = request.header("x-auth-token").strip()
+    elif getattr(request, "query_params", None) and request.query_params.get("token"):
+        provided_token = request.query_params["token"].strip()
+    elif getattr(request, "query_params", None) and request.query_params.get("auth_token"):
+        provided_token = request.query_params["auth_token"].strip()
+    elif "?" in (getattr(request, "raw_path", "") or request.path):
+        import urllib.parse
+        target_path = getattr(request, "raw_path", "") or request.path
+        parsed = urllib.parse.urlparse(target_path)
+        qs = urllib.parse.parse_qs(parsed.query)
+        if "token" in qs and qs["token"]:
+            provided_token = qs["token"][0].strip()
+        elif "auth_token" in qs and qs["auth_token"]:
+            provided_token = qs["auth_token"][0].strip()
+
+    if provided_token and exp_token:
+        if hmac.compare_digest(provided_token.encode("utf-8"), exp_token.encode("utf-8")):
+            return ValidationResult(
+                is_valid=True,
+                reason="verified_token",
+                message="Authenticated via dashboard token",
+                status_code=200,
+            )
+        else:
+            return ValidationResult(
+                is_valid=False,
+                reason="invalid_token",
+                message="Provided dashboard token is invalid",
+                status_code=401,
+            )
+
+    # 4. Check if authentication is enforced
+    auth_enforced = False
+    if dash_cfg:
+        auth_enforced = (
+            dash_cfg.auth_enabled
+            or bool(dash_cfg.basic_auth_user and dash_cfg.basic_auth_pass)
+            or bool(dash_cfg.auth_token)
+            or bool(dash_cfg.cloudflare_access_aud)
+        )
+
+    if not auth_enforced:
+        return ValidationResult(
+            is_valid=True,
+            reason="auth_not_enforced",
+            message="Dashboard authentication is not required",
+            status_code=200,
+        )
+
+    # Authentication required but no valid credentials provided
+    return ValidationResult(
+        is_valid=False,
+        reason="unauthorized",
+        message="Authentication required for Antigravity Webhook Hub Dashboard",
+        status_code=401,
+    )

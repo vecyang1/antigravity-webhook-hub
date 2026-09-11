@@ -624,3 +624,209 @@ async def test_edge_case_classification_no_false_positives(dashboard_test_app: d
         kuma_under_ids = {t["task_id"] for t in resp_kuma_under.json()["tasks"]}
         assert "tsk_uptime_alert_1" in kuma_under_ids
 
+
+def _make_mock_jwt(payload: dict[str, Any]) -> str:
+    import base64
+    def b64url(d: bytes) -> str:
+        return base64.urlsafe_b64encode(d).decode("utf-8").rstrip("=")
+    h = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode("utf-8"))
+    p = b64url(json.dumps(payload).encode("utf-8"))
+    return f"{h}.{p}.mock_signature"
+
+
+async def test_dashboard_log_drawer_ui_ux_rendering(dashboard_test_app: dict[str, Any]):
+    """
+    Verify /dashboard HTML contains all /ui-ux-pro-max log drawer features:
+    - Line number gutter with .log-gutter
+    - Search input, match counter, and Cmd/Ctrl+F shortcut
+    - Log level filter dropdown
+    - Wrap lines toggle
+    - Auto-scroll toggle
+    - Copy logs button
+    - Execution duration header and exit code badge
+    - Zero emoji UI icons
+    """
+    base_url = dashboard_test_app["base_url"]
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{base_url}/dashboard")
+        assert resp.status_code == 200
+        html = resp.text
+
+        # 1. Gutter & terminal structure
+        assert "drawerTerminalInner" in html
+        assert "log-gutter" in html
+        assert "log-row" in html
+        assert "log-text" in html
+
+        # 2. Controls & Toolbar
+        assert "logSearchInput" in html
+        assert "logLevelFilter" in html
+        assert "btnToggleWrap" in html
+        assert "btnToggleAutoScroll" in html
+        assert "btnCopyLogs" in html
+        assert "logMatchesCount" in html
+
+        # 3. Badges & Syntax Highlighting
+        assert "drawerDurationBadge" in html
+        assert "drawerMetaDuration" in html
+        assert "renderExitBadge" in html
+        assert "log-lvl-info" in html
+        assert "log-lvl-error" in html
+        assert "log-json-key" in html
+        assert "parseAnsi" in html
+        assert "is-traceback" in html
+
+        # 4. Zero emoji check
+        assert "🚀" not in html
+        assert "🎨" not in html
+        assert "📋" not in html
+
+
+async def test_dashboard_authentication_cloudflare_access(free_port: int, temp_db_path: str):
+    """
+    Verify dashboard route authentication via Cloudflare Access JWT assertion headers:
+    - Valid assertion with correct AUD and allowed email -> 200 OK
+    - Expired JWT -> 401 Unauthorized
+    - Mismatched AUD -> 401 Unauthorized
+    - Unauthorized email -> 403 Forbidden
+    """
+    config = AppConfig()
+    config.server.port = free_port
+    config.server.host = "127.0.0.1"
+    config.database.path = temp_db_path
+    config.dashboard.auth_enabled = True
+    config.dashboard.cloudflare_access_aud = "test_aud_hash_12345"
+    config.dashboard.allowed_emails = ["vec@example.com", "admin@worldinspirelab.com"]
+
+    server = AsyncHTTPServer(config.server)
+    register_dashboard_routes(server, config)
+    await server.start()
+
+    base_url = f"http://127.0.0.1:{free_port}"
+    try:
+        async with httpx.AsyncClient() as client:
+            # 1. Unauthenticated request -> 401
+            r_unauth = await client.get(f"{base_url}/dashboard")
+            assert r_unauth.status_code == 401
+            assert "WWW-Authenticate" in r_unauth.headers
+
+            # 2. Valid Cloudflare Access JWT
+            valid_jwt = _make_mock_jwt({
+                "aud": "test_aud_hash_12345",
+                "email": "vec@example.com",
+                "exp": time.time() + 3600,
+            })
+            r_valid = await client.get(
+                f"{base_url}/dashboard",
+                headers={"cf-access-jwt-assertion": valid_jwt},
+            )
+            assert r_valid.status_code == 200
+            assert "Antigravity Webhook Hub" in r_valid.text
+
+            # 3. Expired JWT -> 401
+            expired_jwt = _make_mock_jwt({
+                "aud": "test_aud_hash_12345",
+                "email": "vec@example.com",
+                "exp": time.time() - 3600,
+            })
+            r_exp = await client.get(
+                f"{base_url}/dashboard",
+                headers={"cf-access-jwt-assertion": expired_jwt},
+            )
+            assert r_exp.status_code == 401
+            assert "expired" in r_exp.text.lower()
+
+            # 4. AUD mismatch -> 401
+            bad_aud_jwt = _make_mock_jwt({
+                "aud": "wrong_aud_hash",
+                "email": "vec@example.com",
+                "exp": time.time() + 3600,
+            })
+            r_aud = await client.get(
+                f"{base_url}/dashboard",
+                headers={"cf-access-jwt-assertion": bad_aud_jwt},
+            )
+            assert r_aud.status_code == 401
+
+            # 5. Email not allowed -> 403
+            disallowed_jwt = _make_mock_jwt({
+                "aud": "test_aud_hash_12345",
+                "email": "intruder@example.com",
+                "exp": time.time() + 3600,
+            })
+            r_forbidden = await client.get(
+                f"{base_url}/dashboard",
+                headers={"cf-access-jwt-assertion": disallowed_jwt},
+            )
+            assert r_forbidden.status_code == 403
+    finally:
+        await server.stop()
+
+
+async def test_dashboard_authentication_basic_and_token(free_port: int, temp_db_path: str):
+    """
+    Verify dashboard route authentication via HTTP Basic Auth and Token fallback:
+    - HTTP Basic Auth with correct credentials -> 200 OK
+    - HTTP Basic Auth with wrong credentials -> 401
+    - Token via Authorization: Bearer <token> -> 200 OK
+    - Token via query parameter ?token=<token> -> 200 OK
+    - Token via X-Dashboard-Token header -> 200 OK
+    """
+    import base64
+    config = AppConfig()
+    config.server.port = free_port
+    config.server.host = "127.0.0.1"
+    config.database.path = temp_db_path
+    config.dashboard.auth_enabled = True
+    config.dashboard.basic_auth_user = "admin"
+    config.dashboard.basic_auth_pass = "supersecret123"
+    config.dashboard.auth_token = "secret-token-xyz"
+
+    server = AsyncHTTPServer(config.server)
+    register_dashboard_routes(server, config)
+    await server.start()
+
+    base_url = f"http://127.0.0.1:{free_port}"
+    try:
+        async with httpx.AsyncClient() as client:
+            # 1. Unauthenticated -> 401
+            r = await client.get(f"{base_url}/dashboard")
+            assert r.status_code == 401
+
+            # 2. Basic Auth correct
+            b64_creds = base64.b64encode(b"admin:supersecret123").decode()
+            r_basic_ok = await client.get(
+                f"{base_url}/dashboard",
+                headers={"Authorization": f"Basic {b64_creds}"},
+            )
+            assert r_basic_ok.status_code == 200
+
+            # 3. Basic Auth wrong password
+            bad_creds = base64.b64encode(b"admin:wrongpassword").decode()
+            r_basic_bad = await client.get(
+                f"{base_url}/dashboard",
+                headers={"Authorization": f"Basic {bad_creds}"},
+            )
+            assert r_basic_bad.status_code == 401
+
+            # 4. Bearer token
+            r_bearer = await client.get(
+                f"{base_url}/dashboard",
+                headers={"Authorization": "Bearer secret-token-xyz"},
+            )
+            assert r_bearer.status_code == 200
+
+            # 5. Query parameter ?token=
+            r_query = await client.get(f"{base_url}/dashboard?token=secret-token-xyz")
+            assert r_query.status_code == 200
+
+            # 6. X-Dashboard-Token header
+            r_hdr = await client.get(
+                f"{base_url}/dashboard",
+                headers={"X-Dashboard-Token": "secret-token-xyz"},
+            )
+            assert r_hdr.status_code == 200
+    finally:
+        await server.stop()
+
+
