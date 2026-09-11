@@ -2272,7 +2272,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
   </div>
 
   <!-- Signal Detail Modal -->
-  <div class="modal-overlay" id="signalModalOverlay">
+  <div class="modal-overlay" id="signalModalOverlay" onclick="if (event.target === this) closeSignalModal()">
     <div class="modal" style="max-width: 680px;">
       <div class="modal-header">
         <div style="display: flex; align-items: center; gap: 8px;">
@@ -2333,6 +2333,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       signals: [],
       signalsFilter: 'all',
       pulses: [],
+      openSections: new Set(),
       drawerDurationTimer: null,
       drawerRenderScheduled: false,
     }};
@@ -2438,6 +2439,15 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         if (agentSummaryResp && agentSummaryResp.ok) {{
           const agentSummary = await agentSummaryResp.json();
           renderAgentSummary(agentSummary);
+        }}
+
+        // Push-based & authoritative synchronization of currently active tab view
+        if (state.currentMainView === 'sentinels') {{
+          loadSentinels();
+        }} else if (state.currentMainView === 'signals') {{
+          loadSignals();
+        }} else if (state.currentMainView === 'pulses') {{
+          loadPulses();
         }}
       }} catch (err) {{
         console.error('Failed to pull authoritative state:', err);
@@ -2700,6 +2710,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       const toggleFilterBtn = document.getElementById('toggleFilterBtn');
       const searchInput = document.getElementById('taskSearchInput');
 
+      // Auto-dismiss mobile sidebar if open
+      const sb = document.getElementById('appSidebar');
+      if (sb) sb.classList.remove('mobile-open');
+
       if (viewName === 'sentinels') {{
         if (titleEl) titleEl.innerText = 'Sentinel AI Agent Runs';
         if (toggleFilterBtn) toggleFilterBtn.style.display = 'none';
@@ -2724,6 +2738,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     }}
 
     function setCategoryFilter(filter, el) {{
+      const sb = document.getElementById('appSidebar');
+      if (sb) sb.classList.remove('mobile-open');
       if (state.currentMainView !== 'tasks') {{
         switchMainView('tasks');
       }}
@@ -2786,6 +2802,37 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       }}
     }}
 
+    function renderStepsHtml(steps) {{
+      if (!steps || steps.length === 0) {{
+        return `<div style="color: var(--text-muted); padding: 12px;">No tool execution steps recorded.</div>`;
+      }}
+      return `
+        <div class="stepper-timeline">
+          ${{steps.map((st, idx) => `
+            <div class="stepper-step">
+              <div class="stepper-dot"></div>
+              <div class="stepper-title-row">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);">#${{st.step_index !== undefined ? st.step_index : (idx + 1)}}</span>
+                  <span class="tool-pill">${{escapeHtml(st.tool_name || 'tool')}}</span>
+                </div>
+                <span style="font-size: 11px; color: var(--text-muted);">${{escapeHtml(st.created_at || '').slice(11, 19)}}</span>
+              </div>
+              ${{st.tool_args ? `
+                <div style="font-family: var(--font-mono); font-size: 11px; color: #93c5fd; background: rgba(59,130,246,0.08); padding: 4px 8px; border-radius: 4px;">
+                  <span style="color: var(--text-muted);">Args: </span>
+                  <code>${{escapeHtml(JSON.stringify(st.tool_args))}}</code>
+                </div>
+              ` : ''}}
+              ${{st.output ? `
+                <div class="stepper-output">${{escapeHtml(st.output)}}</div>
+              ` : ''}}
+            </div>
+          `).join('')}}
+        </div>
+      `;
+    }}
+
     function renderSentinels() {{
       const container = document.getElementById('sentinelsListContainer');
       if (!state.sentinels || state.sentinels.length === 0) {{
@@ -2810,6 +2857,23 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         const toolsPills = (s.tools_used || []).map(t =>
           `<span class="tool-pill"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg><span>${{escapeHtml(t)}}</span></span>`
         ).join(' ');
+
+        const isPromptOpen = state.openSections.has('prompt_' + cid);
+        const isStepsOpen = state.openSections.has('steps_' + cid);
+        const isReportOpen = state.openSections.has('report_' + cid);
+
+        const cached = state.sentinelDetails[cid];
+        const promptContent = isPromptOpen
+          ? (cached && cached.prompt ? `<pre style="margin:0; white-space:pre-wrap; font-family:var(--font-mono); font-size:11px; color:#cbd5e1;">${{escapeHtml(cached.prompt)}}</pre>` : 'Loading full prompt...')
+          : 'Loading full prompt...';
+
+        const stepsContent = isStepsOpen
+          ? (cached && cached.steps ? renderStepsHtml(cached.steps) : 'Loading autonomous tool execution steps...')
+          : 'Loading autonomous tool execution steps...';
+
+        const reportContent = isReportOpen
+          ? (cached && cached.final_report ? formatMarkdown(cached.final_report) : 'Loading report...')
+          : 'Loading report...';
 
         return `
           <div class="sentinel-card" id="sentinelCard_${{cid}}">
@@ -2839,14 +2903,14 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px;">
                   <span style="font-size: 11px; color: var(--text-muted);">${{escapeHtml(s.prompt_snippet).substring(0, 60)}}...</span>
-                  <svg id="chevron_prompt_${{cid}}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transition: transform 0.2s ease;"><polyline points="6 9 12 15 18 9"/></svg>
+                  <svg id="chevron_prompt_${{cid}}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transition: transform 0.2s ease; transform: rotate(${{isPromptOpen ? '180deg' : '0deg'}});"><polyline points="6 9 12 15 18 9"/></svg>
                 </div>
               </div>
-              <div class="collapsible-body" id="body_prompt_${{cid}}" style="display: none;">
+              <div class="collapsible-body" id="body_prompt_${{cid}}" style="display: ${{isPromptOpen ? 'block' : 'none'}};">
                 <div style="display: flex; justify-content: flex-end; margin-bottom: 6px;">
                   <button class="btn btn-secondary" style="font-size: 10px; padding: 2px 8px;" onclick="copySentinelField('${{cid}}', 'prompt')">Copy Prompt</button>
                 </div>
-                <div id="content_prompt_${{cid}}">Loading full prompt...</div>
+                <div id="content_prompt_${{cid}}">${{promptContent}}</div>
               </div>
             </div>
 
@@ -2859,11 +2923,11 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px;">
                   <span style="font-size: 11px; color: var(--text-muted);">Inspect steps &amp; outputs</span>
-                  <svg id="chevron_steps_${{cid}}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transition: transform 0.2s ease;"><polyline points="6 9 12 15 18 9"/></svg>
+                  <svg id="chevron_steps_${{cid}}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transition: transform 0.2s ease; transform: rotate(${{isStepsOpen ? '180deg' : '0deg'}});"><polyline points="6 9 12 15 18 9"/></svg>
                 </div>
               </div>
-              <div class="collapsible-body" id="body_steps_${{cid}}" style="display: none; max-height: 480px;">
-                <div id="content_steps_${{cid}}">Loading autonomous tool execution steps...</div>
+              <div class="collapsible-body" id="body_steps_${{cid}}" style="display: ${{isStepsOpen ? 'block' : 'none'}}; max-height: 480px;">
+                <div id="content_steps_${{cid}}">${{stepsContent}}</div>
               </div>
             </div>
 
@@ -2876,19 +2940,43 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px;">
                   <span style="font-size: 11px; color: var(--text-muted);">${{escapeHtml(s.report_snippet).substring(0, 50)}}...</span>
-                  <svg id="chevron_report_${{cid}}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transition: transform 0.2s ease;"><polyline points="6 9 12 15 18 9"/></svg>
+                  <svg id="chevron_report_${{cid}}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transition: transform 0.2s ease; transform: rotate(${{isReportOpen ? '180deg' : '0deg'}});"><polyline points="6 9 12 15 18 9"/></svg>
                 </div>
               </div>
-              <div class="collapsible-body" id="body_report_${{cid}}" style="display: none; max-height: 480px;">
+              <div class="collapsible-body" id="body_report_${{cid}}" style="display: ${{isReportOpen ? 'block' : 'none'}}; max-height: 480px;">
                 <div style="display: flex; justify-content: flex-end; margin-bottom: 6px;">
                   <button class="btn btn-secondary" style="font-size: 10px; padding: 2px 8px;" onclick="copySentinelField('${{cid}}', 'final_report')">Copy Report</button>
                 </div>
-                <div id="content_report_${{cid}}" style="font-family: var(--font-sans); font-size: 12px; line-height: 1.6; color: #cbd5e1;">Loading report...</div>
+                <div id="content_report_${{cid}}" style="font-family: var(--font-sans); font-size: 12px; line-height: 1.6; color: #cbd5e1;">${{reportContent}}</div>
               </div>
             </div>
           </div>
         `;
       }}).join('');
+
+      // Auto-fetch details for open sections that need hydration
+      filtered.forEach(s => {{
+        const cid = s.conversation_id;
+        if (state.openSections.has('prompt_' + cid) || state.openSections.has('steps_' + cid) || state.openSections.has('report_' + cid)) {{
+          if (!state.sentinelDetails[cid]) {{
+            ensureSentinelDetails(cid).then(detail => {{
+              if (!detail) return;
+              if (state.openSections.has('prompt_' + cid)) {{
+                const el = document.getElementById('content_prompt_' + cid);
+                if (el) el.innerHTML = `<pre style="margin:0; white-space:pre-wrap; font-family:var(--font-mono); font-size:11px; color:#cbd5e1;">${{escapeHtml(detail.prompt || '--')}}</pre>`;
+              }}
+              if (state.openSections.has('steps_' + cid)) {{
+                const el = document.getElementById('content_steps_' + cid);
+                if (el) el.innerHTML = renderStepsHtml(detail.steps || []);
+              }}
+              if (state.openSections.has('report_' + cid)) {{
+                const el = document.getElementById('content_report_' + cid);
+                if (el) el.innerHTML = formatMarkdown(detail.final_report || 'No delivered report found.');
+              }}
+            }});
+          }}
+        }}
+      }});
     }}
 
     async function ensureSentinelDetails(cid) {{
@@ -2914,9 +3002,11 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       const isOpen = body.style.display !== 'none';
 
       if (isOpen) {{
+        state.openSections.delete(secKey);
         body.style.display = 'none';
         if (chevron) chevron.style.transform = 'rotate(0deg)';
       }} else {{
+        state.openSections.add(secKey);
         body.style.display = 'block';
         if (chevron) chevron.style.transform = 'rotate(180deg)';
 
@@ -2935,15 +3025,18 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     }}
 
     async function toggleSentinelSteps(cid) {{
+      const secKey = 'steps_' + cid;
       const body = document.getElementById('body_steps_' + cid);
       const chevron = document.getElementById('chevron_steps_' + cid);
       if (!body) return;
       const isOpen = body.style.display !== 'none';
 
       if (isOpen) {{
+        state.openSections.delete(secKey);
         body.style.display = 'none';
         if (chevron) chevron.style.transform = 'rotate(0deg)';
       }} else {{
+        state.openSections.add(secKey);
         body.style.display = 'block';
         if (chevron) chevron.style.transform = 'rotate(180deg)';
 
@@ -2956,31 +3049,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           return;
         }}
 
-        contentEl.innerHTML = `
-          <div class="stepper-timeline">
-            ${{detail.steps.map((st, idx) => `
-              <div class="stepper-step">
-                <div class="stepper-dot"></div>
-                <div class="stepper-title-row">
-                  <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);">#${{st.step_index !== undefined ? st.step_index : (idx + 1)}}</span>
-                    <span class="tool-pill">${{escapeHtml(st.tool_name || 'tool')}}</span>
-                  </div>
-                  <span style="font-size: 11px; color: var(--text-muted);">${{escapeHtml(st.created_at || '').slice(11, 19)}}</span>
-                </div>
-                ${{st.tool_args ? `
-                  <div style="font-family: var(--font-mono); font-size: 11px; color: #93c5fd; background: rgba(59,130,246,0.08); padding: 4px 8px; border-radius: 4px;">
-                    <span style="color: var(--text-muted);">Args: </span>
-                    <code>${{escapeHtml(JSON.stringify(st.tool_args))}}</code>
-                  </div>
-                ` : ''}}
-                ${{st.output ? `
-                  <div class="stepper-output">${{escapeHtml(st.output)}}</div>
-                ` : ''}}
-              </div>
-            `).join('')}}
-          </div>
-        `;
+        contentEl.innerHTML = renderStepsHtml(detail.steps);
       }}
     }}
 
@@ -3954,6 +4023,134 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       }}
     }}
 
+    function renderDrawerAgentActivity(act) {{
+      const agentCard = document.getElementById('drawerAgentActivityCard');
+      const agentPills = document.getElementById('drawerAgentPills');
+      const agentActions = document.getElementById('drawerAgentActions');
+      const agentBody = document.getElementById('drawerAgentActivityBody');
+      if (!agentCard || !agentPills || !agentBody) return;
+
+      if (!act) {{
+        agentCard.style.display = 'none';
+        return;
+      }}
+
+      agentCard.style.display = 'flex';
+      agentPills.innerHTML = '';
+      if (agentActions) agentActions.innerHTML = '';
+      let bodyHtml = '';
+
+      if (act.signal) {{
+        const sig = act.signal;
+        const v = (sig.verdict || 'unknown').toLowerCase();
+        agentPills.innerHTML += `<span class="verdict-badge verdict-${{v}}">${{escapeHtml(v.toUpperCase())}}</span>`;
+        const confScore = sig.confidence_score !== undefined && sig.confidence_score !== null
+          ? sig.confidence_score
+          : (sig.result && sig.result.confidence_score);
+        if (confScore !== undefined && confScore !== null) {{
+          const confPct = Math.round((confScore <= 1 ? confScore * 100 : confScore));
+          agentPills.innerHTML += `<span class="badge" style="background:rgba(99,102,241,0.2);color:#a5b4fc;">${{confPct}}% Conf</span>`;
+        }}
+        const isApplied = sig.applied !== undefined && sig.applied !== null
+          ? sig.applied
+          : (sig.result && sig.result.applied);
+        if (isApplied) {{
+          agentPills.innerHTML += `<span class="badge badge-succeeded">Applied</span>`;
+        }}
+
+        if (agentActions) {{
+          agentActions.innerHTML += `
+            <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="inspectSignal('${{sig.signal_id}}')" title="Quick inspect signal diffs and full metadata">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <span>Inspect</span>
+            </button>
+            <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="copySignalJson('${{sig.signal_id}}')" title="One-click copy signal JSON">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+              <span>Copy</span>
+            </button>
+          `;
+        }}
+
+        const targetUrl = sig.target_page_url || (sig.result && sig.result.target_page_url);
+        bodyHtml += `
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+            <div>
+              <span style="color: var(--text-muted); font-size: 11px;">Target Contact: </span>
+              <strong style="color: #ffffff;">${{escapeHtml(sig.target_name || '--')}}</strong>
+              <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-left: 6px;">(${{escapeHtml(sig.signal_id || '')}})</span>
+            </div>
+            ${{targetUrl ? `
+              <a href="${{escapeHtml(targetUrl)}}" target="_blank" class="notion-btn">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></svg>
+                <span>Open in Notion</span>
+              </a>
+            ` : ''}}
+          </div>
+        `;
+
+        const explanation = (sig.result && sig.result.explanation) || sig.explanation;
+        if (explanation) {{
+          bodyHtml += `<div style="font-size: 11px; color: #cbd5e1; background: #070a12; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); line-height: 1.4;">${{escapeHtml(explanation)}}</div>`;
+        }}
+
+        const diffs = (sig.result && sig.result.diffs) || sig.diffs;
+        const hasDiffs = Array.isArray(diffs) ? diffs.length > 0 : (diffs && typeof diffs === 'object' && Object.keys(diffs).length > 0);
+        if (hasDiffs) {{
+          bodyHtml += `
+            <div style="font-size: 11px; font-family: var(--font-mono); background: #070a12; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); color: #94a3b8;">
+              <div style="color: var(--accent-blue); font-weight: 600; margin-bottom: 4px; font-size: 10px; text-transform: uppercase;">Proposed Property Diffs</div>
+              <pre style="margin:0; white-space:pre-wrap; font-size: 10px; color: #cbd5e1;">${{escapeHtml(JSON.stringify(diffs, null, 2))}}</pre>
+            </div>
+          `;
+        }}
+      }}
+
+      if (act.pulse) {{
+        agentPills.innerHTML += `<span class="badge" style="background:rgba(59,130,246,0.2);color:#93c5fd;">Pulse Queued</span>`;
+        if (!act.signal && agentActions) {{
+          agentActions.innerHTML += `
+            <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="copyText('${{escapeJsString(act.pulse.prompt || '')}}')" title="Copy pulse prompt">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+              <span>Copy Prompt</span>
+            </button>
+          `;
+        }}
+        bodyHtml += `
+          <div style="font-size: 11px; color: #94a3b8;">
+            <span style="color: var(--text-muted);">Sidecar Pulse Event: </span>
+            <code style="color: #93c5fd;">${{escapeHtml(act.pulse.file_name)}}</code>
+          </div>
+        `;
+        if (act.pulse.prompt) {{
+          bodyHtml += `
+            <div style="font-size: 11px; font-family: var(--font-mono); background: #070a12; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); color: #cbd5e1; max-height: 80px; overflow-y: auto;">
+              ${{escapeHtml(act.pulse.prompt)}}
+            </div>
+          `;
+        }}
+      }}
+
+      if (act.prompt_payload && !act.pulse) {{
+        agentPills.innerHTML += `<span class="badge" style="background:rgba(168,85,247,0.2);color:#c084fc;">Agent Prompt</span>`;
+        const promptText = typeof act.prompt_payload === 'string' ? act.prompt_payload : JSON.stringify(act.prompt_payload, null, 2);
+        if (!act.signal && agentActions) {{
+          agentActions.innerHTML += `
+            <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="copyText('${{escapeJsString(promptText)}}')" title="Copy prompt payload">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+              <span>Copy Prompt</span>
+            </button>
+          `;
+        }}
+        bodyHtml += `
+          <div style="font-size: 11px; font-family: var(--font-mono); background: #070a12; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); color: #cbd5e1; max-height: 80px; overflow-y: auto;">
+            ${{escapeHtml(promptText)}}
+          </div>
+        `;
+      }}
+
+      agentBody.innerHTML = bodyHtml;
+    }}
+
     async function openDrawer(taskId) {{
       state.activeTaskId = taskId;
       state.drawerLogs = [];
@@ -4053,131 +4250,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           renderExitBadge(task.exit_code, task.status);
 
           // Render Agent Activity & Signal Card in Drawer
-          const agentCard = document.getElementById('drawerAgentActivityCard');
-          const agentPills = document.getElementById('drawerAgentPills');
-          const agentActions = document.getElementById('drawerAgentActions');
-          const agentBody = document.getElementById('drawerAgentActivityBody');
-          if (agentCard && agentPills && agentBody) {{
-            if (task.agent_activity) {{
-              const act = task.agent_activity;
-              agentCard.style.display = 'flex';
-              agentPills.innerHTML = '';
-              if (agentActions) agentActions.innerHTML = '';
-              let bodyHtml = '';
-
-              if (act.signal) {{
-                const sig = act.signal;
-                const v = (sig.verdict || 'unknown').toLowerCase();
-                agentPills.innerHTML += `<span class="verdict-badge verdict-${{v}}">${{escapeHtml(v.toUpperCase())}}</span>`;
-                const confScore = sig.confidence_score !== undefined && sig.confidence_score !== null
-                  ? sig.confidence_score
-                  : (sig.result && sig.result.confidence_score);
-                if (confScore !== undefined && confScore !== null) {{
-                  const confPct = Math.round((confScore <= 1 ? confScore * 100 : confScore));
-                  agentPills.innerHTML += `<span class="badge" style="background:rgba(99,102,241,0.2);color:#a5b4fc;">${{confPct}}% Conf</span>`;
-                }}
-                const isApplied = sig.applied !== undefined && sig.applied !== null
-                  ? sig.applied
-                  : (sig.result && sig.result.applied);
-                if (isApplied) {{
-                  agentPills.innerHTML += `<span class="badge badge-succeeded">Applied</span>`;
-                }}
-
-                if (agentActions) {{
-                  agentActions.innerHTML += `
-                    <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="inspectSignal('${{sig.signal_id}}')" title="Quick inspect signal diffs and full metadata">
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                      <span>Inspect</span>
-                    </button>
-                    <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="copySignalJson('${{sig.signal_id}}')" title="One-click copy signal JSON">
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
-                      <span>Copy</span>
-                    </button>
-                  `;
-                }}
-
-                const targetUrl = sig.target_page_url || (sig.result && sig.result.target_page_url);
-                bodyHtml += `
-                  <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
-                    <div>
-                      <span style="color: var(--text-muted); font-size: 11px;">Target Contact: </span>
-                      <strong style="color: #ffffff;">${{escapeHtml(sig.target_name || '--')}}</strong>
-                      <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-left: 6px;">(${{escapeHtml(sig.signal_id || '')}})</span>
-                    </div>
-                    ${{targetUrl ? `
-                      <a href="${{escapeHtml(targetUrl)}}" target="_blank" class="notion-btn">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></svg>
-                        <span>Open in Notion</span>
-                      </a>
-                    ` : ''}}
-                  </div>
-                `;
-
-                const explanation = (sig.result && sig.result.explanation) || sig.explanation;
-                if (explanation) {{
-                  bodyHtml += `<div style="font-size: 11px; color: #cbd5e1; background: #070a12; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); line-height: 1.4;">${{escapeHtml(explanation)}}</div>`;
-                }}
-
-                const diffs = (sig.result && sig.result.diffs) || sig.diffs;
-                const hasDiffs = Array.isArray(diffs) ? diffs.length > 0 : (diffs && typeof diffs === 'object' && Object.keys(diffs).length > 0);
-                if (hasDiffs) {{
-                  bodyHtml += `
-                    <div style="font-size: 11px; font-family: var(--font-mono); background: #070a12; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); color: #94a3b8;">
-                      <div style="color: var(--accent-blue); font-weight: 600; margin-bottom: 4px; font-size: 10px; text-transform: uppercase;">Proposed Property Diffs</div>
-                      <pre style="margin:0; white-space:pre-wrap; font-size: 10px; color: #cbd5e1;">${{escapeHtml(JSON.stringify(diffs, null, 2))}}</pre>
-                    </div>
-                  `;
-                }}
-              }}
-
-              if (act.pulse) {{
-                agentPills.innerHTML += `<span class="badge" style="background:rgba(59,130,246,0.2);color:#93c5fd;">Pulse Queued</span>`;
-                if (!act.signal && agentActions) {{
-                  agentActions.innerHTML += `
-                    <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="copyText('${{escapeJsString(act.pulse.prompt || '')}}')" title="Copy pulse prompt">
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
-                      <span>Copy Prompt</span>
-                    </button>
-                  `;
-                }}
-                bodyHtml += `
-                  <div style="font-size: 11px; color: #94a3b8;">
-                    <span style="color: var(--text-muted);">Sidecar Pulse Event: </span>
-                    <code style="color: #93c5fd;">${{escapeHtml(act.pulse.file_name)}}</code>
-                  </div>
-                `;
-                if (act.pulse.prompt) {{
-                  bodyHtml += `
-                    <div style="font-size: 11px; font-family: var(--font-mono); background: #070a12; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); color: #cbd5e1; max-height: 80px; overflow-y: auto;">
-                      ${{escapeHtml(act.pulse.prompt)}}
-                    </div>
-                  `;
-                }}
-              }}
-
-              if (act.prompt_payload && !act.pulse) {{
-                agentPills.innerHTML += `<span class="badge" style="background:rgba(168,85,247,0.2);color:#c084fc;">Agent Prompt</span>`;
-                const promptText = typeof act.prompt_payload === 'string' ? act.prompt_payload : JSON.stringify(act.prompt_payload, null, 2);
-                if (!act.signal && agentActions) {{
-                  agentActions.innerHTML += `
-                    <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="copyText('${{escapeJsString(promptText)}}')" title="Copy prompt payload">
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
-                      <span>Copy Prompt</span>
-                    </button>
-                  `;
-                }}
-                bodyHtml += `
-                  <div style="font-size: 11px; font-family: var(--font-mono); background: #070a12; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); color: #cbd5e1; max-height: 80px; overflow-y: auto;">
-                    ${{escapeHtml(promptText)}}
-                  </div>
-                `;
-              }}
-
-              agentBody.innerHTML = bodyHtml;
-            }} else {{
-              agentCard.style.display = 'none';
-            }}
-          }}
+          renderDrawerAgentActivity(task.agent_activity);
 
           // AUTHORITATIVE CHRONOLOGICAL LOG INGESTION
           state.drawerLogs = [];
@@ -4241,13 +4314,29 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           handleChunk(e);
           refreshTasksDebounced(200);
         }});
-        taskSse.addEventListener('completed', (e) => {{
+        taskSse.addEventListener('completed', async (e) => {{
           handleChunk(e);
           if (liveIndicator) liveIndicator.style.display = 'none';
           if (state.drawerDurationTimer) {{
             clearInterval(state.drawerDurationTimer);
             state.drawerDurationTimer = null;
           }}
+          // Re-pull authoritative state from SSOT upon task completion
+          try {{
+            const resp = await fetch('/tasks/' + taskId);
+            if (resp.ok) {{
+              const updatedTask = await resp.json();
+              if (state.activeTaskId === taskId) {{
+                if (updatedTask.exit_code !== undefined && updatedTask.exit_code !== null) {{
+                  renderExitBadge(updatedTask.exit_code, updatedTask.status);
+                }}
+                if (promptExit && updatedTask.exit_code !== undefined && updatedTask.exit_code !== null) {{
+                  promptExit.innerText = 'exit ' + updatedTask.exit_code;
+                }}
+                renderDrawerAgentActivity(updatedTask.agent_activity);
+              }}
+            }}
+          }} catch (_) {{}}
           refreshTasksDebounced(100);
         }});
         taskSse.onmessage = handleChunk;
@@ -4309,6 +4398,9 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         const resp = await fetch('/tasks/' + taskId + '/rerun', {{ method: 'POST' }});
         if (resp.ok) {{
           showToast('Task re-enqueued successfully', 'info');
+          if (state.activeTaskId === taskId) {{
+            openDrawer(taskId);
+          }}
           await refreshTasksAuthoritative();
         }} else {{
           showToast('Failed to re-run task', 'error');

@@ -1,16 +1,16 @@
 # Graph Report - 26.09.08-antigravity-webhook-hub  (2026-09-11)
 
 ## Corpus Check
-- 234 files · ~186,425 words
+- 239 files · ~319,661 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2584 nodes · 3963 edges · 243 communities (167 shown, 76 thin omitted)
-- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 56 edges (avg confidence: 0.53)
+- 2677 nodes · 4203 edges · 271 communities (185 shown, 86 thin omitted)
+- Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 64 edges (avg confidence: 0.57)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `067503ae`
+- Built from commit: `572d278a`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -22,17 +22,17 @@
 - test_models.py
 - Technical Survey & Architecture Report: Requirements R3, R4, R5
 - AuthHelper
-- config.py
+- server.py
 - .add_middleware
 - Any
-- test_adversarial_m1.py
+- Any
 - cmd_sweep
 - .close
-- Any
+- test_db.py
 - load_config
 - test_cli.py
 - .run_all
-- AppConfig
+- EventBroker
 - Milestone M1 Gate Review & Adversarial Audit Report
 - 1. Observation
 - Milestone M2 Empirical Challenge Report: SQLite SSOT & Async Dispatch Engine
@@ -82,9 +82,9 @@
 - Milestone M2 Handoff Report: SQLite SSOT & Async Dispatch Engine
 - Observability & UI Endpoints
 - ._commit_and_shrink
-- ._handle_client
+- RouteHandler
 - Any
-- DatabaseManager
+- _LightweightEmailUtils
 - Orchestrator Progress
 - Parametrization
 - start_tunnel.sh
@@ -105,7 +105,7 @@
 - Testing Exceptions
 - Progress Tracker — Worker M1 (Ingress Gateway & Security Core)
 - Any
-- test_contact_review_e2e.py
+- AppConfig
 - challenger_m1_1/DISPATCH.md
 - challenger_m1_1/progress.md
 - challenger_m1_2/DISPATCH.md
@@ -152,7 +152,7 @@
 - Milestone M3 Reviewer Report: Real-Time Observability & Push-Based Live Queries
 - Orchestrator Final Handoff — Antigravity Webhook Hub
 - Milestone M3 Handoff Report: Real-Time Observability & Push-Based Live Queries
-- .insert_event_and_task
+- DatabaseManager
 - Progress Tracker — Worker M2 Remediation
 - challenger_m3_1/DISPATCH.md
 - Progress Log — Challenger M3-1
@@ -246,41 +246,68 @@
 - webhook-hub
 - M5EmpiricalRunner
 - test_security.py
-- test_m3_stress.py
+- test_agent_activities_routes.py
 - .insert_execution_log
 - .sweep_and_requeue_unprocessed
-- cmd_verify
+- config.py
 - .subscribe
 - get_rss_mb
+- ._handle_client
+- TaskDispatcher
+- render_dashboard_html
+- Namespace
+- Any
+- TaskStatus
+- .route
+- test_adversarial_finding2_boot_time_queued_tasks_must_be_rehydrated
+- cmd_logs
+- [1.1.0] - 2026-09-09
+- [1.1.1] - 2026-09-09
+- [1.4.0] - 2026-09-11
+- [1.5.0] - 2026-09-11
+- [1.5.2] - 2026-09-11
+- [1.6.1] - 2026-09-11
+- [1.6.3] - 2026-09-11
+- [1.7.0] - 2026-09-11
+- [1.2.0] - 2026-09-09
+- [1.3.1] - 2026-09-10
+- [1.3.2] - 2026-09-10
+- [1.3.3] - 2026-09-10
+- [1.5.1] - 2026-09-11
+- [1.6.0] - 2026-09-11
+- [1.6.4] - 2026-09-11
+- [1.6.5] - 2026-09-11
+- db
+- manage_daemon.sh
 
 ## God Nodes (most connected - your core abstractions)
-1. `DatabaseManager` - 101 edges
-2. `AsyncHTTPServer` - 87 edges
-3. `AppConfig` - 66 edges
-4. `TaskDispatcher` - 62 edges
+1. `DatabaseManager` - 107 edges
+2. `AsyncHTTPServer` - 95 edges
+3. `AppConfig` - 81 edges
+4. `TaskDispatcher` - 64 edges
 5. `generate_hmac_signature()` - 61 edges
-6. `EventBroker` - 48 edges
+6. `EventBroker` - 50 edges
 7. `ContactInput` - 44 edges
-8. `build_parser()` - 34 edges
-9. `NotionPeopleClient` - 34 edges
-10. `register_observability_routes()` - 34 edges
+8. `register_observability_routes()` - 39 edges
+9. `build_parser()` - 35 edges
+10. `main()` - 35 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `M5EmpiricalRunner` --uses--> `EventBroker`  [INFERRED]
   scripts/challenge_m5_dispatcher_sse_stress.py → hub/broker.py
 - `cmd_status()` --indirect_call--> `db()`  [INFERRED]
   hub/cli.py → tests/unit/test_sweeper.py
-- `AdversarialHarness` --uses--> `ServerConfig`  [INFERRED]
-  scripts/adversarial_challenge_m1.py → hub/config.py
-- `StressTestRunner` --uses--> `ServerConfig`  [INFERRED]
-  scripts/challenge_m1_server_stress.py → hub/config.py
-- `AdversarialHarness` --uses--> `SecurityConfig`  [INFERRED]
-  scripts/adversarial_challenge_m1.py → hub/config.py
+- `cmd_review_contact()` --indirect_call--> `db()`  [INFERRED]
+  hub/cli.py → tests/unit/test_sweeper.py
+- `cmd_sweep()` --indirect_call--> `db()`  [INFERRED]
+  hub/cli.py → tests/unit/test_sweeper.py
+- `cmd_tasks()` --indirect_call--> `db()`  [INFERRED]
+  hub/cli.py → tests/unit/test_sweeper.py
 
 ## Import Cycles
 - None detected.
 
-## Communities (243 total, 76 thin omitted)
+## Communities (271 total, 86 thin omitted)
 
 ### Community 0 - "memory.py"
 Cohesion: 0.15
@@ -299,8 +326,8 @@ Cohesion: 0.06
 Nodes (33): 1. Executive Summary, 2.1 Database PRAGMA Configuration & macOS Performance Tuning, 2.2 Complete DDL Schema Design, 2.3 Async Connection Architecture (Thread-Safe Single-Writer, Concurrent Readers), 2. SQLite SSOT Database Architecture, 3.1 End-to-End Lifecycle Sequence, 3.2 Elimination of In-Memory State Drift, 3. Unidirectional Data Flow Specification (+25 more)
 
 ### Community 4 - "test_models.py"
-Cohesion: 0.09
-Nodes (19): ExecutionLog, Any, Enum, str, Authoritative task status state machine values., Incoming webhook event record persisted to SQLite SSOT., Task entity managed by the unidirectional SSOT state machine., Execution attempt record for a task. (+11 more)
+Cohesion: 0.21
+Nodes (8): Incoming webhook event record persisted to SQLite SSOT., Task entity managed by the unidirectional SSOT state machine., Task, WebhookEvent, Unit tests for hub.models dataclasses and state transitions., test_http_request_helpers(), test_task_serialization(), test_webhook_event_serialization()
 
 ### Community 5 - "Technical Survey & Architecture Report: Requirements R3, R4, R5"
 Cohesion: 0.06
@@ -310,29 +337,29 @@ Nodes (32): 1. Executive Summary & Architectural Invariants, 1. `/healthz` (Live
 Cohesion: 0.09
 Nodes (24): auth_helpers(), AuthHelper, free_port(), mock_task_payload(), mock_webhook_payload(), Any, fixture, Path (+16 more)
 
-### Community 7 - "config.py"
+### Community 7 - "server.py"
 Cohesion: 0.07
-Nodes (50): ObservabilityConfig, Antigravity Webhook Hub — Clean Configuration Loader Zero hardcoded credentials…, SecurityConfig, ServerConfig, TunnelConfig, HTTPRequest, HTTPResponse, is_test_task() (+42 more)
+Nodes (53): SecurityConfig, ServerConfig, HTTPRequest, HTTPResponse, Antigravity Webhook Hub — Data Models Standard library dataclasses providing…, Outgoing HTTP response representation., Result of cryptographic authentication & security validation., Incoming HTTP request representation. (+45 more)
 
 ### Community 9 - "Any"
 Cohesion: 0.10
 Nodes (21): Any, Adversarial: Request with tampered Bearer token must be rejected with 401., Adversarial: Empty body must return 400 and write zero records., Adversarial: Broken JSON syntax must return 400 and write zero records., Adversarial: Payload missing 'heartbeat' or 'monitor' must return 400., Legitimate: UP heartbeat returns 200 and records recovery event., Legitimate Anti-Flap: When double-check probe succeeds, DOWN alert is…, Legitimate: When double-check probe fails, outage is confirmed and triage task… (+13 more)
 
-### Community 10 - "test_adversarial_m1.py"
-Cohesion: 0.08
-Nodes (23): Adversarial stress-test suite for Milestone M1 (Ingress Gateway & Security…, Adversarial challenge: unsupported or forged prefixes (e.g. sha1=, md5=,…, Adversarial challenge: various payload modifications with valid original…, Adversarial challenge: strict testing of the 300-second past window boundary., Adversarial challenge: strict testing of the 60-second future tolerance…, Adversarial challenge: negative, zero, epoch start, float, string, and…, Adversarial challenge: None, empty strings, and whitespace in header values., Adversarial challenge: non-Bearer schemes, empty tokens, whitespace, case… (+15 more)
+### Community 10 - "Any"
+Cohesion: 0.18
+Nodes (11): Any, Tier 2: Replay attack with timestamp 350s old rejected with 401 and ZERO DB…, Tier 2: Future timestamp 90s in future rejected with 401 and ZERO DB writes., Tier 2: 5 rapid duplicate requests produce exactly 1 task in SQLite., Tier 2: Process group is cleanly killed on timeout without hanging gateway., Tier 2: Tampered HMAC signature rejected with 401 and ZERO DB writes., test_adversarial_command_timeout_clean_kill(), test_adversarial_forged_hmac_zero_db_writes() (+3 more)
 
 ### Community 11 - "cmd_sweep"
-Cohesion: 0.11
-Nodes (21): cmd_dashboard(), cmd_logs(), cmd_rerun(), cmd_review_contact(), cmd_sweep(), Path, Handle `webhook-hub dashboard` (or `ui`) command., Handle `webhook-hub rerun <task_id>` command. (+13 more)
+Cohesion: 0.12
+Nodes (18): cmd_review_contact(), cmd_start(), cmd_sweep(), Path, Read integer PID from PID file if it exists and is valid., Handle `webhook-hub start` command., Handle `webhook-hub review-contact` command., Handle `webhook-hub sweep` (or `pick-unprocessed`) command. (+10 more)
 
 ### Community 12 - ".close"
-Cohesion: 0.13
-Nodes (12): Any, Run read-only query under lock without ThreadPool overhead., Run write query serialized under lock., Run write query with RETURNING clause under lock., Cleanly close SQLite connection., Retrieve webhook event record by event_id., Retrieve task by task_id., Retrieve existing task by source and idempotency key. (+4 more)
+Cohesion: 0.10
+Nodes (16): Any, Atomically insert webhook event and associated task in a single transaction.…, Retrieve chronological execution logs for a task., Run read-only query under lock without ThreadPool overhead., Run write query serialized under lock., Run write query with RETURNING clause under lock., Cleanly close SQLite connection., Insert incoming webhook event into webhook_events table. Returns True on… (+8 more)
 
-### Community 13 - "Any"
-Cohesion: 0.11
-Nodes (19): db_manager(), Any, fixture, Path, Tier 2: Duplicate events with same (source, idempotency_key) are deduplicated., Tier 1: State machine transitions: received -> queued -> running -> succeeded., Tier 2: CAS update fails if expected_status does not match current DB status., Tier 2: Tasks stuck in 'running' upon crash are recovered to 'failed' on… (+11 more)
+### Community 13 - "test_db.py"
+Cohesion: 0.13
+Nodes (20): db_manager(), Any, fixture, Path, Unit tests for hub/db.py SQLite SSOT layer. Verifies Tiers 1 & 2 requirements:…, Tier 2: Duplicate events with same (source, idempotency_key) are deduplicated., Tier 1: State machine transitions: received -> queued -> running -> succeeded., Tier 2: CAS update fails if expected_status does not match current DB status. (+12 more)
 
 ### Community 14 - "load_config"
 Cohesion: 0.13
@@ -340,15 +367,15 @@ Nodes (21): _expand_env_vars(), load_config(), _load_yaml_file(), _parse_env_fil
 
 ### Community 15 - "test_cli.py"
 Cohesion: 0.08
-Nodes (32): cmd_start(), cmd_stop(), _is_pid_running(), Read integer PID from PID file if it exists and is valid., Handle `webhook-hub start` command., Handle `webhook-hub stop` command., Check if process with given PID exists and is running., _read_pid_file() (+24 more)
+Nodes (27): cmd_stop(), _is_pid_running(), Handle `webhook-hub stop` command., Check if process with given PID exists and is running., Unit tests for Antigravity Webhook Hub Unified Command Line Interface…, Verify sweep subcommand and aliases are registered., Verify all 6 subcommands are registered with appropriate options., Verify `webhook-hub dashboard` command outputs local and tunnel URLs. (+19 more)
 
 ### Community 16 - ".run_all"
 Cohesion: 0.15
 Nodes (13): compute_hmac(), E2EVerifier, get_current_rss_mb(), get_process_rss_mb(), main(), Any, Check if gateway server is reachable. If not reachable, launch a genuine…, Query the SQLite database directly. (+5 more)
 
-### Community 17 - "AppConfig"
+### Community 17 - "EventBroker"
 Cohesion: 0.06
-Nodes (59): EventBroker, Antigravity Webhook Hub — In-Memory Bounded PubSub Event Broker Provides fast,…, In-memory bounded PubSub event bus. Routes events to task-specific subscribers…, Clear all active subscriptions., Return total active subscribers or active subscribers on a topic., Run gateway server in the foreground with full subsystem wiring., run_server_foreground(), AppConfig (+51 more)
+Nodes (55): EventBroker, Antigravity Webhook Hub — In-Memory Bounded PubSub Event Broker Provides fast,…, In-memory bounded PubSub event bus. Routes events to task-specific subscribers…, Clear all active subscriptions., Return total active subscribers or active subscribers on a topic., Antigravity Webhook Hub — SQLite SSOT Database Engine Provides single-source-…, Antigravity Webhook Hub — Async Task Dispatcher Engine Decoupled async worker…, Any (+47 more)
 
 ### Community 18 - "Milestone M1 Gate Review & Adversarial Audit Report"
 Cohesion: 0.12
@@ -391,8 +418,8 @@ Cohesion: 0.08
 Nodes (25): Any, Tier 1: GET /metrics?format=json returns metrics as JSON dictionary., Tier 1: GET /tasks lists tasks and supports ?status= filter., Tier 1 & 2: GET /tasks/{id} returns details for existing or 404 for nonexistent., MAT-033: GET /health returns 200 OK aliasing /healthz for Coolify health…, Tier 1: GET /dashboard, /ui, and / with text/html return embedded SPA HTML., Tier 1: GET /tasks/summary aggregates counts directly from SQLite SSOT., Tier 1: GET /tasks supports search ?q= and filters ?source= and ?status=. (+17 more)
 
 ### Community 28 - "ChallengerTestRunner"
-Cohesion: 0.07
-Nodes (27): ExecutionResult, Any, Path, Enqueue task_id for asynchronous background execution with duplicate prevention., Trigger macOS malloc zone pressure relief to keep process RSS strictly < 30MB., Continuous consumer loop dequeuing tasks from queue., Auto-pick and recover unprocessed tasks across SQLite SSOT. Recovers: - Stale…, Background monitor for automatic unprocessed task pickup and macOS sleep/wake… (+19 more)
+Cohesion: 0.17
+Nodes (13): ChallengerTestRunner, main(), 1.2: Command spawns child background processes -> verify entire process group…, 1.3: Subprocess ignores SIGTERM -> verify escalation to SIGKILL within timeout., 2.1: Non-zero exit code -> verify exit code in DB, stderr in execution_logs,…, 2.2: Non-existent executable -> shell returns 127, status failed, error logged., 2.3: Empty command string -> ValueError caught, status failed, error_message…, 2.4: Dispatching a task_id that does not exist in SQLite -> handled gracefully. (+5 more)
 
 ### Community 29 - "1. Observation"
 Cohesion: 0.17
@@ -463,8 +490,8 @@ Cohesion: 0.18
 Nodes (10): 1. Overview & Testing Philosophy, 2. Test Tiers & Coverage Matrix, 3. Test File Inventory, 4. Verification Evidence & Receipts, 5. How to Run the Tests, Automated Pytest Run (`python3 -m pytest tests/ -v`), E2E Test Suite Readiness Report: Antigravity Webhook Hub, Standalone Verifier Run (`python3 scripts/verify_e2e.py`) (+2 more)
 
 ### Community 46 - "generate_hmac_signature"
-Cohesion: 0.10
-Nodes (26): generate_hmac_signature(), Generate an HMAC SHA-256 signature binding timestamp and raw body. Algorithm:…, Any, Tier 2: Replay attack with timestamp 350s old rejected with 401 and ZERO DB…, Tier 2: Future timestamp 90s in future rejected with 401 and ZERO DB writes., Tier 2: 5 rapid duplicate requests produce exactly 1 task in SQLite., Tier 2: Process group is cleanly killed on timeout without hanging gateway., Tier 2: Tampered HMAC signature rejected with 401 and ZERO DB writes. (+18 more)
+Cohesion: 0.11
+Nodes (23): generate_hmac_signature(), Generate an HMAC SHA-256 signature binding timestamp and raw body. Algorithm:…, Any, Fire 20 concurrent requests with identical payload (same payload hash, no…, Verify that all invalid requests leave strictly ZERO rows across all 4 SQLite…, ADVERSARIAL PROOF OF FINDING 1: Contract: When an event exists in…, ADVERSARIAL PROOF OF FINDING 3: Contract: Feature 6 specifies 4-table…, ADVERSARIAL PROOF OF FINDING 4: Contract: Invalid payload fields (e.g. non-… (+15 more)
 
 ### Community 47 - "Reviewer & Adversarial Critic Report: Milestone M2 (SQLite SSOT & Async Dispatch Engine)"
 Cohesion: 0.20
@@ -546,17 +573,13 @@ Nodes (33): 1. Prerequisites, 1. Standalone End-to-End Verification Suite, 2. Co
 Cohesion: 0.14
 Nodes (7): Insert execution attempt audit record., Update terminal status of execution record., Atomic Compare-And-Swap (CAS) state machine transition. Only updates if current…, Reset a task to 'queued' state, clear execution/error fields, and increment…, Boot-time crash recovery: Marks any tasks stranded in 'running' status as…, Update webhook event status (received, processed, duplicate, rejected)., Commit transaction and trim SQLite memory cache.
 
-### Community 67 - "._handle_client"
-Cohesion: 0.06
-Nodes (27): _extract_handler_params(), _format_http_date(), _get_invoker(), _HandlerInvoker, _is_coroutine_callable(), Any, Pre-analyzed dispatch invoker for a route handler to avoid runtime inspect…, Retrieve or attach cached invoker directly on handler to prevent unbounded… (+19 more)
+### Community 67 - "RouteHandler"
+Cohesion: 0.14
+Nodes (11): _extract_handler_params(), _get_invoker(), _is_coroutine_callable(), Any, Retrieve or attach cached invoker directly on handler to prevent unbounded…, Register a handler for an HTTP method and path., Resolve route for method and path. Returns: (handler, kwargs,…, Represents a parameterized route pattern (e.g. /webhook/{source}). (+3 more)
 
 ### Community 68 - "Any"
 Cohesion: 0.29
 Nodes (7): Any, Tier 1: SSE stream must return text/event-stream and disable proxy buffering., Tier 2: /tasks/{task_id}/stream returns 404 when task does not exist., Tier 1: Subscribing to /tasks/{id}/stream receives live log frames., test_sse_response_headers_contract(), test_sse_task_stream_404_for_missing_task(), test_sse_task_stream_receives_live_events()
-
-### Community 69 - "DatabaseManager"
-Cohesion: 0.05
-Nodes (57): SweeperConfig, DatabaseManager, Antigravity Webhook Hub — SQLite SSOT Database Engine Provides single-source-…, Create 4-table relational schema and corresponding performance indexes., SQLite Single-Source-of-Truth (SSOT) Database Manager. Enforces WAL mode,…, Antigravity Webhook Hub — Async Task Dispatcher Engine Decoupled async worker…, Gracefully stop background workers and sweeper loop., Forward output line to pubsub broker if registered. (+49 more)
 
 ### Community 70 - "Orchestrator Progress"
 Cohesion: 0.40
@@ -618,9 +641,9 @@ Nodes (3): Testing Exception Attributes, Testing Exceptions, Testing Expected Ex
 Cohesion: 0.15
 Nodes (13): Any, Dispatch 10 concurrent CLI tasks: - 4 fast commands (exit 0, stdout capture) -…, Adversarial Process Isolation Challenge: A task spawns a background grandchild…, Connect multiple concurrent subscribers to: - /events/stream (10 subscribers) -…, Stress test EventBroker queue bounding: - Connect a subscriber with maxsize=256…, Verify memory RSS stays strictly below 30.0 MB: 1. Query /healthz at idle. 2.…, ADVERSARIAL PROOF OF FINDING 3 (Subprocess PID Omission in executions Table):…, test_adversarial_finding3_executions_pid_omission() (+5 more)
 
-### Community 90 - "test_contact_review_e2e.py"
-Cohesion: 0.47
-Nodes (5): DatabaseConfig, DispatchConfig, fixture, End-to-end integration tests for Contact Review Ingress & Dispatch. Tests two-…, temp_env()
+### Community 90 - "AppConfig"
+Cohesion: 0.07
+Nodes (45): Run gateway server in the foreground with full subsystem wiring., run_server_foreground(), AppConfig, apply_memory_pressure_relief(), Trigger process-wide memory pressure relief and cache purging. Flushes internal…, is_test_task(), Determine if a task record is an automated, synthetic, or verification test…, _get_sidecar_events_dir() (+37 more)
 
 ### Community 117 - "Review & Adversarial Challenge Report: Milestone M5 Phase 1"
 Cohesion: 0.10
@@ -694,9 +717,9 @@ Nodes (5): 1. Milestone State Summary, 2. Technical Decisions & Architecture Hig
 Cohesion: 0.29
 Nodes (6): 1. Observation, 2. Logic Chain, 3. Caveats, 4. Conclusion, 5. Verification Method, Milestone M3 Handoff Report: Real-Time Observability & Push-Based Live Queries
 
-### Community 141 - ".insert_event_and_task"
-Cohesion: 0.20
-Nodes (5): Atomically insert webhook event and associated task in a single transaction.…, Insert incoming webhook event into webhook_events table. Returns True on…, Retrieve webhook event record by source and idempotency_key., Retrieve webhook event record by source and payload_hash., Retrieve task linked to an event_id.
+### Community 141 - "DatabaseManager"
+Cohesion: 0.11
+Nodes (26): SweeperConfig, DatabaseManager, Create 4-table relational schema and corresponding performance indexes., SQLite Single-Source-of-Truth (SSOT) Database Manager. Enforces WAL mode,…, asyncio, Unit & integration tests for background sweeper, unprocessed task recovery, and…, Simulate sleep clock jump triggering recovery., Verify orphaned events with non-dict JSON or raw strings rehydrate cleanly… (+18 more)
 
 ### Community 142 - "Progress Tracker — Worker M2 Remediation"
 Cohesion: 0.50
@@ -823,8 +846,8 @@ Cohesion: 0.25
 Nodes (7): 1.1 Baseline Defect Reproduction, 1. Observation, 2. Logic Chain, 3. Caveats, 4. Conclusion, 5. Verification Method, Milestone M3 Remediation Handoff Report
 
 ### Community 186 - "Changelog"
-Cohesion: 0.06
-Nodes (32): [1.1.0] - 2026-09-09, [1.1.1] - 2026-09-09, [1.2.0] - 2026-09-09, [1.3.0] - 2026-09-10, [1.3.1] - 2026-09-10, [1.3.2] - 2026-09-10, [1.3.3] - 2026-09-10, [1.3.4] - 2026-09-10 (+24 more)
+Cohesion: 0.20
+Nodes (9): [1.3.0] - 2026-09-10, [1.3.4] - 2026-09-10, [1.4.1] - 2026-09-11, [1.6.2] - 2026-09-11, Added, Changelog, Fixed, Fixed (+1 more)
 
 ### Community 187 - "Sentinel Handoff Report — Antigravity Webhook Hub"
 Cohesion: 0.29
@@ -875,12 +898,12 @@ Cohesion: 0.18
 Nodes (6): __getattr__(), _LightweightEmailUtils, _LightweightSSL, Any, Antigravity Webhook Hub A lightweight, zero-footprint local webhook gateway and…, Lazy-load public package attributes on access (PEP 562) to maintain strict…
 
 ### Community 225 - "cli.py"
-Cohesion: 0.30
-Nodes (18): ArgumentParser, _add_dashboard_args(), _add_logs_args(), _add_rerun_args(), _add_review_contact_args(), _add_send_args(), _add_start_args(), _add_status_args() (+10 more)
+Cohesion: 0.28
+Nodes (20): ArgumentParser, _add_dashboard_args(), _add_logs_args(), _add_rerun_args(), _add_review_contact_args(), _add_send_args(), _add_start_args(), _add_status_args() (+12 more)
 
 ### Community 226 - "Any"
-Cohesion: 0.10
-Nodes (22): Any, Path, Verify GET / returns HTML for browser navigation and JSON for machine API calls., Verify GET /tasks/summary and GET /activities/summary derive stats from SQLite…, Verify /tasks search query q, status filter, and source filter., Verify POST /tasks/{id}/rerun resets task to queued and notifies dispatcher., Verify task dispatcher emits Antigravity sidecar activity events for agent…, Verify task dispatcher emits Antigravity sidecar activity events with error for… (+14 more)
+Cohesion: 0.09
+Nodes (24): Any, Path, Verify GET / returns HTML for browser navigation and JSON for machine API calls., Verify GET /tasks/summary and GET /activities/summary derive stats from SQLite…, Verify /tasks search query q, status filter, and source filter., Verify POST /tasks/{id}/rerun resets task to queued and notifies dispatcher., Verify task dispatcher emits Antigravity sidecar activity events for agent…, Verify task dispatcher emits Antigravity sidecar activity events with error for… (+16 more)
 
 ### Community 228 - "normalize_url_string"
 Cohesion: 0.17
@@ -892,7 +915,7 @@ Nodes (8): cmd_test_send(), Handle `webhook-hub test-send` command., Verify test
 
 ### Community 230 - "AsyncHTTPServer"
 Cohesion: 0.07
-Nodes (22): _LightweightEmailUtils, _LightweightSSL, _StartArgsNamespace, apply_memory_pressure_relief(), Trigger process-wide memory pressure relief and cache purging. Flushes internal…, AsyncHTTPServer, Pure asyncio HTTP/1.1 Server. Zero external dependencies, minimal memory…, Start the HTTP server on configured host and port. (+14 more)
+Nodes (25): AsyncHTTPServer, Pure asyncio HTTP/1.1 Server. Zero external dependencies, minimal memory…, Start the HTTP server on configured host and port., Periodic background memory relief maintaining <30MB budget on macOS., Periodic background memory relief maintaining <30MB budget on macOS., Gracefully stop the HTTP server and close active connections., Verify handle_root and handle_dashboard in observability.py render the styled…, test_observability_unauthorized_rendering() (+17 more)
 
 ### Community 231 - "._apply_pragmas"
 Cohesion: 0.29
@@ -903,20 +926,20 @@ Cohesion: 0.29
 Nodes (3): _LightweightEmailUtils, _LightweightSSL, Entry point for python -m hub or direct execution of hub/__main__.py.
 
 ### Community 235 - "test_security.py"
-Cohesion: 0.13
-Nodes (22): Result of cryptographic authentication & security validation., ValidationResult, compute_dedup_hash(), Verify Bearer token authentication header using constant-time comparison.…, Compute a deterministic deduplication hash binding signature, timestamp, and…, Verify HMAC SHA-256 signature with replay defense. - Validates presence of…, verify_bearer_token(), verify_hmac_signature() (+14 more)
+Cohesion: 0.09
+Nodes (28): compute_dedup_hash(), Compute a deterministic deduplication hash binding signature, timestamp, and…, Verify HMAC SHA-256 signature with replay defense. - Validates presence of…, verify_hmac_signature(), Adversarial challenge: negative, zero, epoch start, float, string, and…, Adversarial challenge: None, empty strings, and whitespace in header values., Adversarial challenge: alter signature at start, middle, and end., Adversarial challenge: non-hex characters injected into signature. (+20 more)
 
-### Community 236 - "test_m3_stress.py"
-Cohesion: 0.25
-Nodes (7): get_current_process_rss_mb(), m3_config(), fixture, Challenger M3-1 Empirical Stress & Robustness Test Suite for Real-Time SSE &…, Direct broker challenge: 1. Connect a subscriber with maxsize=256 and DO NOT…, Query current process resident set size (RSS) in megabytes., test_broker_slow_consumer_drops_oldest_non_blocking_without_queue_full()
+### Community 236 - "test_agent_activities_routes.py"
+Cohesion: 0.14
+Nodes (25): discover_sentinel_conversations(), _get_brain_dir(), _get_cadence_dir(), normalize_signal_data(), parse_sentinel_transcript(), Any, Path, Antigravity Webhook Hub — Agent Activities & Sentinel Observability Endpoints… (+17 more)
 
 ### Community 239 - ".sweep_and_requeue_unprocessed"
-Cohesion: 0.33
-Nodes (3): Insert a new task associated with an event into tasks table., Synthesize and insert a task for an orphaned event in 'received' status.…, Atomic recovery and rehydration of all unprocessed tasks and events: 1. Resets…
+Cohesion: 0.20
+Nodes (5): Insert a new task associated with an event into tasks table., Query webhook_events in 'received' status that do not have an associated task…, Synthesize and insert a task for an orphaned event in 'received' status.…, Query all unprocessed tasks and events across the system. Unprocessed includes:…, Atomic recovery and rehydration of all unprocessed tasks and events: 1. Resets…
 
-### Community 240 - "cmd_verify"
-Cohesion: 0.50
-Nodes (4): cmd_verify(), Handle `webhook-hub verify` command., Verify verify command delegates to scripts/verify_e2e.py and returns exit code., test_cmd_verify_delegation()
+### Community 240 - "config.py"
+Cohesion: 0.16
+Nodes (13): DashboardConfig, DatabaseConfig, DispatchConfig, ObservabilityConfig, Antigravity Webhook Hub — Clean Configuration Loader Zero hardcoded credentials…, TunnelConfig, fixture, API tests for Server-Sent Events (SSE) streaming endpoints. Verifies Tiers 1 &… (+5 more)
 
 ### Community 241 - ".subscribe"
 Cohesion: 0.40
@@ -926,20 +949,92 @@ Nodes (3): Subscribe to events on a specific topic. Topics: - 'task.{task_id}' o
 Cohesion: 0.50
 Nodes (4): get_rss_mb(), Read Resident Set Size (RSS) in Megabytes using macOS `ps` command., Empirically measure standalone webhook-hub RSS during and after stress.…, test_standalone_rss_memory_under_stress_reports_defect()
 
+### Community 243 - "._handle_client"
+Cohesion: 0.18
+Nodes (9): _format_http_date(), Decorator for GET routes., Format RFC 1123 / RFC 2822 HTTP date without importing email package., Handle an incoming client connection with HTTP/1.1 Keep-Alive support., Serialize and write HTTPResponse to asyncio.StreamWriter., Send a quick error response and close connection., StreamReader, StreamWriter (+1 more)
+
+### Community 244 - "TaskDispatcher"
+Cohesion: 0.10
+Nodes (18): ExecutionResult, Any, Path, Gracefully stop background workers and sweeper loop., Enqueue task_id for asynchronous background execution with duplicate prevention., Trigger macOS malloc zone pressure relief to keep process RSS strictly < 30MB., Continuous consumer loop dequeuing tasks from queue., Auto-pick and recover unprocessed tasks across SQLite SSOT. Recovers: - Stale… (+10 more)
+
+### Community 245 - "render_dashboard_html"
+Cohesion: 0.20
+Nodes (10): Any, Generate the self-contained SPA HTML string for the Webhook Hub dashboard…, Render a premium dark-mode 401 Unauthorized page adhering to /ui-ux-pro-max…, render_dashboard_html(), render_unauthorized_html(), Any, Generate the self-contained SPA HTML string for the Webhook Hub dashboard., render_dashboard_html() (+2 more)
+
+### Community 246 - "Namespace"
+Cohesion: 0.22
+Nodes (9): cmd_dashboard(), cmd_tasks(), cmd_verify(), Handle `webhook-hub dashboard` (or `ui`) command., Handle `webhook-hub tasks` command to list, inspect, and review tasks., Handle `webhook-hub verify` command., Namespace, Verify verify command delegates to scripts/verify_e2e.py and returns exit code. (+1 more)
+
+### Community 247 - "Any"
+Cohesion: 0.20
+Nodes (6): ExecutionLog, Any, Execution attempt record for a task., Individual line or chunk of output from a task execution., Parse request body as JSON., TaskExecution
+
+### Community 248 - "TaskStatus"
+Cohesion: 0.31
+Nodes (5): Enum, str, Authoritative task status state machine values., TaskStatus, test_task_status_state_machine()
+
+### Community 249 - ".route"
+Cohesion: 0.20
+Nodes (5): Decorator to register a route handler., Decorator for POST routes., Decorator for PUT routes., Decorator for DELETE routes., Decorator for OPTIONS routes.
+
+### Community 250 - "test_adversarial_finding2_boot_time_queued_tasks_must_be_rehydrated"
+Cohesion: 0.29
+Nodes (7): Path, Stress test SQLite WAL mode with 100 concurrent workers (50 writers, 50…, Test boot-time crash recovery transitions stranded 'running' tasks properly.…, ADVERSARIAL PROOF OF FINDING 2: Contract: When server restarts,…, test_adversarial_finding2_boot_time_queued_tasks_must_be_rehydrated(), test_boot_time_crash_recovery_matrix(), test_sqlite_wal_concurrent_throughput_no_locks()
+
+### Community 252 - "cmd_logs"
+Cohesion: 0.40
+Nodes (5): cmd_logs(), Handle `webhook-hub logs` command., Verify logs subcommand queries offline SQLite tables directly., test_cmd_logs_missing_db(), test_cmd_logs_offline_sqlite()
+
+### Community 253 - "[1.1.0] - 2026-09-09"
+Cohesion: 0.67
+Nodes (3): [1.1.0] - 2026-09-09, Added, Security
+
+### Community 254 - "[1.1.1] - 2026-09-09"
+Cohesion: 0.67
+Nodes (3): [1.1.1] - 2026-09-09, Added, Fixed
+
+### Community 255 - "[1.4.0] - 2026-09-11"
+Cohesion: 0.67
+Nodes (3): [1.4.0] - 2026-09-11, Added, Fixed
+
+### Community 256 - "[1.5.0] - 2026-09-11"
+Cohesion: 0.67
+Nodes (3): [1.5.0] - 2026-09-11, Added, Fixed
+
+### Community 257 - "[1.5.2] - 2026-09-11"
+Cohesion: 0.67
+Nodes (3): [1.5.2] - 2026-09-11, Added, Fixed
+
+### Community 258 - "[1.6.1] - 2026-09-11"
+Cohesion: 0.67
+Nodes (3): [1.6.1] - 2026-09-11, Changed, Fixed
+
+### Community 259 - "[1.6.3] - 2026-09-11"
+Cohesion: 0.67
+Nodes (3): [1.6.3] - 2026-09-11, Added, Changed
+
+### Community 260 - "[1.7.0] - 2026-09-11"
+Cohesion: 0.67
+Nodes (3): [1.7.0] - 2026-09-11, Added, Fixed
+
+### Community 271 - "db"
+Cohesion: 0.33
+Nodes (6): cmd_rerun(), Handle `webhook-hub rerun <task_id>` or `webhook-hub rerun --failed` command., broker(), db(), fixture, Path
+
 ## Knowledge Gaps
-- **960 isolated node(s):** `TunnelConfig`, `ObservabilityConfig`, `_TimeValue`, `antigravity-webhook-hub`, `quick_tunnel.sh script` (+955 more)
+- **972 isolated node(s):** `TunnelConfig`, `ObservabilityConfig`, `DashboardConfig`, `_TimeValue`, `antigravity-webhook-hub` (+967 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **76 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **86 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `DatabaseManager` connect `DatabaseManager` to `cli.py`, `._commit_and_shrink`, `AsyncHTTPServer`, `._apply_pragmas`, `config.py`, `M5EmpiricalRunner`, `cmd_sweep`, `.close`, `.insert_event_and_task`, `.insert_execution_log`, `.sweep_and_requeue_unprocessed`, `test_m3_stress.py`, `AppConfig`, `test_cli.py`, `Any`, `test_contact_review_e2e.py`, `ChallengerTestRunner`, `cmd_status`?**
-  _High betweenness centrality (0.059) - this node is a cross-community bridge._
-- **Why does `AsyncHTTPServer` connect `AsyncHTTPServer` to `cli.py`, `StressTestRunner`, `._handle_client`, `DatabaseManager`, `config.py`, `.add_middleware`, `M5EmpiricalRunner`, `test_adversarial_m1.py`, `test_m3_stress.py`, `AppConfig`, `AdversarialHarness`, `test_contact_review_e2e.py`?**
-  _High betweenness centrality (0.043) - this node is a cross-community bridge._
-- **Why does `NotionPeopleClient` connect `NotionPeopleClient` to `cli.py`, `normalize_url_string`, `AsyncHTTPServer`, `cmd_sweep`, `contact_review/models.py`, `engine.py`, `ContactInput`, `CandidateMatch`?**
-  _High betweenness centrality (0.025) - this node is a cross-community bridge._
+- **Why does `DatabaseManager` connect `DatabaseManager` to `server.py`, `cmd_sweep`, `.close`, `test_db.py`, `db`, `test_cli.py`, `EventBroker`, `ChallengerTestRunner`, `._commit_and_shrink`, `_LightweightEmailUtils`, `AppConfig`, `cmd_status`, `cli.py`, `AsyncHTTPServer`, `._apply_pragmas`, `M5EmpiricalRunner`, `test_agent_activities_routes.py`, `.insert_execution_log`, `.sweep_and_requeue_unprocessed`, `config.py`, `TaskDispatcher`, `Namespace`, `test_adversarial_finding2_boot_time_queued_tasks_must_be_rehydrated`, `cmd_logs`?**
+  _High betweenness centrality (0.056) - this node is a cross-community bridge._
+- **Why does `AsyncHTTPServer` connect `AsyncHTTPServer` to `cli.py`, `StressTestRunner`, `RouteHandler`, `_LightweightEmailUtils`, `server.py`, `.add_middleware`, `M5EmpiricalRunner`, `test_agent_activities_routes.py`, `DatabaseManager`, `config.py`, `EventBroker`, `._handle_client`, `.route`, `AppConfig`, `AdversarialHarness`?**
+  _High betweenness centrality (0.031) - this node is a cross-community bridge._
+- **Why does `TaskDispatcher` connect `TaskDispatcher` to `cli.py`, `_LightweightEmailUtils`, `AsyncHTTPServer`, `M5EmpiricalRunner`, `test_adversarial_finding2_boot_time_queued_tasks_must_be_rehydrated`, `test_agent_activities_routes.py`, `DatabaseManager`, `config.py`, `EventBroker`, `test_dispatcher.py`, `AppConfig`, `ChallengerTestRunner`?**
+  _High betweenness centrality (0.026) - this node is a cross-community bridge._
 - **Are the 5 inferred relationships involving `DatabaseManager` (e.g. with `_LightweightEmailUtils` and `_LightweightSSL`) actually correct?**
   _`DatabaseManager` has 5 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 7 inferred relationships involving `AsyncHTTPServer` (e.g. with `_LightweightEmailUtils` and `_LightweightSSL`) actually correct?**

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] - 2026-09-11
+
+### Added
+- **Adversarial & Security Hardening (`hub/routes/agent_activities.py`, `tests/api/test_agent_activities_routes.py`)**:
+  - Immunized `parse_sentinel_transcript` and `handle_sentinel_detail` with strict alphanumeric conversation ID regex matching (`^[a-zA-Z0-9_\-]+$`) and path containment checks (`is_relative_to(brain_dir)`) to eliminate directory traversal attacks (`400 Bad Request` / `404 Not Found`).
+  - Added type guards (`isinstance(..., dict)`) in `normalize_signal_data` and JSONL transcript line parsing to gracefully handle corrupted, non-dict payloads or malformed lines without throwing unhandled exceptions.
+  - Added comprehensive adversarial tests: `test_sentinel_detail_adversarial_traversal_rejected` and `test_corrupted_signal_and_transcript_resilience` (10/10 tests passing in route suite, 242/242 tests passing across whole repo).
+
+### Fixed
+- **Unidirectional Realtime Reactive Flow & UI/UX State Preservation (`hub/routes/dashboard_template.py`)**:
+  - **SSOT Task Completion Handshake**: Log drawer dynamically re-pulls `/tasks/{taskId}` from the authoritative endpoint upon receiving SSE `completed` events, updating exit code, duration, and immediately displaying any newly emitted agent signals or pulses.
+  - **Task Re-run Drawer Sync**: Triggering a task rerun from within the drawer now automatically re-invokes `openDrawer(taskId)` to stream the new execution.
+  - **Reactive Multi-View SSE Sync**: `refreshTasksAuthoritative()` dynamically refreshes the active view (`loadSentinels()`, `loadSignals()`, `loadPulses()`), keeping all agent observability tabs synchronized in real time without stale states.
+  - **Sentinel Accordion State Preservation**: Maintained open/collapsed accordion state in `state.openSections` across background SSE refreshes so inspection view does not collapse during background updates.
+  - **Modal Backdrop & Mobile Drawer Dismissal**: Added click-to-dismiss on `#signalModalOverlay` backdrop and automatic mobile sidebar collapse on navigation.
+
 ## [1.7.0] - 2026-09-11
 
 ### Added

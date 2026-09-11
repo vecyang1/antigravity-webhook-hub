@@ -81,9 +81,16 @@ def parse_sentinel_transcript(
     full_steps: bool = True,
 ) -> Optional[dict[str, Any]]:
     """Parse a conversation transcript JSONL file into a structured Sentinel run report."""
+    if not conv_id or not re.match(r"^[a-zA-Z0-9_\-]+$", conv_id.strip()):
+        return None
     b_dir = brain_dir or _get_brain_dir()
     c_dir = cadence_dir or _get_cadence_dir()
-    t_file = b_dir / conv_id / ".system_generated" / "logs" / "transcript.jsonl"
+    try:
+        t_file = (b_dir / conv_id.strip() / ".system_generated" / "logs" / "transcript.jsonl").resolve()
+        if not t_file.is_relative_to(b_dir.resolve()):
+            return None
+    except Exception:
+        return None
     if not t_file.exists():
         return None
 
@@ -103,6 +110,8 @@ def parse_sentinel_transcript(
                 try:
                     item = json.loads(line_s)
                 except Exception:
+                    continue
+                if not isinstance(item, dict):
                     continue
 
                 i_type = item.get("type")
@@ -187,8 +196,10 @@ def parse_sentinel_transcript(
     return res
 
 
-def normalize_signal_data(data: dict[str, Any], file_path: Optional[Path] = None) -> dict[str, Any]:
+def normalize_signal_data(data: Any, file_path: Optional[Path] = None) -> dict[str, Any]:
     """Normalize signal data so confidence_score, diffs, applied, and explanation are accessible at top level."""
+    if not isinstance(data, dict):
+        return {}
     res = data.get("result")
     if isinstance(res, dict):
         if "confidence_score" not in data or data["confidence_score"] is None:
@@ -294,17 +305,18 @@ def get_task_agent_activity(
     sig_match = re.search(r"\b(sig_[a-zA-Z0-9]+)\b", logs_text)
     if sig_match:
         sig_id = sig_match.group(1)
-        target_file = signals_dir / "contact_review" / f"{sig_id}.signal.json"
-        if not target_file.exists():
-            found = list(signals_dir.glob(f"**/{sig_id}*.json"))
-            if found:
-                target_file = found[0]
-        if target_file.exists():
-            try:
-                s_raw = json.loads(target_file.read_text(encoding="utf-8"))
-                matching_signal = normalize_signal_data(s_raw, target_file)
-            except Exception:
-                pass
+        if re.match(r"^[a-zA-Z0-9_\-]+$", sig_id):
+            target_file = signals_dir / "contact_review" / f"{sig_id}.signal.json"
+            if not target_file.exists():
+                found = list(signals_dir.glob(f"**/{sig_id}*.json"))
+                if found:
+                    target_file = found[0]
+            if target_file.exists():
+                try:
+                    s_raw = json.loads(target_file.read_text(encoding="utf-8"))
+                    matching_signal = normalize_signal_data(s_raw, target_file)
+                except Exception:
+                    pass
 
     # 2. Fallback: match by contact name in action_params_json or logs
     if not matching_signal and ("contact" in action_type or "contact" in source):
@@ -487,10 +499,11 @@ def register_agent_activities_routes(
             "runs": runs,
         }, status_code=200)
 
-    # 3. GET /api/agent-activities/sentinels/{conversation_id}
     async def handle_sentinel_detail(req: HTTPRequest, conversation_id: str) -> HTTPResponse:
         """Full detail of a Sentinel run including full prompt, tool steps, and markdown report."""
         clean_cid = conversation_id.strip()
+        if not re.match(r"^[a-zA-Z0-9_\-]+$", clean_cid):
+            return HTTPResponse.error("Invalid conversation ID format", status_code=400)
         run_data = parse_sentinel_transcript(clean_cid, brain_dir, cadence_dir, full_steps=True)
         if not run_data:
             return HTTPResponse.error(f"Sentinel conversation {clean_cid} not found", status_code=404)

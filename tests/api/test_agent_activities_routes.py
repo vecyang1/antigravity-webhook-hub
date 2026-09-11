@@ -256,3 +256,47 @@ async def test_signals_normalization_endpoint(agent_activities_app):
             assert "target_name" in sig
             assert sig["confidence_score"] is not None
             assert isinstance(sig["applied"], bool)
+
+
+@pytest.mark.asyncio
+async def test_sentinel_detail_adversarial_traversal_rejected(agent_activities_app):
+    base_url = agent_activities_app["base_url"]
+    async with httpx.AsyncClient(base_url=base_url) as client:
+        # 1. Path traversal attempt
+        resp = await client.get("/api/agent-activities/sentinels/..%2F..%2Fetc%2Fpasswd")
+        assert resp.status_code in (400, 404)
+
+        # 2. Invalid characters in conversation ID
+        resp_special = await client.get("/api/agent-activities/sentinels/conv_bad$id")
+        assert resp_special.status_code == 400
+        data = resp_special.json()
+        assert "error" in data
+
+
+@pytest.mark.asyncio
+async def test_corrupted_signal_and_transcript_resilience(tmp_path):
+    from hub.routes.agent_activities import normalize_signal_data, parse_sentinel_transcript
+
+    # 1. Non-dict signal payload does not throw AttributeError
+    assert normalize_signal_data([1, 2, 3]) == {}
+    assert normalize_signal_data("invalid_string") == {}
+    assert normalize_signal_data(None) == {}
+
+    # 2. Corrupted transcript with non-dict lines, empty lines, and malformed JSON
+    mock_brain = tmp_path / "brain"
+    cid = "conv_corrupted_001"
+    dir_logs = mock_brain / cid / ".system_generated" / "logs"
+    dir_logs.mkdir(parents=True)
+    (dir_logs / "transcript.jsonl").write_text(
+        "not json\n"
+        "[1, 2, 3]\n"
+        "\n"
+        '{"type": "USER_INPUT", "content": "Antigravity Webhook Hub — Sentinel"}\n'
+        '"standalone_string"\n'
+        '{"type": "PLANNER_RESPONSE", "content": "Delivered after corruption"}\n'
+    )
+
+    parsed = parse_sentinel_transcript(cid, brain_dir=mock_brain, full_steps=True)
+    assert parsed is not None
+    assert parsed["conversation_id"] == cid
+    assert parsed["final_report"] == "Delivered after corruption"
