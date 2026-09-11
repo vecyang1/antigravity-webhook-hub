@@ -1378,13 +1378,290 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         display: inline-flex !important;
       }}
     }}
-    .topbar-menu-btn {{
-      display: none;
-      background: transparent;
-      border: none;
+    /* Agent Activities & Sentinels Views */
+    .view-panel {{
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }}
+    .view-panel[style*="display: none"] {{
+      display: none !important;
+    }}
+    .agent-telemetry-banner {{
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 16px;
+    }}
+    .agent-telemetry-item {{
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }}
+    .agent-telemetry-label {{
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-subtle);
+      font-weight: 600;
+    }}
+    .agent-telemetry-val {{
+      font-size: 14px;
+      font-weight: 700;
       color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }}
+    /* Sentinel Card */
+    .sentinel-card {{
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    }}
+    .sentinel-card:hover {{
+      border-color: var(--border-subtle);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+    }}
+    .sentinel-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      padding-bottom: 12px;
+    }}
+    .sentinel-meta-group {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }}
+    .sentinel-actions-group {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }}
+    .btn-sm {{
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
       cursor: pointer;
-      padding: 4px;
+      border: 1px solid var(--border-color);
+      background: var(--bg-card);
+      color: var(--text-main);
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }}
+    .btn-sm:hover {{
+      background: var(--bg-hover);
+      border-color: var(--border-subtle);
+    }}
+    .btn-sm.active {{
+      background: rgba(59, 130, 246, 0.2);
+      border-color: var(--accent-blue);
+      color: #93c5fd;
+    }}
+    /* Collapsible Box */
+    .collapsible-box {{
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--bg-card);
+      overflow: hidden;
+      margin-top: 6px;
+    }}
+    .collapsible-header {{
+      background: rgba(15, 23, 42, 0.7);
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      user-select: none;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }}
+    .collapsible-header:hover {{
+      color: var(--text-main);
+      background: rgba(30, 41, 59, 0.8);
+    }}
+    .collapsible-body {{
+      padding: 14px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.6;
+      max-height: 380px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      background: #070a12;
+      color: #cbd5e1;
+    }}
+    /* Stepper Timeline */
+    .stepper-timeline {{
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 8px;
+      position: relative;
+      padding-left: 24px;
+    }}
+    .stepper-timeline::before {{
+      content: "";
+      position: absolute;
+      top: 10px;
+      bottom: 10px;
+      left: 10px;
+      width: 2px;
+      background: rgba(255, 255, 255, 0.1);
+    }}
+    .stepper-step {{
+      position: relative;
+      background: rgba(15, 23, 42, 0.5);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }}
+    .stepper-dot {{
+      position: absolute;
+      left: -20px;
+      top: 12px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--bg-surface);
+      border: 2px solid var(--accent-blue);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 6px rgba(59, 130, 246, 0.4);
+    }}
+    .stepper-title-row {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+    }}
+    .tool-pill {{
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: rgba(59, 130, 246, 0.15);
+      color: #93c5fd;
+      border: 1px solid rgba(59, 130, 246, 0.25);
+    }}
+    .stepper-output {{
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.5;
+      background: #070a12;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: #94a3b8;
+      max-height: 160px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }}
+    /* Verdict Badges */
+    .verdict-badge {{
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }}
+    .verdict-create {{
+      background: rgba(168, 85, 247, 0.15);
+      color: #c084fc;
+      border: 1px solid rgba(168, 85, 247, 0.3);
+    }}
+    .verdict-correct {{
+      background: rgba(16, 185, 129, 0.15);
+      color: #6ee7b7;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }}
+    .verdict-no_change {{
+      background: rgba(148, 163, 184, 0.15);
+      color: #cbd5e1;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+    }}
+    .verdict-supplement {{
+      background: rgba(245, 158, 11, 0.15);
+      color: #fcd34d;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }}
+    .notion-btn {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      color: #93c5fd;
+      text-decoration: none;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.25);
+      transition: background 0.15s ease;
+    }}
+    .notion-btn:hover {{
+      background: rgba(59, 130, 246, 0.2);
+      color: #ffffff;
+    }}
+    /* Agent Activity Card inside Log Drawer */
+    .agent-activity-card {{
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      border-radius: 8px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    }}
+    .agent-activity-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      padding-bottom: 8px;
+    }}
+    .agent-activity-body {{
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 12px;
     }}
   </style>
 </head>
@@ -1425,11 +1702,39 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           </div>
         </div>
 
+        <!-- Antigravity Agent & Sentinel Hub -->
+        <div>
+          <div class="sidebar-section-title">Agent &amp; Sentinel Hub</div>
+          <ul class="nav-list">
+            <li class="nav-item" id="navItemSentinels" data-nav="sentinels" onclick="switchMainView('sentinels', this)" title="View autonomous Sentinel runs &amp; reports">
+              <div class="nav-item-left">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8Z"/><path d="m9 12 2 2 4-4"/></svg>
+                <span>Sentinel AI Runs</span>
+              </div>
+              <span class="nav-count" id="countSentinels">0</span>
+            </li>
+            <li class="nav-item" id="navItemSignals" data-nav="signals" onclick="switchMainView('signals', this)" title="View Notion CRM contact review signals">
+              <div class="nav-item-left">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>
+                <span>CRM Agent Signals</span>
+              </div>
+              <span class="nav-count" id="countSignals">0</span>
+            </li>
+            <li class="nav-item" id="navItemPulses" data-nav="pulses" onclick="switchMainView('pulses', this)" title="View Antigravity sidebar pulse queue">
+              <div class="nav-item-left">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                <span>Sidebar Pulse Queue</span>
+              </div>
+              <span class="nav-count" id="countPulses">0</span>
+            </li>
+          </ul>
+        </div>
+
         <!-- Navigation Sections -->
         <div>
           <div class="sidebar-section-title">Observable Activities</div>
           <ul class="nav-list">
-            <li class="nav-item active" data-filter="all" onclick="setCategoryFilter('all', this)">
+            <li class="nav-item active" data-nav="tasks" data-filter="all" onclick="setCategoryFilter('all', this)">
               <div class="nav-item-left">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
                 <span>All Activities</span>
@@ -1528,74 +1833,238 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
       <!-- Content Viewport -->
       <div class="content-viewport">
-        <!-- Metric Cards -->
-        <div class="metric-grid">
-          <div class="metric-box">
-            <span class="metric-box-title">Real Tasks (Production)</span>
-            <span class="metric-box-value" style="color: var(--status-success);" id="statRealTasks">0</span>
+        <!-- View 1: Tasks / Activity Feed -->
+        <div id="viewContainerTasks" class="view-panel active">
+          <!-- Metric Cards -->
+          <div class="metric-grid">
+            <div class="metric-box">
+              <span class="metric-box-title">Real Tasks (Production)</span>
+              <span class="metric-box-value" style="color: var(--status-success);" id="statRealTasks">0</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-title">Total Tasks</span>
+              <span class="metric-box-value" id="statTotalTasks">0</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-title">Webhook Events</span>
+              <span class="metric-box-value" id="statTotalEvents">0</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-title">Succeeded Tasks</span>
+              <span class="metric-box-value" style="color: var(--status-success);" id="statSucceeded">0</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-title">Active / Running</span>
+              <span class="metric-box-value" style="color: var(--status-running);" id="statRunning">0</span>
+            </div>
           </div>
-          <div class="metric-box">
-            <span class="metric-box-title">Total Tasks</span>
-            <span class="metric-box-value" id="statTotalTasks">0</span>
-          </div>
-          <div class="metric-box">
-            <span class="metric-box-title">Webhook Events</span>
-            <span class="metric-box-value" id="statTotalEvents">0</span>
-          </div>
-          <div class="metric-box">
-            <span class="metric-box-title">Succeeded Tasks</span>
-            <span class="metric-box-value" style="color: var(--status-success);" id="statSucceeded">0</span>
-          </div>
-          <div class="metric-box">
-            <span class="metric-box-title">Active / Running</span>
-            <span class="metric-box-value" style="color: var(--status-running);" id="statRunning">0</span>
+
+          <!-- Task Table Card -->
+          <div class="table-card">
+            <div class="table-header">
+              <div>
+                <div class="table-title">Activity Feed &amp; Execution Registry</div>
+                <div style="font-size: 12px; color: var(--text-muted);" id="tableSubtitle">Showing latest tasks</div>
+              </div>
+              <div class="filter-pill-group" role="group" aria-label="Event Filter Mode">
+                <button id="pillReal" class="filter-pill active" onclick="setEventFilterMode('real')" title="Show only real production events">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                  <span>Real Only</span>
+                  <span class="pill-badge" id="pillRealCount">0</span>
+                </button>
+                <button id="pillAll" class="filter-pill" onclick="setEventFilterMode('all')" title="Show all activities (real and tests)">
+                  <span>All Events</span>
+                  <span class="pill-badge" id="pillAllCount">0</span>
+                </button>
+                <button id="pillTest" class="filter-pill" onclick="setEventFilterMode('test')" title="Show only synthetic test events">
+                  <span>Tests Only</span>
+                  <span class="pill-badge" id="pillTestCount">0</span>
+                </button>
+              </div>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Task ID</th>
+                    <th>Source</th>
+                    <th>Action Type</th>
+                    <th>Target / Command</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="tasksTableBody">
+                  <tr>
+                    <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 32px;">
+                      Loading authoritative activities from SQLite SSOT...
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
 
-        <!-- Task Table Card -->
-        <div class="table-card">
-          <div class="table-header">
-            <div>
-              <div class="table-title">Activity Feed & Execution Registry</div>
-              <div style="font-size: 12px; color: var(--text-muted);" id="tableSubtitle">Showing latest tasks</div>
+        <!-- View 2: Sentinel AI Runs View -->
+        <div id="viewContainerSentinels" class="view-panel" style="display: none;">
+          <div class="agent-telemetry-banner">
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Cadence Identity</span>
+              <span class="agent-telemetry-val">
+                <span class="badge" style="background: rgba(99, 102, 241, 0.15); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.25);" id="sentinelCadenceCard">CAD-20260911-webhook-hub-sentinel</span>
+              </span>
             </div>
-            <div class="filter-pill-group" role="group" aria-label="Event Filter Mode">
-              <button id="pillReal" class="filter-pill active" onclick="setEventFilterMode('real')" title="Show only real production events">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
-                <span>Real Only</span>
-                <span class="pill-badge" id="pillRealCount">0</span>
-              </button>
-              <button id="pillAll" class="filter-pill" onclick="setEventFilterMode('all')" title="Show all activities (real and tests)">
-                <span>All Events</span>
-                <span class="pill-badge" id="pillAllCount">0</span>
-              </button>
-              <button id="pillTest" class="filter-pill" onclick="setEventFilterMode('test')" title="Show only synthetic test events">
-                <span>Tests Only</span>
-                <span class="pill-badge" id="pillTestCount">0</span>
-              </button>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Inspection Schedule</span>
+              <span class="agent-telemetry-val" style="color: #93c5fd;">Every 4 Hours (6x / day)</span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Success Marker</span>
+              <span class="agent-telemetry-val" id="sentinelSuccessMarker">
+                <span class="badge badge-succeeded">Active</span>
+              </span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Memory Budget</span>
+              <span class="agent-telemetry-val" style="color: var(--status-success);" id="sentinelMemoryBudget">&lt; 30.0 MB RSS</span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Runs Tracked</span>
+              <span class="agent-telemetry-val" id="sentinelTotalRuns">0</span>
             </div>
           </div>
-          <div class="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>Status</th>
-                  <th>Task ID</th>
-                  <th>Source</th>
-                  <th>Action Type</th>
-                  <th>Target / Command</th>
-                  <th>Created</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="tasksTableBody">
-                <tr>
-                  <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 32px;">
-                    Loading authoritative activities from SQLite SSOT...
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+
+          <div id="sentinelsListContainer" style="display: flex; flex-direction: column; gap: 16px;">
+            <div style="padding: 40px; text-align: center; color: var(--text-muted);">
+              Loading Sentinel AI Agent runs...
+            </div>
+          </div>
+        </div>
+
+        <!-- View 3: CRM Agent Signals & Dispatches View -->
+        <div id="viewContainerSignals" class="view-panel" style="display: none;">
+          <div class="agent-telemetry-banner">
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Signal Source</span>
+              <span class="agent-telemetry-val">Notion People CRM</span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Total Signals Emitted</span>
+              <span class="agent-telemetry-val" id="signalsTotalCount">0</span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">CREATE Verdicts</span>
+              <span class="agent-telemetry-val" style="color: #c084fc;" id="signalsCountCreate">0</span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">CORRECT Verdicts</span>
+              <span class="agent-telemetry-val" style="color: #6ee7b7;" id="signalsCountCorrect">0</span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">NO_CHANGE Verdicts</span>
+              <span class="agent-telemetry-val" style="color: #cbd5e1;" id="signalsCountNoChange">0</span>
+            </div>
+          </div>
+
+          <div class="table-card">
+            <div class="table-header">
+              <div>
+                <div class="table-title">Notion CRM Contact Review Signals</div>
+                <div style="font-size: 12px; color: var(--text-muted);">Authoritative audit log from .agents/signals/contact_review/</div>
+              </div>
+              <div class="filter-pill-group" role="group" aria-label="Signal Filter Mode">
+                <button class="filter-pill active" id="pillSigAll" onclick="filterSignals('all')">
+                  <span>All</span>
+                </button>
+                <button class="filter-pill" id="pillSigCreate" onclick="filterSignals('create')">
+                  <span class="verdict-badge verdict-create" style="padding: 1px 6px; font-size: 10px;">CREATE</span>
+                </button>
+                <button class="filter-pill" id="pillSigCorrect" onclick="filterSignals('correct')">
+                  <span class="verdict-badge verdict-correct" style="padding: 1px 6px; font-size: 10px;">CORRECT</span>
+                </button>
+                <button class="filter-pill" id="pillSigNoChange" onclick="filterSignals('no_change')">
+                  <span class="verdict-badge verdict-no_change" style="padding: 1px 6px; font-size: 10px;">NO_CHANGE</span>
+                </button>
+              </div>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Signal ID</th>
+                    <th>Target Contact</th>
+                    <th>Verdict</th>
+                    <th>Confidence</th>
+                    <th>Notion Page</th>
+                    <th>Applied</th>
+                    <th>Emitted Time</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="signalsTableBody">
+                  <tr>
+                    <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 32px;">
+                      Loading CRM Agent signals...
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- View 4: Sidebar Pulse Queue View -->
+        <div id="viewContainerPulses" class="view-panel" style="display: none;">
+          <div class="agent-telemetry-banner">
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Sidebar Sidecar Slug</span>
+              <span class="agent-telemetry-val">webhook-hub-sentinel</span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Events Directory</span>
+              <span class="agent-telemetry-val" style="font-family: var(--font-mono); font-size: 12px; color: #94a3b8;">~/.gemini/antigravity/sidecar_data/webhook-hub-sentinel/events/</span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Total Pulses Queued</span>
+              <span class="agent-telemetry-val" style="color: var(--accent-blue);" id="pulsesTotalCount">0</span>
+            </div>
+          </div>
+
+          <div class="table-card">
+            <div class="table-header">
+              <div>
+                <div class="table-title">Antigravity Sidebar Pulse Queue</div>
+                <div style="font-size: 12px; color: var(--text-muted);">Events dispatched for the Antigravity conversation sidebar</div>
+              </div>
+              <button class="btn btn-secondary" onclick="loadPulses()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                <span>Refresh Pulses</span>
+              </button>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Timestamp (UTC)</th>
+                    <th>Task ID</th>
+                    <th>Source</th>
+                    <th>Action</th>
+                    <th>Status</th>
+                    <th>Prompt Preview</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="pulsesTableBody">
+                  <tr>
+                    <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 32px;">
+                      Loading sidebar pulse queue...
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -1645,6 +2114,18 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
             <span class="drawer-meta-val" id="drawerMetaCommand" style="color: #93c5fd; font-size: 11px;">--</span>
           </div>
         </div>
+      </div>
+
+      <!-- Agent Activity & Signal Card -->
+      <div id="drawerAgentActivityCard" class="agent-activity-card" style="display: none; margin-top: 14px; margin-bottom: 6px;">
+        <div class="agent-activity-header">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent-blue);"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>
+            <span style="font-weight: 600; font-size: 12px; color: #ffffff;">Associated Agent Activity &amp; Dispatches</span>
+          </div>
+          <div id="drawerAgentPills" style="display: flex; align-items: center; gap: 6px;"></div>
+        </div>
+        <div class="agent-activity-body" id="drawerAgentActivityBody"></div>
       </div>
 
       <div class="log-section">
@@ -1787,6 +2268,30 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     </div>
   </div>
 
+  <!-- Signal Detail Modal -->
+  <div class="modal-overlay" id="signalModalOverlay">
+    <div class="modal" style="max-width: 680px;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent-blue);"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>
+          <span style="font-weight: 700; font-size: 15px;" id="signalModalTitle">CRM Signal Details</span>
+        </div>
+        <button class="drawer-close" onclick="closeSignalModal()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body" id="signalModalBody" style="display: flex; flex-direction: column; gap: 14px; max-height: 70vh; overflow-y: auto;">
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeSignalModal()">Close</button>
+        <button class="btn btn-primary" id="btnSignalModalCopy" onclick="copyActiveSignalJson()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span>Copy Signal JSON</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast notifications -->
   <div class="toast-container" id="toastContainer"></div>
 
@@ -1820,7 +2325,11 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       drawerLevelFilter: 'all',
       drawerWrapLines: true,
       drawerAutoScroll: true,
-      drawerPrettyJson: true,
+      currentMainView: 'tasks',
+      sentinels: [],
+      signals: [],
+      signalsFilter: 'all',
+      pulses: [],
       drawerDurationTimer: null,
       drawerRenderScheduled: false,
     }};
@@ -1900,10 +2409,11 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           url += '&q=' + encodeURIComponent(state.searchQuery.trim());
         }}
 
-        const [tasksResp, summaryResp, healthResp] = await Promise.all([
+        const [tasksResp, summaryResp, healthResp, agentSummaryResp] = await Promise.all([
           fetch(url),
           fetch('/tasks/summary'),
-          fetch('/healthz')
+          fetch('/healthz'),
+          fetch('/api/agent-activities/summary').catch(() => null)
         ]);
 
         if (tasksResp.ok) {{
@@ -1921,9 +2431,47 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           const health = await healthResp.json();
           renderTelemetry(health);
         }}
+
+        if (agentSummaryResp && agentSummaryResp.ok) {{
+          const agentSummary = await agentSummaryResp.json();
+          renderAgentSummary(agentSummary);
+        }}
       }} catch (err) {{
         console.error('Failed to pull authoritative state:', err);
       }}
+    }}
+
+    function renderAgentSummary(summary) {{
+      if (!summary) return;
+      const sentinels = summary.sentinels || {{}};
+      const signals = summary.signals || {{}};
+      const pulses = summary.pulses || {{}};
+
+      const elSentinels = document.getElementById('countSentinels');
+      if (elSentinels) elSentinels.innerText = sentinels.total_runs || 0;
+
+      const elSignals = document.getElementById('countSignals');
+      if (elSignals) elSignals.innerText = signals.total_signals || 0;
+
+      const elPulses = document.getElementById('countPulses');
+      if (elPulses) elPulses.innerText = pulses.total_pulses || 0;
+
+      const elSigTotal = document.getElementById('signalsTotalCount');
+      if (elSigTotal) elSigTotal.innerText = signals.total_signals || 0;
+
+      const byVerdict = signals.by_verdict || {{}};
+      const elCreate = document.getElementById('signalsCountCreate');
+      if (elCreate) elCreate.innerText = byVerdict.create || 0;
+      const elCorrect = document.getElementById('signalsCountCorrect');
+      if (elCorrect) elCorrect.innerText = byVerdict.correct || 0;
+      const elNoChange = document.getElementById('signalsCountNoChange');
+      if (elNoChange) elNoChange.innerText = byVerdict.no_change || 0;
+
+      const elPulseTotal = document.getElementById('pulsesTotalCount');
+      if (elPulseTotal) elPulseTotal.innerText = pulses.total_pulses || 0;
+
+      const elSentTotal = document.getElementById('sentinelTotalRuns');
+      if (elSentTotal) elSentTotal.innerText = sentinels.total_runs || 0;
     }}
 
     function renderSummary(summary) {{
@@ -2070,7 +2618,112 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }}
 
+    function formatMarkdown(md) {{
+      if (!md) return '';
+      let s = escapeHtml(md);
+      // Code blocks ```code```
+      s = s.replace(/```([a-zA-Z0-9_-]*)\\n([\\s\\S]*?)```/g, (m, lang, code) => {{
+        return `<pre style="background:#070a12;border:1px solid rgba(255,255,255,0.08);border-radius:6px;padding:10px;overflow-x:auto;color:#cbd5e1;font-family:var(--font-mono);font-size:11px;margin:8px 0;"><code>${{code}}</code></pre>`;
+      }});
+      // Inline code `code`
+      s = s.replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.1);padding:1px 5px;border-radius:3px;font-family:var(--font-mono);font-size:11px;color:#93c5fd;">$1</code>');
+      // Headers #, ##, ###
+      s = s.replace(/^### (.*$)/gim, '<h4 style="color:#ffffff;font-size:13px;font-weight:700;margin:12px 0 6px 0;">$1</h4>');
+      s = s.replace(/^## (.*$)/gim, '<h3 style="color:#ffffff;font-size:14px;font-weight:700;margin:14px 0 6px 0;border-bottom:1px solid rgba(255,255,255,0.08);padding-bottom:4px;">$1</h3>');
+      s = s.replace(/^# (.*$)/gim, '<h2 style="color:#ffffff;font-size:15px;font-weight:800;margin:16px 0 8px 0;">$1</h2>');
+      // Bold **text**
+      s = s.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong style="color:#ffffff;">$1</strong>');
+      // Bullet lists
+      s = s.replace(/^\\s*[-*]\\s+(.*$)/gim, '<li style="margin-left:18px;list-style-type:disc;color:#cbd5e1;margin-bottom:2px;">$1</li>');
+      // Blockquotes > text
+      s = s.replace(/^\\s*&gt;\\s+(.*$)/gim, '<blockquote style="border-left:3px solid var(--accent-blue);padding-left:10px;color:#94a3b8;margin:6px 0;">$1</blockquote>');
+      // Paragraphs
+      s = s.replace(/\\n\\n/g, '<div style="height:8px;"></div>');
+      return s;
+    }}
+
+    function copyText(str) {{
+      if (!str) return;
+      navigator.clipboard.writeText(str).then(() => {{
+        showToast('Copied to clipboard', 'info');
+      }}).catch(() => {{
+        showToast('Copy failed', 'error');
+      }});
+    }}
+
+    function escapeJsString(str) {{
+      if (!str) return '';
+      return String(str).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'").replace(/\\n/g, '\\\\n').replace(/\\r/g, '');
+    }}
+
+    function switchMainView(viewName, el) {{
+      state.currentMainView = viewName;
+
+      // Clear active from all sidebar nav items
+      document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
+      if (el) {{
+        el.classList.add('active');
+      }} else {{
+        const targetNav = document.getElementById(
+          viewName === 'sentinels' ? 'navItemSentinels' :
+          viewName === 'signals' ? 'navItemSignals' :
+          viewName === 'pulses' ? 'navItemPulses' : 'navItemAll'
+        );
+        if (targetNav) targetNav.classList.add('active');
+      }}
+
+      // Toggle view panels
+      const panels = {{
+        tasks: document.getElementById('viewContainerTasks'),
+        sentinels: document.getElementById('viewContainerSentinels'),
+        signals: document.getElementById('viewContainerSignals'),
+        pulses: document.getElementById('viewContainerPulses')
+      }};
+
+      Object.keys(panels).forEach(key => {{
+        if (panels[key]) {{
+          if (key === viewName) {{
+            panels[key].style.display = 'block';
+            panels[key].classList.add('active');
+          }} else {{
+            panels[key].style.display = 'none';
+            panels[key].classList.remove('active');
+          }}
+        }}
+      }});
+
+      // Update topbar title & controls
+      const titleEl = document.getElementById('viewTitle');
+      const toggleFilterBtn = document.getElementById('toggleFilterBtn');
+      const searchInput = document.getElementById('taskSearchInput');
+
+      if (viewName === 'sentinels') {{
+        if (titleEl) titleEl.innerText = 'Sentinel AI Agent Runs';
+        if (toggleFilterBtn) toggleFilterBtn.style.display = 'none';
+        if (searchInput) searchInput.placeholder = 'Search sentinel runs, prompts...';
+        loadSentinels();
+      }} else if (viewName === 'signals') {{
+        if (titleEl) titleEl.innerText = 'CRM Agent Signals & Dispatches';
+        if (toggleFilterBtn) toggleFilterBtn.style.display = 'none';
+        if (searchInput) searchInput.placeholder = 'Search signals, contacts, explanations...';
+        loadSignals();
+      }} else if (viewName === 'pulses') {{
+        if (titleEl) titleEl.innerText = 'Antigravity Sidebar Pulse Queue';
+        if (toggleFilterBtn) toggleFilterBtn.style.display = 'none';
+        if (searchInput) searchInput.placeholder = 'Search pulse queue events...';
+        loadPulses();
+      }} else {{
+        if (titleEl) titleEl.innerText = 'All Activities';
+        if (toggleFilterBtn) toggleFilterBtn.style.display = 'inline-flex';
+        if (searchInput) searchInput.placeholder = 'Search tasks, events, actions...';
+        refreshTasksAuthoritative();
+      }}
+    }}
+
     function setCategoryFilter(filter, el) {{
+      if (state.currentMainView !== 'tasks') {{
+        switchMainView('tasks');
+      }}
       document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
       el.classList.add('active');
       state.categoryFilter = filter;
@@ -2083,8 +2736,494 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       clearTimeout(searchDebounceTimeout);
       searchDebounceTimeout = setTimeout(() => {{
         state.searchQuery = val;
-        refreshTasksAuthoritative();
+        if (state.currentMainView === 'signals') {{
+          loadSignals();
+        }} else if (state.currentMainView === 'sentinels') {{
+          renderSentinels();
+        }} else if (state.currentMainView === 'pulses') {{
+          loadPulses();
+        }} else {{
+          refreshTasksAuthoritative();
+        }}
       }}, 250);
+    }}
+
+    // Sentinel AI Runs Logic
+    state.sentinelDetails = {{}};
+
+    async function loadSentinels() {{
+      const container = document.getElementById('sentinelsListContainer');
+      try {{
+        const resp = await fetch('/api/agent-activities/sentinels?limit=20');
+        if (!resp.ok) {{
+          container.innerHTML = `<div style="padding: 40px; text-align: center; color: var(--status-danger);">Failed to load Sentinel runs: ${{resp.statusText}}</div>`;
+          return;
+        }}
+        const data = await resp.json();
+        state.sentinels = data.runs || [];
+
+        const cardEl = document.getElementById('sentinelCadenceCard');
+        if (cardEl && data.cadence_card) cardEl.innerText = data.cadence_card;
+
+        const totalEl = document.getElementById('sentinelTotalRuns');
+        if (totalEl) totalEl.innerText = data.total || state.sentinels.length;
+
+        const markerEl = document.getElementById('sentinelSuccessMarker');
+        if (markerEl) {{
+          if (data.success_marker_exists) {{
+            markerEl.innerHTML = `<span class="badge badge-succeeded" title="${{escapeHtml(data.success_marker_path || '')}}">Success Marker Verified</span>`;
+          }} else {{
+            markerEl.innerHTML = `<span class="badge badge-queued">No Marker</span>`;
+          }}
+        }}
+
+        renderSentinels();
+      }} catch (err) {{
+        container.innerHTML = `<div style="padding: 40px; text-align: center; color: var(--status-danger);">Error fetching Sentinel runs: ${{err.message}}</div>`;
+      }}
+    }}
+
+    function renderSentinels() {{
+      const container = document.getElementById('sentinelsListContainer');
+      if (!state.sentinels || state.sentinels.length === 0) {{
+        container.innerHTML = `<div style="padding: 40px; text-align: center; color: var(--text-muted);">No Sentinel AI Agent runs found.</div>`;
+        return;
+      }}
+
+      let filtered = state.sentinels;
+      if (state.searchQuery.trim()) {{
+        const q = state.searchQuery.trim().toLowerCase();
+        filtered = state.sentinels.filter(s =>
+          (s.conversation_id && s.conversation_id.toLowerCase().includes(q)) ||
+          (s.cadence_card && s.cadence_card.toLowerCase().includes(q)) ||
+          (s.prompt_snippet && s.prompt_snippet.toLowerCase().includes(q)) ||
+          (s.report_snippet && s.report_snippet.toLowerCase().includes(q))
+        );
+      }}
+
+      container.innerHTML = filtered.map(s => {{
+        const cid = s.conversation_id;
+        const statusBadge = `<span class="badge badge-${{s.status === 'succeeded' ? 'succeeded' : (s.status === 'running' ? 'running' : 'queued')}}">${{escapeHtml(s.status)}}</span>`;
+        const toolsPills = (s.tools_used || []).map(t =>
+          `<span class="tool-pill"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg><span>${{escapeHtml(t)}}</span></span>`
+        ).join(' ');
+
+        return `
+          <div class="sentinel-card" id="sentinelCard_${{cid}}">
+            <div class="sentinel-card-header">
+              <div class="sentinel-card-title">
+                ${{statusBadge}}
+                <span class="task-id-code" style="font-size: 13px; cursor: pointer;" onclick="copyText('${{cid}}')" title="Click to copy Conversation ID">${{escapeHtml(cid)}}</span>
+                <span class="badge" style="background: rgba(99, 102, 241, 0.15); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.25); font-size: 11px;">${{escapeHtml(s.cadence_card)}}</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-muted);">
+                <span title="Execution steps count">
+                  <strong style="color: #ffffff;">${{s.steps_count}}</strong> Steps
+                </span>
+                <span style="color: var(--border-subtle);">|</span>
+                <span>${{escapeHtml(s.created_at || '').replace('T', ' ').substring(0, 19)}}</span>
+              </div>
+            </div>
+
+            ${{toolsPills ? `<div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;">${{toolsPills}}</div>` : ''}}
+
+            <!-- Collapsible: Injected Prompt -->
+            <div class="collapsible-section" style="margin-top: 10px;">
+              <div class="collapsible-header" onclick="toggleSentinelSection('prompt_${{cid}}')">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent-blue);"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                  <span style="font-weight: 600;">Injected Prompt (agentapi new-conversation)</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span style="font-size: 11px; color: var(--text-muted);">${{escapeHtml(s.prompt_snippet).substring(0, 60)}}...</span>
+                  <svg id="chevron_prompt_${{cid}}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transition: transform 0.2s ease;"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
+              </div>
+              <div class="collapsible-body" id="body_prompt_${{cid}}" style="display: none;">
+                <div style="display: flex; justify-content: flex-end; margin-bottom: 6px;">
+                  <button class="btn btn-secondary" style="font-size: 10px; padding: 2px 8px;" onclick="copySentinelField('${{cid}}', 'prompt')">Copy Prompt</button>
+                </div>
+                <div id="content_prompt_${{cid}}">Loading full prompt...</div>
+              </div>
+            </div>
+
+            <!-- Collapsible: Tool Steps Timeline -->
+            <div class="collapsible-section">
+              <div class="collapsible-header" onclick="toggleSentinelSteps('${{cid}}')">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent-blue);"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                  <span style="font-weight: 600;">Autonomous Tool Execution Timeline (${{s.steps_count}} steps)</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span style="font-size: 11px; color: var(--text-muted);">Inspect steps &amp; outputs</span>
+                  <svg id="chevron_steps_${{cid}}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transition: transform 0.2s ease;"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
+              </div>
+              <div class="collapsible-body" id="body_steps_${{cid}}" style="display: none; max-height: 480px;">
+                <div id="content_steps_${{cid}}">Loading autonomous tool execution steps...</div>
+              </div>
+            </div>
+
+            <!-- Collapsible: Delivered Markdown Report -->
+            <div class="collapsible-section">
+              <div class="collapsible-header" onclick="toggleSentinelSection('report_${{cid}}')">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--status-success);"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                  <span style="font-weight: 600;">Delivered Markdown Report</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span style="font-size: 11px; color: var(--text-muted);">${{escapeHtml(s.report_snippet).substring(0, 50)}}...</span>
+                  <svg id="chevron_report_${{cid}}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transition: transform 0.2s ease;"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
+              </div>
+              <div class="collapsible-body" id="body_report_${{cid}}" style="display: none; max-height: 480px;">
+                <div style="display: flex; justify-content: flex-end; margin-bottom: 6px;">
+                  <button class="btn btn-secondary" style="font-size: 10px; padding: 2px 8px;" onclick="copySentinelField('${{cid}}', 'final_report')">Copy Report</button>
+                </div>
+                <div id="content_report_${{cid}}" style="font-family: var(--font-sans); font-size: 12px; line-height: 1.6; color: #cbd5e1;">Loading report...</div>
+              </div>
+            </div>
+          </div>
+        `;
+      }}).join('');
+    }}
+
+    async function ensureSentinelDetails(cid) {{
+      if (state.sentinelDetails[cid]) return state.sentinelDetails[cid];
+      try {{
+        const resp = await fetch('/api/agent-activities/sentinels/' + encodeURIComponent(cid));
+        if (resp.ok) {{
+          const data = await resp.json();
+          state.sentinelDetails[cid] = data;
+          return data;
+        }}
+      }} catch (e) {{
+        console.error('Failed to load sentinel details for', cid, e);
+      }}
+      return null;
+    }}
+
+    async function toggleSentinelSection(secKey) {{
+      const body = document.getElementById('body_' + secKey);
+      const chevron = document.getElementById('chevron_' + secKey);
+      if (!body) return;
+      const isOpen = body.style.display !== 'none';
+
+      if (isOpen) {{
+        body.style.display = 'none';
+        if (chevron) chevron.style.transform = 'rotate(0deg)';
+      }} else {{
+        body.style.display = 'block';
+        if (chevron) chevron.style.transform = 'rotate(180deg)';
+
+        const [field, cid] = secKey.split('_');
+        const detail = await ensureSentinelDetails(cid);
+        if (detail) {{
+          const contentEl = document.getElementById('content_' + secKey);
+          if (contentEl) {{
+            if (field === 'prompt') {{
+              contentEl.innerHTML = `<pre style="margin:0; white-space:pre-wrap; font-family:var(--font-mono); font-size:11px; color:#cbd5e1;">${{escapeHtml(detail.prompt || '--')}}</pre>`;
+            }} else if (field === 'report') {{
+              contentEl.innerHTML = formatMarkdown(detail.final_report || 'No delivered report found.');
+            }}
+          }}
+        }}
+      }}
+    }}
+
+    async function toggleSentinelSteps(cid) {{
+      const body = document.getElementById('body_steps_' + cid);
+      const chevron = document.getElementById('chevron_steps_' + cid);
+      if (!body) return;
+      const isOpen = body.style.display !== 'none';
+
+      if (isOpen) {{
+        body.style.display = 'none';
+        if (chevron) chevron.style.transform = 'rotate(0deg)';
+      }} else {{
+        body.style.display = 'block';
+        if (chevron) chevron.style.transform = 'rotate(180deg)';
+
+        const detail = await ensureSentinelDetails(cid);
+        const contentEl = document.getElementById('content_steps_' + cid);
+        if (!contentEl) return;
+
+        if (!detail || !detail.steps || detail.steps.length === 0) {{
+          contentEl.innerHTML = `<div style="color: var(--text-muted); padding: 12px;">No tool execution steps recorded.</div>`;
+          return;
+        }}
+
+        contentEl.innerHTML = `
+          <div class="stepper-timeline">
+            ${{detail.steps.map((st, idx) => `
+              <div class="stepper-step">
+                <div class="stepper-dot"></div>
+                <div class="stepper-title-row">
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);">#${{st.step_index !== undefined ? st.step_index : (idx + 1)}}</span>
+                    <span class="tool-pill">${{escapeHtml(st.tool_name || 'tool')}}</span>
+                  </div>
+                  <span style="font-size: 11px; color: var(--text-muted);">${{escapeHtml(st.created_at || '').slice(11, 19)}}</span>
+                </div>
+                ${{st.tool_args ? `
+                  <div style="font-family: var(--font-mono); font-size: 11px; color: #93c5fd; background: rgba(59,130,246,0.08); padding: 4px 8px; border-radius: 4px;">
+                    <span style="color: var(--text-muted);">Args: </span>
+                    <code>${{escapeHtml(JSON.stringify(st.tool_args))}}</code>
+                  </div>
+                ` : ''}}
+                ${{st.output ? `
+                  <div class="stepper-output">${{escapeHtml(st.output)}}</div>
+                ` : ''}}
+              </div>
+            `).join('')}}
+          </div>
+        `;
+      }}
+    }}
+
+    function copySentinelField(cid, field) {{
+      const detail = state.sentinelDetails[cid];
+      if (!detail || !detail[field]) {{
+        showToast('Field not loaded yet', 'warning');
+        return;
+      }}
+      navigator.clipboard.writeText(detail[field]).then(() => {{
+        showToast('Copied to clipboard', 'info');
+      }}).catch(() => {{
+        showToast('Copy failed', 'error');
+      }});
+    }}
+
+    // CRM Agent Signals Logic
+    async function loadSignals() {{
+      const tbody = document.getElementById('signalsTableBody');
+      try {{
+        let url = '/api/agent-activities/signals?limit=100';
+        if (state.searchQuery.trim()) {{
+          url += '&q=' + encodeURIComponent(state.searchQuery.trim());
+        }}
+        const resp = await fetch(url);
+        if (!resp.ok) {{
+          tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--status-danger);padding:32px;">Failed loading signals: ${{resp.statusText}}</td></tr>`;
+          return;
+        }}
+        const data = await resp.json();
+        state.signals = data.signals || [];
+        renderSignals();
+      }} catch (err) {{
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--status-danger);padding:32px;">Error loading signals: ${{err.message}}</td></tr>`;
+      }}
+    }}
+
+    function filterSignals(verdict) {{
+      state.signalsFilter = verdict;
+      ['All', 'Create', 'Correct', 'NoChange'].forEach(k => {{
+        const btn = document.getElementById('pillSig' + k);
+        if (btn) {{
+          const isMatch = (k === 'All' && verdict === 'all') ||
+                          (k === 'Create' && verdict === 'create') ||
+                          (k === 'Correct' && verdict === 'correct') ||
+                          (k === 'NoChange' && verdict === 'no_change');
+          btn.classList.toggle('active', isMatch);
+        }}
+      }});
+      renderSignals();
+    }}
+
+    function renderSignals() {{
+      const tbody = document.getElementById('signalsTableBody');
+      if (!state.signals || state.signals.length === 0) {{
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:32px;">No CRM Agent signals found.</td></tr>`;
+        return;
+      }}
+
+      let list = state.signals;
+      if (state.signalsFilter && state.signalsFilter !== 'all') {{
+        list = list.filter(s => (s.verdict || '').toLowerCase() === state.signalsFilter.toLowerCase());
+      }}
+
+      if (list.length === 0) {{
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:32px;">No signals matching verdict "${{escapeHtml(state.signalsFilter)}}".</td></tr>`;
+        return;
+      }}
+
+      tbody.innerHTML = list.map(s => {{
+        const v = (s.verdict || 'unknown').toLowerCase();
+        const conf = s.confidence_score !== undefined
+          ? Math.round((s.confidence_score <= 1 ? s.confidence_score * 100 : s.confidence_score)) + '%'
+          : '--';
+        const applied = s.applied
+          ? `<span class="badge badge-succeeded">Applied</span>`
+          : `<span class="badge badge-queued">Pending</span>`;
+        const notionBtn = s.target_page_url
+          ? `<a href="${{escapeHtml(s.target_page_url)}}" target="_blank" class="notion-btn">
+               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></svg>
+               <span>Notion Page</span>
+             </a>`
+          : `<span style="color:var(--text-muted);">--</span>`;
+        const emitted = escapeHtml(s.created_at || s.timestamp || '').replace('T', ' ').substring(0, 19);
+
+        return `
+          <tr onclick="inspectSignal('${{s.signal_id}}')">
+            <td><span class="task-id-code" style="cursor: pointer;" onclick="event.stopPropagation(); copySignalJson('${{s.signal_id}}')">${{escapeHtml(s.signal_id)}}</span></td>
+            <td><strong style="color: #ffffff;">${{escapeHtml(s.target_name || '--')}}</strong></td>
+            <td><span class="verdict-badge verdict-${{v}}">${{escapeHtml(v.toUpperCase())}}</span></td>
+            <td><span class="badge" style="background:rgba(99,102,241,0.2);color:#a5b4fc;">${{conf}}</span></td>
+            <td onclick="event.stopPropagation()">${{notionBtn}}</td>
+            <td>${{applied}}</td>
+            <td style="color: var(--text-muted); font-size: 12px;">${{emitted}}</td>
+            <td onclick="event.stopPropagation()">
+              <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="inspectSignal('${{s.signal_id}}')">Inspect</button>
+              <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px; margin-left: 4px;" onclick="copySignalJson('${{s.signal_id}}')">Copy</button>
+            </td>
+          </tr>
+        `;
+      }}).join('');
+    }}
+
+    let activeSignalObj = null;
+    function inspectSignal(sigId) {{
+      const sig = (state.signals || []).find(s => s.signal_id === sigId);
+      if (!sig) return;
+      activeSignalObj = sig;
+      const modal = document.getElementById('signalModalOverlay');
+      const title = document.getElementById('signalModalTitle');
+      const body = document.getElementById('signalModalBody');
+      if (title) title.innerText = 'Signal: ' + sig.signal_id;
+
+      const v = (sig.verdict || 'unknown').toLowerCase();
+      const confPct = Math.round((sig.confidence_score <= 1 ? sig.confidence_score * 100 : sig.confidence_score) || 0);
+
+      body.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="verdict-badge verdict-${{v}}">${{escapeHtml(v.toUpperCase())}}</span>
+            <span class="badge" style="background:rgba(99,102,241,0.2);color:#a5b4fc;">${{confPct}}% Confidence</span>
+            <span class="badge ${{sig.applied ? 'badge-succeeded' : 'badge-queued'}}">${{sig.applied ? 'Applied' : 'Not Applied'}}</span>
+          </div>
+          ${{sig.target_page_url ? `
+            <a href="${{escapeHtml(sig.target_page_url)}}" target="_blank" class="notion-btn">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></svg>
+              <span>Open in Notion</span>
+            </a>
+          ` : ''}}
+        </div>
+
+        <div class="drawer-meta-grid">
+          <div class="drawer-meta-item">
+            <span class="drawer-meta-label">Target Name</span>
+            <span class="drawer-meta-val" style="color:#ffffff; font-weight:600;">${{escapeHtml(sig.target_name || '--')}}</span>
+          </div>
+          <div class="drawer-meta-item">
+            <span class="drawer-meta-label">Emitted At</span>
+            <span class="drawer-meta-val">${{escapeHtml(sig.created_at || sig.timestamp || '--')}}</span>
+          </div>
+          <div class="drawer-meta-item" style="grid-column: 1 / -1;">
+            <span class="drawer-meta-label">Signal File</span>
+            <span class="drawer-meta-val" style="font-family:var(--font-mono); font-size:11px; color:#93c5fd;">${{escapeHtml(sig.signal_file || '--')}}</span>
+          </div>
+        </div>
+
+        ${{sig.result && sig.result.explanation ? `
+          <div>
+            <div class="sidebar-section-title" style="margin-bottom: 4px;">Auditor Explanation</div>
+            <div style="background:#070a12; border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:10px 12px; font-size:12px; color:#cbd5e1; line-height:1.5;">
+              ${{escapeHtml(sig.result.explanation)}}
+            </div>
+          </div>
+        ` : ''}}
+
+        ${{sig.diffs && Object.keys(sig.diffs).length > 0 ? `
+          <div>
+            <div class="sidebar-section-title" style="margin-bottom: 4px;">Proposed Diffs</div>
+            <pre style="background:#070a12; border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:10px 12px; font-family:var(--font-mono); font-size:11px; color:#94a3b8; white-space:pre-wrap; margin:0;">${{escapeHtml(JSON.stringify(sig.diffs, null, 2))}}</pre>
+          </div>
+        ` : ''}}
+
+        <div>
+          <div class="sidebar-section-title" style="margin-bottom: 4px;">Raw Payload JSON</div>
+          <pre style="background:#070a12; border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:10px 12px; font-family:var(--font-mono); font-size:10px; color:#64748b; max-height:180px; overflow-y:auto; white-space:pre-wrap; margin:0;">${{escapeHtml(JSON.stringify(sig, null, 2))}}</pre>
+        </div>
+      `;
+
+      modal.classList.add('open');
+    }}
+
+    function closeSignalModal() {{
+      const modal = document.getElementById('signalModalOverlay');
+      if (modal) modal.classList.remove('open');
+      activeSignalObj = null;
+    }}
+
+    function copyActiveSignalJson() {{
+      if (!activeSignalObj) return;
+      navigator.clipboard.writeText(JSON.stringify(activeSignalObj, null, 2)).then(() => {{
+        showToast('Copied signal JSON to clipboard', 'info');
+      }}).catch(() => {{
+        showToast('Failed copying JSON', 'error');
+      }});
+    }}
+
+    function copySignalJson(sigId) {{
+      const sig = (state.signals || []).find(s => s.signal_id === sigId);
+      if (!sig) return;
+      navigator.clipboard.writeText(JSON.stringify(sig, null, 2)).then(() => {{
+        showToast('Copied signal ' + sigId + ' JSON', 'info');
+      }}).catch(() => {{
+        showToast('Failed copying JSON', 'error');
+      }});
+    }}
+
+    // Sidebar Pulse Queue Logic
+    async function loadPulses() {{
+      const tbody = document.getElementById('pulsesTableBody');
+      try {{
+        const resp = await fetch('/api/agent-activities/pulses?limit=50');
+        if (!resp.ok) {{
+          tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--status-danger);padding:32px;">Failed loading pulse queue: ${{resp.statusText}}</td></tr>`;
+          return;
+        }}
+        const data = await resp.json();
+        state.pulses = data.pulses || [];
+        const totalEl = document.getElementById('pulsesTotalCount');
+        if (totalEl) totalEl.innerText = data.total || state.pulses.length;
+        renderPulses();
+      }} catch (err) {{
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--status-danger);padding:32px;">Error loading pulse queue: ${{err.message}}</td></tr>`;
+      }}
+    }}
+
+    function renderPulses() {{
+      const tbody = document.getElementById('pulsesTableBody');
+      if (!state.pulses || state.pulses.length === 0) {{
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:32px;">No sidebar pulses queued.</td></tr>`;
+        return;
+      }}
+
+      tbody.innerHTML = state.pulses.map(p => {{
+        const taskLink = p.task_id
+          ? `<a href="javascript:void(0)" onclick="openDrawer('${{p.task_id}}')" class="task-id-code">${{escapeHtml(p.task_id)}}</a>`
+          : `<span style="color:var(--text-muted);">--</span>`;
+        const sourceTag = `<span class="source-tag">${{escapeHtml(p.source || 'default')}}</span>`;
+        const actionType = `<strong>${{escapeHtml(p.action || '-')}}</strong>`;
+        const statusBadge = `<span class="badge badge-${{p.status || 'queued'}}">${{escapeHtml(p.status || 'queued')}}</span>`;
+        const promptSnippet = escapeHtml(p.prompt || '').substring(0, 100) + (p.prompt && p.prompt.length > 100 ? '...' : '');
+
+        return `
+          <tr>
+            <td style="color: var(--text-muted); font-size: 12px; white-space: nowrap;">${{escapeHtml(p.timestamp_iso || p.timestamp_ms || '-')}}</td>
+            <td>${{taskLink}}</td>
+            <td>${{sourceTag}}</td>
+            <td>${{actionType}}</td>
+            <td>${{statusBadge}}</td>
+            <td style="max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); font-size: 11px;" title="${{escapeHtml(p.prompt || '')}}">${{promptSnippet}}</td>
+            <td>
+              ${{p.task_id ? `<button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="openDrawer('${{p.task_id}}')">Logs</button>` : ''}}
+              <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px; margin-left: 4px;" onclick="copyText('${{escapeJsString(p.prompt || '')}}')">Copy</button>
+            </td>
+          </tr>
+        `;
+      }}).join('');
     }}
 
     let tasksRefreshTimeout = null;
@@ -2891,6 +4030,89 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
           renderExitBadge(task.exit_code, task.status);
 
+          // Render Agent Activity & Signal Card in Drawer
+          const agentCard = document.getElementById('drawerAgentActivityCard');
+          const agentPills = document.getElementById('drawerAgentPills');
+          const agentBody = document.getElementById('drawerAgentActivityBody');
+          if (agentCard && agentPills && agentBody) {{
+            if (task.agent_activity) {{
+              const act = task.agent_activity;
+              agentCard.style.display = 'flex';
+              agentPills.innerHTML = '';
+              let bodyHtml = '';
+
+              if (act.signal) {{
+                const sig = act.signal;
+                const v = (sig.verdict || 'unknown').toLowerCase();
+                agentPills.innerHTML += `<span class="verdict-badge verdict-${{v}}">${{escapeHtml(v.toUpperCase())}}</span>`;
+                if (sig.confidence_score !== undefined) {{
+                  const confPct = Math.round((sig.confidence_score <= 1 ? sig.confidence_score * 100 : sig.confidence_score));
+                  agentPills.innerHTML += `<span class="badge" style="background:rgba(99,102,241,0.2);color:#a5b4fc;">${{confPct}}% Conf</span>`;
+                }}
+
+                bodyHtml += `
+                  <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+                    <div>
+                      <span style="color: var(--text-muted); font-size: 11px;">Target Contact: </span>
+                      <strong style="color: #ffffff;">${{escapeHtml(sig.target_name || '--')}}</strong>
+                      <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-left: 6px;">(${{escapeHtml(sig.signal_id || '')}})</span>
+                    </div>
+                    ${{sig.target_page_url ? `
+                      <a href="${{escapeHtml(sig.target_page_url)}}" target="_blank" class="notion-btn">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></svg>
+                        <span>Open in Notion</span>
+                      </a>
+                    ` : ''}}
+                  </div>
+                `;
+
+                if (sig.result && sig.result.explanation) {{
+                  bodyHtml += `<div style="font-size: 11px; color: #cbd5e1; background: #070a12; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); line-height: 1.4;">${{escapeHtml(sig.result.explanation)}}</div>`;
+                }}
+
+                if (sig.diffs && Object.keys(sig.diffs).length > 0) {{
+                  bodyHtml += `
+                    <div style="font-size: 11px; font-family: var(--font-mono); background: #070a12; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); color: #94a3b8;">
+                      <div style="color: var(--accent-blue); font-weight: 600; margin-bottom: 4px; font-size: 10px; text-transform: uppercase;">Proposed Property Diffs</div>
+                      <pre style="margin:0; white-space:pre-wrap; font-size: 10px; color: #cbd5e1;">${{escapeHtml(JSON.stringify(sig.diffs, null, 2))}}</pre>
+                    </div>
+                  `;
+                }}
+              }}
+
+              if (act.pulse) {{
+                agentPills.innerHTML += `<span class="badge" style="background:rgba(59,130,246,0.2);color:#93c5fd;">Pulse Queued</span>`;
+                bodyHtml += `
+                  <div style="font-size: 11px; color: #94a3b8;">
+                    <span style="color: var(--text-muted);">Sidecar Pulse Event: </span>
+                    <code style="color: #93c5fd;">${{escapeHtml(act.pulse.file_name)}}</code>
+                  </div>
+                `;
+                if (act.pulse.prompt) {{
+                  bodyHtml += `
+                    <div style="font-size: 11px; font-family: var(--font-mono); background: #070a12; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); color: #cbd5e1; max-height: 80px; overflow-y: auto;">
+                      ${{escapeHtml(act.pulse.prompt)}}
+                    </div>
+                  `;
+                }}
+              }}
+
+              if (act.prompt_payload && !act.pulse) {{
+                agentPills.innerHTML += `<span class="badge" style="background:rgba(168,85,247,0.2);color:#c084fc;">Agent Prompt</span>`;
+                const promptText = typeof act.prompt_payload === 'string' ? act.prompt_payload : JSON.stringify(act.prompt_payload, null, 2);
+                bodyHtml += `
+                  <div style="font-size: 11px; font-family: var(--font-mono); background: #070a12; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); color: #cbd5e1; max-height: 80px; overflow-y: auto;">
+                    ${{escapeHtml(promptText)}}
+                  </div>
+                `;
+              }}
+
+              agentBody.innerHTML = bodyHtml;
+            }} else {{
+              agentCard.style.display = 'none';
+            }}
+          }}
+
           // AUTHORITATIVE CHRONOLOGICAL LOG INGESTION
           state.drawerLogs = [];
           if (task.logs && Array.isArray(task.logs) && task.logs.length > 0) {{
@@ -2972,6 +4194,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     function closeDrawer() {{
       document.getElementById('drawerOverlay').classList.remove('open');
       document.getElementById('taskDrawer').classList.remove('open');
+      const agentCard = document.getElementById('drawerAgentActivityCard');
+      if (agentCard) agentCard.style.display = 'none';
       if (state.drawerDurationTimer) {{
         clearInterval(state.drawerDurationTimer);
         state.drawerDurationTimer = null;
@@ -2994,6 +4218,9 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         }}
         if (document.getElementById('testModalOverlay').classList.contains('open')) {{
           closeTestModal();
+        }}
+        if (document.getElementById('signalModalOverlay') && document.getElementById('signalModalOverlay').classList.contains('open')) {{
+          closeSignalModal();
         }}
       }}
       if ((e.metaKey || e.ctrlKey) && e.key === 'f') {{

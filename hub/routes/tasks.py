@@ -187,6 +187,15 @@ def register_task_routes(
         task_data.setdefault("stdout", "")
         task_data.setdefault("stderr", "")
 
+        # Enrich with Agent Activity (Signal, Sidebar Pulse, Prompt Payload)
+        try:
+            from hub.routes.agent_activities import get_task_agent_activity
+            act = get_task_agent_activity(task_id, task_data, db, config)
+            if act:
+                task_data["agent_activity"] = act
+        except Exception as act_err:
+            logger.debug("Failed to enrich agent activity for task %s: %s", task_id, act_err)
+
         resp = HTTPResponse.json(task_data, status_code=200)
         del task_data
         return resp

@@ -868,3 +868,9 @@ def wire_routes(
         register_dashboard_routes(server, config, db, broker, dispatcher)
     except ImportError:
         pass
+
+    try:
+        from hub.routes.agent_activities import register_agent_activities_routes
+        register_agent_activities_routes(server, config, db, broker, dispatcher)
+    except ImportError:
+        pass

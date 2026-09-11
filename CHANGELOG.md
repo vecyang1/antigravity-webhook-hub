@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-09-11
+
+### Added
+- **Agent & Sentinel Observability Hub & Interactive UI/UX Pro Max Views (`hub/routes/agent_activities.py`, `hub/routes/dashboard_template.py`, `hub/routes/tasks.py`)**:
+  - **Sentinel AI Runs View**: Dedicated telemetry board displaying cadence runs (`CAD-20260911-webhook-hub-sentinel`), execution status, tool usage badges, and 3-stage collapsible accordions for full injected prompt (`agentapi new-conversation`), autonomous tool execution stepper timeline (inspecting tool names, args, and outputs), and final delivered markdown reports.
+  - **CRM Agent Signals & Dispatches View**: Full inspection table of emitted signals from `.agents/signals/contact_review/` featuring verdict badges (`CREATE` purple, `CORRECT` emerald, `NO_CHANGE` slate), confidence score pills, direct Notion CRM page external links, and interactive "Inspect" modal displaying formatted property diffs and raw JSON payload.
+  - **Sidebar Pulse Queue View**: Live monitoring table of Antigravity conversation sidebar events from `~/.gemini/antigravity/sidecar_data/webhook-hub-sentinel/events/`, linking dispatched tasks directly to execution log drawers.
+  - **Task Drawer Agent Activity Integration**: Embedded "Associated Agent Activity & Dispatches" card inside the slide-out log drawer, automatically enriching contact-review tasks with proposed property diffs, verdict badges, and one-click Notion navigation.
+  - **High-Performance Lazy Endpoints**: Added `/api/agent-activities/summary`, `/api/agent-activities/sentinels`, `/api/agent-activities/sentinels/{id}`, `/api/agent-activities/signals`, and `/api/agent-activities/pulses` with zero caching and on-demand transcript parsing.
+  - **Strict Memory Budget Compliance**: Maintained gateway process RSS strictly < 25 MB (budget: `< 30.0 MB`), verified via automated GC pressure relief and lazy route resolution in `hub/cli.py`.
+  - **100% SVG Iconography & Dark OLED Theme**: Complete adherence to `/ui-ux-pro-max` design standards with zero emoji icons.
+  - **Full Test & Visual Verification**: Added 6 API tests in `tests/api/test_agent_activities_routes.py` (238/238 pytest passed), standalone verification suite (12/12 passed), and captured 6 Retina high-DPI screenshots in `docs/screenshots/`.
+
 ## [1.6.5] - 2026-09-11
 
 ### Added

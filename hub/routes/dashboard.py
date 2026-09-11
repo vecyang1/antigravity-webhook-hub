@@ -89,3 +89,9 @@ def register_dashboard_routes(
 
     server.add_route("GET", "/dashboard", handle_dashboard)
     server.add_route("GET", "/ui", handle_dashboard)
+
+    try:
+        from hub.routes.agent_activities import register_agent_activities_routes
+        register_agent_activities_routes(server, config, db, broker, dispatcher)
+    except Exception as act_err:
+        logger.debug("Failed registering agent activities routes in dashboard: %s", act_err)

@@ -6,6 +6,7 @@ Implements PEP 562 lazy module loading to keep startup memory strictly <30MB.
 from typing import Any
 
 __all__ = [
+    "register_agent_activities_routes",
     "register_dashboard_routes",
     "register_observability_routes",
     "register_sse_routes",
@@ -16,7 +17,10 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    if name == "register_dashboard_routes":
+    if name == "register_agent_activities_routes":
+        from hub.routes.agent_activities import register_agent_activities_routes
+        return register_agent_activities_routes
+    elif name == "register_dashboard_routes":
         from hub.routes.dashboard import register_dashboard_routes
         return register_dashboard_routes
     elif name == "register_observability_routes":
