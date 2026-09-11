@@ -899,14 +899,15 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         "auto_retry_interrupted": auto_retry,
     }
 
-    # Try live gateway first if pid is alive
+    # Try live gateway first if pid is alive and no custom --db was specified
+    db_arg = getattr(args, "db", None)
     pid_path = Path(getattr(args, "pidfile", DEFAULT_PID_FILE))
     pid = _read_pid_file(pid_path)
     is_alive = _is_pid_running(pid) if pid is not None else False
 
     live_success = False
     sweep_data = None
-    if is_alive:
+    if is_alive and db_arg is None:
         try:
             req_data = json.dumps(payload_dict).encode("utf-8")
             headers = {"Content-Type": "application/json"}

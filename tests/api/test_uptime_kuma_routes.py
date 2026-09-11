@@ -204,9 +204,11 @@ async def test_kuma_valid_up_returns_200(kuma_server_harness: Any):
     assert data["status"] == "up"
     assert data["monitor"] == "CRM Hub"
 
-    # Event persisted to DB, but no heavy triage task queued
-    assert db._conn.execute("SELECT count(*) FROM webhook_events").fetchone()[0] == 1
+    # Event persisted to DB as processed, no heavy triage task queued, and sweeper finds 0 orphans
+    row = db._conn.execute("SELECT status FROM webhook_events").fetchone()
+    assert row is not None and row[0] == "processed"
     assert db._conn.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+    assert len(db.get_orphaned_webhook_events()) == 0
 
 
 async def test_kuma_down_with_flap_suppressed(kuma_server_harness: Any):

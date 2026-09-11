@@ -17,10 +17,7 @@ import hashlib
 import json
 import logging
 import os
-import subprocess
 import time
-import urllib.error
-import urllib.request
 import uuid
 from typing import Any, Callable, Optional
 
@@ -39,6 +36,7 @@ COOLDOWN_SECONDS = 60.0
 def send_desktop_notification(title: str, message: str, sound: str = "Basso") -> None:
     """Send native macOS notification banner via AppleScript osascript."""
     try:
+        import subprocess
         clean_title = title.replace("\\", "\\\\").replace('"', '\\"')
         clean_message = message.replace("\\", "\\\\").replace('"', '\\"')
         script = f'display notification "{clean_message}" with title "{clean_title}"'
@@ -62,6 +60,7 @@ async def send_slack_alert(
         return False
 
     def _post():
+        import urllib.request
         req = urllib.request.Request(
             "https://slack.com/api/chat.postMessage",
             data=json.dumps({"channel": target_channel, "text": text}).encode("utf-8"),
@@ -92,6 +91,7 @@ async def probe_url_liveness(url: str, timeout: float = 3.0) -> bool:
         return False
 
     def _probe():
+        import urllib.request
         req = urllib.request.Request(
             url,
             headers={"User-Agent": "Antigravity-AntiFlap-Probe/1.0"},
@@ -203,7 +203,7 @@ def register_uptime_kuma_routes(
                     "method": req.method,
                     "path": req.path,
                     "remote_addr": req.remote_addr,
-                    "status": "received",
+                    "status": "processed",
                 })
 
             if broker is not None:

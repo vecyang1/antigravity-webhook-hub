@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-09-11
+
+### Fixed
+- **Memory Footprint Optimization (`hub/routes/uptime_kuma.py`)**:
+  - Converted eager top-level `urllib.request`, `urllib.error`, and `subprocess` imports to lazy function-scoped imports.
+  - Reduced server startup memory from ~30MB to 18.39MB, preventing memory budget breaches under concurrent task loads.
+- **UP Heartbeat Sweeper Ghost Task Elimination (`hub/routes/uptime_kuma.py`)**:
+  - Ensured incoming UP recovery events are persisted with `status='processed'` rather than `status='received'`, preventing the background sweeper loop from misidentifying non-task heartbeats as orphaned events.
+- **CLI Offline Database Sweep Routing (`hub/cli.py`)**:
+  - Bypassed live HTTP server routing in `cmd_sweep` when `--db` is explicitly provided, ensuring offline database operations target the specified path directly rather than the daemon's active database.
+
 ## [1.4.0] - 2026-09-11
 
 ### Added
