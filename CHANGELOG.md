@@ -16,7 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **High-Performance Lazy Endpoints**: Added `/api/agent-activities/summary`, `/api/agent-activities/sentinels`, `/api/agent-activities/sentinels/{id}`, `/api/agent-activities/signals`, and `/api/agent-activities/pulses` with zero caching and on-demand transcript parsing.
   - **Strict Memory Budget Compliance**: Maintained gateway process RSS strictly < 25 MB (budget: `< 30.0 MB`), verified via automated GC pressure relief and lazy route resolution in `hub/cli.py`.
   - **100% SVG Iconography & Dark OLED Theme**: Complete adherence to `/ui-ux-pro-max` design standards with zero emoji icons.
-  - **Full Test & Visual Verification**: Added 6 API tests in `tests/api/test_agent_activities_routes.py` (238/238 pytest passed), standalone verification suite (12/12 passed), and captured 6 Retina high-DPI screenshots in `docs/screenshots/`.
+
+### Fixed
+- **Sentinel Conversation Discovery Isolation (`hub/routes/agent_activities.py`)**: Fixed discovery heuristics that previously misclassified interactive user coding tasks and subagents mentioning repository names as Sentinel runs, strictly isolating genuine autonomous Sentinel runs (`CAD-20260911-webhook-hub-sentinel`).
+- **Signal Confidence, Diffs, and Applied Status Normalization (`hub/routes/agent_activities.py`, `hub/routes/dashboard_template.py`)**: Resolved nested structure where `confidence_score`, `diffs`, `applied`, and `explanation` resided inside `result`, ensuring accurate confidence percentages (70%, 80%, 90%, 100%), applied badges, and proposed diffs render across table, detail modal, and drawer.
+- **Task Drawer Action Buttons**: Added interactive **Quick Inspect** (opening modal) and **One-Click Copy** actions on drawer activity cards.
+- **Sidebar Navigation Active State**: Added `id="navItemAll"` to restore active sidebar tab highlight when navigating back to tasks.
+- **Transcript Collapsible Robustness**: Replaced brittle string-split ID parsing in `toggleSentinelSection` with robust parameterization.
+- **Expanded Task Activity Association**: Broadened signal and pulse correlation to search `stdout`, `command`, `action_params_json`, `result_json`, `error_message`, and `logs`.
+- **Comprehensive Verification**: Added 2 new tests in `tests/api/test_agent_activities_routes.py` (total 8 tests passing, 240/240 full test suite passing in 33s, 12/12 standalone verification passing), and captured 6 Retina screenshots in `docs/screenshots/`.
 
 ## [1.6.5] - 2026-09-11
 

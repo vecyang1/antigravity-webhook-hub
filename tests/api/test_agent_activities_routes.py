@@ -185,3 +185,74 @@ async def test_task_detail_agent_activity_enrichment(agent_activities_app):
         act = task_data["agent_activity"]
         assert act is not None
         assert act.get("action_type") == "contact_review"
+        if act.get("signal"):
+            sig = act["signal"]
+            assert sig.get("confidence_score") is not None
+            assert sig.get("applied") is not None
+            assert "diffs" in sig
+
+
+@pytest.mark.asyncio
+async def test_sentinel_detail_and_discovery_filtering(agent_activities_app, tmp_path):
+    from hub.routes.agent_activities import discover_sentinel_conversations, parse_sentinel_transcript
+
+    # 1. Setup mock brain with a real sentinel run and an interactive coding task
+    mock_brain = tmp_path / "brain"
+    mock_brain.mkdir()
+
+    # Conversation A: Real Sentinel Run
+    sentinel_cid = "conv_sentinel_test_001"
+    dir_a = mock_brain / sentinel_cid / ".system_generated" / "logs"
+    dir_a.mkdir(parents=True)
+    transcript_a = dir_a / "transcript.jsonl"
+    transcript_a.write_text(
+        json.dumps({"type": "USER_INPUT", "content": "Antigravity Webhook Hub — Sentinel\nCAD-20260911-webhook-hub-sentinel", "created_at": "2026-09-11T12:00:00Z"}) + "\n" +
+        json.dumps({"type": "PLANNER_RESPONSE", "tool_calls": [{"name": "view_file", "args": {"AbsolutePath": "hub/server.py"}}]}) + "\n" +
+        json.dumps({"type": "GENERIC", "content": "File contents of server.py"}) + "\n" +
+        json.dumps({"type": "PLANNER_RESPONSE", "content": "### Sentinel Report\nAll services operational."}) + "\n"
+    )
+
+    # Conversation B: Interactive Coding Task (Mentions webhook-hub-sentinel in prompt)
+    interactive_cid = "conv_interactive_task_002"
+    dir_b = mock_brain / interactive_cid / ".system_generated" / "logs"
+    dir_b.mkdir(parents=True)
+    transcript_b = dir_b / "transcript.jsonl"
+    transcript_b.write_text(
+        json.dumps({"type": "USER_INPUT", "content": "<original_task>\n**Task**: fix webhook-hub-sentinel UI", "created_at": "2026-09-11T12:05:00Z"}) + "\n" +
+        json.dumps({"type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "git status"}}]}) + "\n"
+    )
+
+    # Verify discovery strictly keeps Conversation A and discards Conversation B
+    cids = discover_sentinel_conversations(sidecar_dir=tmp_path / "empty_sidecar", brain_dir=mock_brain)
+    assert sentinel_cid in cids
+    assert interactive_cid not in cids
+
+    # Verify parse_sentinel_transcript on Conversation A
+    parsed = parse_sentinel_transcript(sentinel_cid, brain_dir=mock_brain, full_steps=True)
+    assert parsed is not None
+    assert parsed["conversation_id"] == sentinel_cid
+    assert parsed["status"] == "succeeded"
+    assert parsed["steps_count"] == 1
+    assert "view_file" in parsed["tools_used"]
+    assert "### Sentinel Report" in parsed["final_report"]
+    assert len(parsed["steps"]) == 1
+    assert parsed["steps"][0]["tool_name"] == "view_file"
+
+
+@pytest.mark.asyncio
+async def test_signals_normalization_endpoint(agent_activities_app):
+    base_url = agent_activities_app["base_url"]
+    async with httpx.AsyncClient(base_url=base_url) as client:
+        resp = await client.get("/api/agent-activities/signals")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        for sig in data["signals"]:
+            # All signals must have normalized top-level fields
+            assert "confidence_score" in sig
+            assert "applied" in sig
+            assert "diffs" in sig
+            assert "verdict" in sig
+            assert "target_name" in sig
+            assert sig["confidence_score"] is not None
+            assert isinstance(sig["applied"], bool)

@@ -187,6 +187,88 @@ def parse_sentinel_transcript(
     return res
 
 
+def normalize_signal_data(data: dict[str, Any], file_path: Optional[Path] = None) -> dict[str, Any]:
+    """Normalize signal data so confidence_score, diffs, applied, and explanation are accessible at top level."""
+    res = data.get("result")
+    if isinstance(res, dict):
+        if "confidence_score" not in data or data["confidence_score"] is None:
+            data["confidence_score"] = res.get("confidence_score")
+        if "diffs" not in data or data["diffs"] is None:
+            data["diffs"] = res.get("diffs")
+        if "applied" not in data or data["applied"] is None:
+            data["applied"] = res.get("applied", False)
+        if "explanation" not in data or data["explanation"] is None:
+            data["explanation"] = res.get("explanation")
+        if "target_page_url" not in data or not data["target_page_url"]:
+            data["target_page_url"] = res.get("target_page_url")
+    if file_path:
+        try:
+            data["signal_file"] = str(file_path.relative_to(Path.cwd()))
+        except Exception:
+            data["signal_file"] = file_path.name
+    return data
+
+
+def discover_sentinel_conversations(
+    config: Optional[AppConfig] = None,
+    sidecar_dir: Optional[Path] = None,
+    brain_dir: Optional[Path] = None,
+    limit: int = 20,
+) -> list[str]:
+    """Discover genuine autonomous Sentinel AI conversations from sidecar events and brain logs.
+
+    Strictly filters out interactive user coding tasks, harness subagents, and parent conversations
+    that merely mention 'webhook-hub-sentinel' in their task prompt.
+    """
+    discovered: list[tuple[float, str]] = []
+    seen: set[str] = set()
+
+    s_dir = sidecar_dir or _get_sidecar_events_dir(config)
+    b_dir = brain_dir or _get_brain_dir()
+
+    # Method A: Scan sidecar events for newConversation with Sentinel prompts
+    if s_dir.exists():
+        for ef in sorted(s_dir.glob("*.json"), reverse=True):
+            try:
+                data = json.loads(ef.read_text(encoding="utf-8"))
+                nc = data.get("payload", {}).get("newConversation", {})
+                cid = nc.get("conversationId")
+                prompt = nc.get("prompt", "")
+                if any(tag in prompt for tag in ("<original_task>", "<prior_attempt>", "**Task**:", "i want above")):
+                    continue
+                if cid and cid not in seen and ("Antigravity Webhook Hub — Sentinel" in prompt or "CAD-20260911" in prompt):
+                    t_file = b_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
+                    mtime = t_file.stat().st_mtime if t_file.exists() else ef.stat().st_mtime
+                    discovered.append((mtime, cid))
+                    seen.add(cid)
+            except Exception:
+                pass
+
+    # Method B: Scan brain conversations with transcript matching sentinel keywords
+    if b_dir.exists() and len(discovered) < limit:
+        for cdir in b_dir.iterdir():
+            if not cdir.is_dir() or cdir.name in seen:
+                continue
+            t_file = cdir / ".system_generated" / "logs" / "transcript.jsonl"
+            if not t_file.exists():
+                continue
+            try:
+                with open(t_file, "r", encoding="utf-8", errors="replace") as f:
+                    first_line = f.readline()
+                    if not first_line:
+                        continue
+                    if any(tag in first_line for tag in ("<original_task>", "<prior_attempt>", "**Task**:", "i want above")):
+                        continue
+                    if "Antigravity Webhook Hub — Sentinel" in first_line or "CAD-20260911-webhook-hub-sentinel" in first_line:
+                        discovered.append((t_file.stat().st_mtime, cdir.name))
+                        seen.add(cdir.name)
+            except Exception:
+                pass
+
+    discovered.sort(key=lambda x: x[0], reverse=True)
+    return [cid for _, cid in discovered[:limit]]
+
+
 def get_task_agent_activity(
     task_id: str,
     task_data: dict[str, Any],
@@ -199,10 +281,12 @@ def get_task_agent_activity(
     signals_dir = _get_signals_dir(config)
     matching_signal = None
 
-    # 1. Search for signal ID in logs / stdout
+    # 1. Search for signal ID in logs, stdout, command, action_params_json, result_json, error_message
     logs_text = ""
-    if task_data.get("stdout"):
-        logs_text += str(task_data["stdout"]) + " "
+    for field in ("stdout", "command", "action_params_json", "result_json", "error_message", "target_action"):
+        val = task_data.get(field)
+        if val:
+            logs_text += str(val) + " "
     if task_data.get("logs"):
         for log_row in task_data["logs"]:
             logs_text += str(log_row.get("line", "")) + " "
@@ -217,20 +301,21 @@ def get_task_agent_activity(
                 target_file = found[0]
         if target_file.exists():
             try:
-                matching_signal = json.loads(target_file.read_text(encoding="utf-8"))
+                s_raw = json.loads(target_file.read_text(encoding="utf-8"))
+                matching_signal = normalize_signal_data(s_raw, target_file)
             except Exception:
                 pass
 
-    # 2. Fallback: match by contact name in action_params_json
+    # 2. Fallback: match by contact name in action_params_json or logs
     if not matching_signal and ("contact" in action_type or "contact" in source):
-        params_str = task_data.get("action_params_json") or ""
+        params_str = str(task_data.get("action_params_json") or "") + " " + logs_text
         if signals_dir.exists():
             for sig_path in sorted(signals_dir.glob("**/*.signal.json"), reverse=True):
                 try:
                     sdata = json.loads(sig_path.read_text(encoding="utf-8"))
                     t_name = sdata.get("target_name")
                     if t_name and t_name in params_str:
-                        matching_signal = sdata
+                        matching_signal = normalize_signal_data(sdata, sig_path)
                         break
                 except Exception:
                     pass
@@ -239,7 +324,6 @@ def get_task_agent_activity(
     events_dir = _get_sidecar_events_dir(config)
     matching_pulse = None
     if events_dir.exists():
-        # Read latest 80 files for fast O(1) matching
         event_files = sorted(events_dir.glob("*.json"), reverse=True)[:80]
         for ef in event_files:
             try:
@@ -296,52 +380,11 @@ def register_agent_activities_routes(
     brain_dir = _get_brain_dir()
     cadence_dir = _get_cadence_dir()
 
-    def discover_sentinel_conversations(limit: int = 20) -> list[str]:
-        """Discover Sentinel AI conversations from brain & events."""
-        discovered: list[tuple[float, str]] = []
-        seen: set[str] = set()
-
-        # Method A: Scan sidecar events for newConversation with Sentinel prompts
-        if sidecar_events_dir.exists():
-            for ef in sorted(sidecar_events_dir.glob("*.json"), reverse=True)[:100]:
-                try:
-                    data = json.loads(ef.read_text(encoding="utf-8"))
-                    nc = data.get("payload", {}).get("newConversation", {})
-                    cid = nc.get("conversationId")
-                    prompt = nc.get("prompt", "")
-                    if cid and cid not in seen and ("Sentinel" in prompt or "CAD-" in prompt):
-                        t_file = brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
-                        mtime = t_file.stat().st_mtime if t_file.exists() else ef.stat().st_mtime
-                        discovered.append((mtime, cid))
-                        seen.add(cid)
-                except Exception:
-                    pass
-
-        # Method B: Scan brain conversations with transcript matching sentinel keywords
-        if brain_dir.exists() and len(discovered) < limit:
-            for cdir in brain_dir.iterdir():
-                if not cdir.is_dir() or cdir.name in seen:
-                    continue
-                t_file = cdir / ".system_generated" / "logs" / "transcript.jsonl"
-                if not t_file.exists():
-                    continue
-                try:
-                    with open(t_file, "r", encoding="utf-8", errors="replace") as f:
-                        first_line = f.readline()
-                        if "webhook-hub-sentinel" in first_line or "Antigravity Webhook Hub — Sentinel" in first_line:
-                            discovered.append((t_file.stat().st_mtime, cdir.name))
-                            seen.add(cdir.name)
-                except Exception:
-                    pass
-
-        discovered.sort(key=lambda x: x[0], reverse=True)
-        return [cid for _, cid in discovered[:limit]]
-
     # 1. GET /api/agent-activities/summary
     async def handle_activities_summary(req: HTTPRequest) -> HTTPResponse:
         """High-level summary of Sentinel runs, Agent Signals, and Pulse Queue."""
         # Sentinel runs count
-        sentinel_cids = discover_sentinel_conversations(limit=10)
+        sentinel_cids = discover_sentinel_conversations(config=config, sidecar_dir=sidecar_events_dir, brain_dir=brain_dir, limit=10)
         latest_sentinel = None
         if sentinel_cids:
             latest_sentinel = parse_sentinel_transcript(sentinel_cids[0], brain_dir, cadence_dir, full_steps=False)
@@ -352,7 +395,7 @@ def register_agent_activities_routes(
             for p in sorted(signals_dir.glob("**/*.signal.json"), reverse=True):
                 try:
                     sd = json.loads(p.read_text(encoding="utf-8"))
-                    signals.append(sd)
+                    signals.append(normalize_signal_data(sd, p))
                 except Exception:
                     pass
 
@@ -413,7 +456,7 @@ def register_agent_activities_routes(
         except (ValueError, TypeError):
             limit = 20
 
-        sentinel_cids = discover_sentinel_conversations(limit=limit)
+        sentinel_cids = discover_sentinel_conversations(config=config, sidecar_dir=sidecar_events_dir, brain_dir=brain_dir, limit=limit)
         runs: list[dict[str, Any]] = []
 
         for cid in sentinel_cids:
@@ -470,6 +513,7 @@ def register_agent_activities_routes(
             for p in sorted(signals_dir.glob("**/*.signal.json"), reverse=True):
                 try:
                     data = json.loads(p.read_text(encoding="utf-8"))
+                    data = normalize_signal_data(data, p)
                     # Filter by verdict
                     v = str(data.get("verdict") or "").lower()
                     if verdict_filter and v != verdict_filter:
@@ -479,17 +523,10 @@ def register_agent_activities_routes(
                     if search_query:
                         t_name = str(data.get("target_name") or "").lower()
                         s_id = str(data.get("signal_id") or "").lower()
-                        exp = str(data.get("result", {}).get("explanation") or "").lower()
+                        exp = str(data.get("explanation") or data.get("result", {}).get("explanation") or "").lower()
                         if search_query not in t_name and search_query not in s_id and search_query not in exp:
                             continue
 
-                    # Relative file path
-                    try:
-                        rel_path = str(p.relative_to(Path.cwd()))
-                    except Exception:
-                        rel_path = p.name
-
-                    data["signal_file"] = rel_path
                     signals.append(data)
                 except Exception as e:
                     logger.debug("Failed reading signal %s: %s", p.name, e)

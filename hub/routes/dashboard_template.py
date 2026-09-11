@@ -1734,7 +1734,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         <div>
           <div class="sidebar-section-title">Observable Activities</div>
           <ul class="nav-list">
-            <li class="nav-item active" data-nav="tasks" data-filter="all" onclick="setCategoryFilter('all', this)">
+            <li class="nav-item active" id="navItemAll" data-nav="tasks" data-filter="all" onclick="setCategoryFilter('all', this)">
               <div class="nav-item-left">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
                 <span>All Activities</span>
@@ -2123,7 +2123,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent-blue);"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>
             <span style="font-weight: 600; font-size: 12px; color: #ffffff;">Associated Agent Activity &amp; Dispatches</span>
           </div>
-          <div id="drawerAgentPills" style="display: flex; align-items: center; gap: 6px;"></div>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <div id="drawerAgentPills" style="display: flex; align-items: center; gap: 6px;"></div>
+            <div id="drawerAgentActions" style="display: flex; align-items: center; gap: 4px; margin-left: 4px;"></div>
+          </div>
         </div>
         <div class="agent-activity-body" id="drawerAgentActivityBody"></div>
       </div>
@@ -2829,7 +2832,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
             <!-- Collapsible: Injected Prompt -->
             <div class="collapsible-section" style="margin-top: 10px;">
-              <div class="collapsible-header" onclick="toggleSentinelSection('prompt_${{cid}}')">
+              <div class="collapsible-header" onclick="toggleSentinelSection('${{cid}}', 'prompt')">
                 <div style="display: flex; align-items: center; gap: 8px;">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent-blue);"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                   <span style="font-weight: 600;">Injected Prompt (agentapi new-conversation)</span>
@@ -2866,7 +2869,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
             <!-- Collapsible: Delivered Markdown Report -->
             <div class="collapsible-section">
-              <div class="collapsible-header" onclick="toggleSentinelSection('report_${{cid}}')">
+              <div class="collapsible-header" onclick="toggleSentinelSection('${{cid}}', 'report')">
                 <div style="display: flex; align-items: center; gap: 8px;">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--status-success);"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
                   <span style="font-weight: 600;">Delivered Markdown Report</span>
@@ -2903,7 +2906,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       return null;
     }}
 
-    async function toggleSentinelSection(secKey) {{
+    async function toggleSentinelSection(cid, field) {{
+      const secKey = field + '_' + cid;
       const body = document.getElementById('body_' + secKey);
       const chevron = document.getElementById('chevron_' + secKey);
       if (!body) return;
@@ -2916,7 +2920,6 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         body.style.display = 'block';
         if (chevron) chevron.style.transform = 'rotate(180deg)';
 
-        const [field, cid] = secKey.split('_');
         const detail = await ensureSentinelDetails(cid);
         if (detail) {{
           const contentEl = document.getElementById('content_' + secKey);
@@ -3049,10 +3052,16 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
       tbody.innerHTML = list.map(s => {{
         const v = (s.verdict || 'unknown').toLowerCase();
-        const conf = s.confidence_score !== undefined
-          ? Math.round((s.confidence_score <= 1 ? s.confidence_score * 100 : s.confidence_score)) + '%'
+        const confScore = s.confidence_score !== undefined && s.confidence_score !== null
+          ? s.confidence_score
+          : (s.result && s.result.confidence_score);
+        const conf = confScore !== undefined && confScore !== null
+          ? Math.round((confScore <= 1 ? confScore * 100 : confScore)) + '%'
           : '--';
-        const applied = s.applied
+        const isApplied = s.applied !== undefined && s.applied !== null
+          ? s.applied
+          : (s.result && s.result.applied);
+        const applied = isApplied
           ? `<span class="badge badge-succeeded">Applied</span>`
           : `<span class="badge badge-queued">Pending</span>`;
         const notionBtn = s.target_page_url
@@ -3083,7 +3092,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
     let activeSignalObj = null;
     function inspectSignal(sigId) {{
-      const sig = (state.signals || []).find(s => s.signal_id === sigId);
+      const sig = (state.signals || []).find(s => s.signal_id === sigId) ||
+                  (state.activeTask && state.activeTask.agent_activity && state.activeTask.agent_activity.signal && state.activeTask.agent_activity.signal.signal_id === sigId ? state.activeTask.agent_activity.signal : null);
       if (!sig) return;
       activeSignalObj = sig;
       const modal = document.getElementById('signalModalOverlay');
@@ -3092,17 +3102,27 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       if (title) title.innerText = 'Signal: ' + sig.signal_id;
 
       const v = (sig.verdict || 'unknown').toLowerCase();
-      const confPct = Math.round((sig.confidence_score <= 1 ? sig.confidence_score * 100 : sig.confidence_score) || 0);
+      const confScore = sig.confidence_score !== undefined && sig.confidence_score !== null
+        ? sig.confidence_score
+        : (sig.result && sig.result.confidence_score);
+      const confPct = Math.round((confScore <= 1 ? confScore * 100 : confScore) || 0);
+      const isApplied = sig.applied !== undefined && sig.applied !== null
+        ? sig.applied
+        : (sig.result && sig.result.applied);
+      const explanation = (sig.result && sig.result.explanation) || sig.explanation || '';
+      const diffs = (sig.result && sig.result.diffs) || sig.diffs;
+      const hasDiffs = Array.isArray(diffs) ? diffs.length > 0 : (diffs && typeof diffs === 'object' && Object.keys(diffs).length > 0);
+      const pageUrl = sig.target_page_url || (sig.result && sig.result.target_page_url);
 
       body.innerHTML = `
         <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
           <div style="display: flex; align-items: center; gap: 8px;">
             <span class="verdict-badge verdict-${{v}}">${{escapeHtml(v.toUpperCase())}}</span>
             <span class="badge" style="background:rgba(99,102,241,0.2);color:#a5b4fc;">${{confPct}}% Confidence</span>
-            <span class="badge ${{sig.applied ? 'badge-succeeded' : 'badge-queued'}}">${{sig.applied ? 'Applied' : 'Not Applied'}}</span>
+            <span class="badge ${{isApplied ? 'badge-succeeded' : 'badge-queued'}}">${{isApplied ? 'Applied' : 'Not Applied'}}</span>
           </div>
-          ${{sig.target_page_url ? `
-            <a href="${{escapeHtml(sig.target_page_url)}}" target="_blank" class="notion-btn">
+          ${{pageUrl ? `
+            <a href="${{escapeHtml(pageUrl)}}" target="_blank" class="notion-btn">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></svg>
               <span>Open in Notion</span>
             </a>
@@ -3124,19 +3144,19 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           </div>
         </div>
 
-        ${{sig.result && sig.result.explanation ? `
+        ${{explanation ? `
           <div>
             <div class="sidebar-section-title" style="margin-bottom: 4px;">Auditor Explanation</div>
             <div style="background:#070a12; border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:10px 12px; font-size:12px; color:#cbd5e1; line-height:1.5;">
-              ${{escapeHtml(sig.result.explanation)}}
+              ${{escapeHtml(explanation)}}
             </div>
           </div>
         ` : ''}}
 
-        ${{sig.diffs && Object.keys(sig.diffs).length > 0 ? `
+        ${{hasDiffs ? `
           <div>
             <div class="sidebar-section-title" style="margin-bottom: 4px;">Proposed Diffs</div>
-            <pre style="background:#070a12; border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:10px 12px; font-family:var(--font-mono); font-size:11px; color:#94a3b8; white-space:pre-wrap; margin:0;">${{escapeHtml(JSON.stringify(sig.diffs, null, 2))}}</pre>
+            <pre style="background:#070a12; border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:10px 12px; font-family:var(--font-mono); font-size:11px; color:#94a3b8; white-space:pre-wrap; margin:0;">${{escapeHtml(JSON.stringify(diffs, null, 2))}}</pre>
           </div>
         ` : ''}}
 
@@ -3165,7 +3185,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     }}
 
     function copySignalJson(sigId) {{
-      const sig = (state.signals || []).find(s => s.signal_id === sigId);
+      const sig = (state.signals || []).find(s => s.signal_id === sigId) ||
+                  (state.activeTask && state.activeTask.agent_activity && state.activeTask.agent_activity.signal && state.activeTask.agent_activity.signal.signal_id === sigId ? state.activeTask.agent_activity.signal : null);
       if (!sig) return;
       navigator.clipboard.writeText(JSON.stringify(sig, null, 2)).then(() => {{
         showToast('Copied signal ' + sigId + ' JSON', 'info');
@@ -3987,6 +4008,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         const resp = await fetch('/tasks/' + taskId);
         if (resp.ok) {{
           const task = await resp.json();
+          state.activeTask = task;
           document.getElementById('drawerTaskStatus').innerText = task.status;
           document.getElementById('drawerTaskStatus').className = 'badge badge-' + task.status;
           document.getElementById('drawerMetaSource').innerText = task.source || 'default';
@@ -4033,23 +4055,48 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           // Render Agent Activity & Signal Card in Drawer
           const agentCard = document.getElementById('drawerAgentActivityCard');
           const agentPills = document.getElementById('drawerAgentPills');
+          const agentActions = document.getElementById('drawerAgentActions');
           const agentBody = document.getElementById('drawerAgentActivityBody');
           if (agentCard && agentPills && agentBody) {{
             if (task.agent_activity) {{
               const act = task.agent_activity;
               agentCard.style.display = 'flex';
               agentPills.innerHTML = '';
+              if (agentActions) agentActions.innerHTML = '';
               let bodyHtml = '';
 
               if (act.signal) {{
                 const sig = act.signal;
                 const v = (sig.verdict || 'unknown').toLowerCase();
                 agentPills.innerHTML += `<span class="verdict-badge verdict-${{v}}">${{escapeHtml(v.toUpperCase())}}</span>`;
-                if (sig.confidence_score !== undefined) {{
-                  const confPct = Math.round((sig.confidence_score <= 1 ? sig.confidence_score * 100 : sig.confidence_score));
+                const confScore = sig.confidence_score !== undefined && sig.confidence_score !== null
+                  ? sig.confidence_score
+                  : (sig.result && sig.result.confidence_score);
+                if (confScore !== undefined && confScore !== null) {{
+                  const confPct = Math.round((confScore <= 1 ? confScore * 100 : confScore));
                   agentPills.innerHTML += `<span class="badge" style="background:rgba(99,102,241,0.2);color:#a5b4fc;">${{confPct}}% Conf</span>`;
                 }}
+                const isApplied = sig.applied !== undefined && sig.applied !== null
+                  ? sig.applied
+                  : (sig.result && sig.result.applied);
+                if (isApplied) {{
+                  agentPills.innerHTML += `<span class="badge badge-succeeded">Applied</span>`;
+                }}
 
+                if (agentActions) {{
+                  agentActions.innerHTML += `
+                    <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="inspectSignal('${{sig.signal_id}}')" title="Quick inspect signal diffs and full metadata">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                      <span>Inspect</span>
+                    </button>
+                    <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="copySignalJson('${{sig.signal_id}}')" title="One-click copy signal JSON">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                      <span>Copy</span>
+                    </button>
+                  `;
+                }}
+
+                const targetUrl = sig.target_page_url || (sig.result && sig.result.target_page_url);
                 bodyHtml += `
                   <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
                     <div>
@@ -4057,8 +4104,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
                       <strong style="color: #ffffff;">${{escapeHtml(sig.target_name || '--')}}</strong>
                       <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-left: 6px;">(${{escapeHtml(sig.signal_id || '')}})</span>
                     </div>
-                    ${{sig.target_page_url ? `
-                      <a href="${{escapeHtml(sig.target_page_url)}}" target="_blank" class="notion-btn">
+                    ${{targetUrl ? `
+                      <a href="${{escapeHtml(targetUrl)}}" target="_blank" class="notion-btn">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></svg>
                         <span>Open in Notion</span>
                       </a>
@@ -4066,15 +4113,18 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
                   </div>
                 `;
 
-                if (sig.result && sig.result.explanation) {{
-                  bodyHtml += `<div style="font-size: 11px; color: #cbd5e1; background: #070a12; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); line-height: 1.4;">${{escapeHtml(sig.result.explanation)}}</div>`;
+                const explanation = (sig.result && sig.result.explanation) || sig.explanation;
+                if (explanation) {{
+                  bodyHtml += `<div style="font-size: 11px; color: #cbd5e1; background: #070a12; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); line-height: 1.4;">${{escapeHtml(explanation)}}</div>`;
                 }}
 
-                if (sig.diffs && Object.keys(sig.diffs).length > 0) {{
+                const diffs = (sig.result && sig.result.diffs) || sig.diffs;
+                const hasDiffs = Array.isArray(diffs) ? diffs.length > 0 : (diffs && typeof diffs === 'object' && Object.keys(diffs).length > 0);
+                if (hasDiffs) {{
                   bodyHtml += `
                     <div style="font-size: 11px; font-family: var(--font-mono); background: #070a12; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); color: #94a3b8;">
                       <div style="color: var(--accent-blue); font-weight: 600; margin-bottom: 4px; font-size: 10px; text-transform: uppercase;">Proposed Property Diffs</div>
-                      <pre style="margin:0; white-space:pre-wrap; font-size: 10px; color: #cbd5e1;">${{escapeHtml(JSON.stringify(sig.diffs, null, 2))}}</pre>
+                      <pre style="margin:0; white-space:pre-wrap; font-size: 10px; color: #cbd5e1;">${{escapeHtml(JSON.stringify(diffs, null, 2))}}</pre>
                     </div>
                   `;
                 }}
@@ -4082,6 +4132,14 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
               if (act.pulse) {{
                 agentPills.innerHTML += `<span class="badge" style="background:rgba(59,130,246,0.2);color:#93c5fd;">Pulse Queued</span>`;
+                if (!act.signal && agentActions) {{
+                  agentActions.innerHTML += `
+                    <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="copyText('${{escapeJsString(act.pulse.prompt || '')}}')" title="Copy pulse prompt">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                      <span>Copy Prompt</span>
+                    </button>
+                  `;
+                }}
                 bodyHtml += `
                   <div style="font-size: 11px; color: #94a3b8;">
                     <span style="color: var(--text-muted);">Sidecar Pulse Event: </span>
@@ -4100,6 +4158,14 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
               if (act.prompt_payload && !act.pulse) {{
                 agentPills.innerHTML += `<span class="badge" style="background:rgba(168,85,247,0.2);color:#c084fc;">Agent Prompt</span>`;
                 const promptText = typeof act.prompt_payload === 'string' ? act.prompt_payload : JSON.stringify(act.prompt_payload, null, 2);
+                if (!act.signal && agentActions) {{
+                  agentActions.innerHTML += `
+                    <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="copyText('${{escapeJsString(promptText)}}')" title="Copy prompt payload">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                      <span>Copy Prompt</span>
+                    </button>
+                  `;
+                }}
                 bodyHtml += `
                   <div style="font-size: 11px; font-family: var(--font-mono); background: #070a12; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); color: #cbd5e1; max-height: 80px; overflow-y: auto;">
                     ${{escapeHtml(promptText)}}
@@ -4207,6 +4273,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       const liveIndicator = document.getElementById('drawerLiveIndicator');
       if (liveIndicator) liveIndicator.style.display = 'none';
       state.activeTaskId = null;
+      state.activeTask = null;
       state.drawerLogs = [];
     }}
 
