@@ -70,7 +70,7 @@ class DatabaseManager:
             self.db_path,
             check_same_thread=False,
             timeout=5.0,
-            cached_statements=16,
+            cached_statements=8,
             cache_size=self._cache_size,
         )
         self._conn.row_factory = sqlite3.Row
@@ -88,7 +88,7 @@ class DatabaseManager:
         conn.execute("PRAGMA temp_store = FILE;")
         conn.execute("PRAGMA wal_autocheckpoint = 20;")
         try:
-            conn.execute("PRAGMA soft_heap_limit = 131072;")
+            conn.execute("PRAGMA soft_heap_limit = 65536;")
             conn.execute("PRAGMA shrink_memory;")
         except Exception:
             pass
@@ -1166,6 +1166,28 @@ class DatabaseManager:
     ) -> int:
         """Alias for insert_execution_log."""
         return self.insert_execution_log(task_id, stream, chunk, execution_id)
+
+    def get_execution_logs(self, task_id: str) -> list[dict[str, Any]]:
+        """Retrieve chronological execution logs for a task."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT log_id, stream_type, chunk, timestamp FROM execution_logs WHERE task_id = ? ORDER BY log_id ASC",
+                    (task_id,),
+                )
+                rows = cur.fetchall()
+                return [
+                    {
+                        "log_id": r["log_id"],
+                        "stream": r["stream_type"],
+                        "line": r["chunk"],
+                        "timestamp": str(r["timestamp"]),
+                    }
+                    for r in rows
+                ]
+            finally:
+                cur.close()
 
     # --- Async Helpers for Non-blocking Queries ---
 

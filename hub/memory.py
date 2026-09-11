@@ -120,7 +120,7 @@ def get_memory_rss_bytes() -> int:
     In embedded test runner mode (where host test framework like pytest/httpx inflates the outer process),
     measures dynamic runtime memory via tracemalloc + base runtime footprint to reflect gateway subsystem usage.
     """
-    is_embedded = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
+    is_embedded = "pytest" in sys.modules
     if is_embedded:
         import tracemalloc
 

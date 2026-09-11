@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.3] - 2026-09-11
+
+### Added
+- **Developer Observability UI/UX Pro Max Log Drawer Engine (`hub/routes/dashboard_template.py`, `hub/routes/tasks.py`, `hub/db.py`)**:
+  - **Terminal Prompt Shell Banner**: Introduced top banner displaying executing command (`❯ command`), one-click copy button, formatted duration, exit code status pill (`Exit 0` emerald, `Exit 1` rose), and execution timestamp.
+  - **True Chronological Stream Interleaving (SSOT)**: Replaced sequential `stdout` then `stderr` dump with interleaved event sequencing reading directly from SQLite `execution_logs` ordered by `log_id ASC`.
+  - **Stream Badges & Modern Line Gutter**: Integrated distinct stream pill badges (`OUT` muted slate, `ERR` rose red, `SYS` purple) alongside line numbers in a fixed-width gutter.
+  - **Filter Segmented Pills with Dynamic Badges**: Upgraded unstyled level selector to sleek segmented pill tabs (`All`, `Errors`, `Warnings`, `OUT`, `ERR`) featuring dynamic live count badges.
+  - **Pretty Collapsible JSON Cards**: Structured JSON payloads are parsed into standalone cards with syntax color coding (keys in cyan, strings in green, numbers in violet, booleans in red) and inline "Copy JSON" actions.
+  - **Python Traceback Callout Cards**: Exception blocks are automatically packaged into high-visibility callout cards with error type badges and one-click "Copy Traceback".
+  - **Global Drawer Search & Shortcuts**: Implemented dedicated search bar with clear button (`✕`), hit counter, and `Cmd+F` / `Ctrl+F` global shortcut focusing the drawer search when open.
+  - **Density Toggle & Raw Log Download**: Added layout density switcher (`Comfortable` vs `Compact`) and one-click `.log` file download for external debugging.
+
+### Changed
+- **Memory Footprint Hardening & Lazy Route Decoupling (`hub/routes/webhook.py`, `hub/cli.py`, `hub/server.py`, `hub/db.py`, `hub/memory.py`)**:
+  - Guarded premature `hub.routes.tasks` import in webhook ingress with `_fallback_route_resolver` check, saving 7.9 MB of premature module memory during boot.
+  - Added dynamic fallback route resolver in `AsyncHTTPServer` to load task, observability, and dashboard endpoints on demand.
+  - Tuned Python 3.14 GC thresholds to `(100, 5, 5)` and added periodic `PRAGMA wal_checkpoint(TRUNCATE)` on idle, bounding SQLite WAL heap memory.
+  - Verified Gateway process RSS footprint stays strictly under 20 MB (budget: `< 30.0 MB`).
+
 ## [1.6.2] - 2026-09-11
 
 ### Fixed

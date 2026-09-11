@@ -141,22 +141,37 @@ def register_task_routes(
 
         task_data = dict(task)
 
-        # Enrich with stdout and stderr from execution_logs or executions table
-        if hasattr(db, "execute_read"):
-            try:
-                logs = await db.execute_read(
-                    "SELECT stream_type, chunk AS line FROM execution_logs WHERE task_id = ? ORDER BY log_id ASC",
+        # Enrich with chronological logs, stdout, and stderr from execution_logs or executions table
+        task_data["logs"] = []
+        try:
+            raw_logs = []
+            if hasattr(db, "get_execution_logs"):
+                res = db.get_execution_logs(task_id)
+                raw_logs = await res if asyncio.iscoroutine(res) else res
+            elif hasattr(db, "execute_read"):
+                raw_logs = await db.execute_read(
+                    "SELECT stream_type, chunk AS line, timestamp FROM execution_logs WHERE task_id = ? ORDER BY log_id ASC",
                     (task_id,),
                 )
-                stdout_lines = [row["line"] for row in logs if row["stream_type"] == "stdout"]
-                stderr_lines = [row["line"] for row in logs if row["stream_type"] == "stderr"]
+            if raw_logs:
+                task_data["logs"] = [
+                    {
+                        "stream": str(r.get("stream_type") or r.get("stream") or "stdout"),
+                        "line": str(r.get("line") or r.get("chunk") or ""),
+                        "timestamp": str(r.get("timestamp") or ""),
+                    }
+                    for r in raw_logs
+                ]
+                stdout_lines = [r["line"] for r in task_data["logs"] if r["stream"] == "stdout"]
+                stderr_lines = [r["line"] for r in task_data["logs"] if r["stream"] == "stderr"]
                 if stdout_lines:
                     task_data["stdout"] = "\n".join(stdout_lines)
                 if stderr_lines:
                     task_data["stderr"] = "\n".join(stderr_lines)
 
-                # Fallback to executions table if stdout or stderr not present
-                if "stdout" not in task_data or "stderr" not in task_data:
+            # Fallback to executions table if stdout or stderr not present
+            if ("stdout" not in task_data or not task_data["stdout"]) and ("stderr" not in task_data or not task_data["stderr"]):
+                if hasattr(db, "execute_read"):
                     exec_rows = await db.execute_read(
                         "SELECT stdout_tail, stderr_tail FROM executions WHERE task_id = ? ORDER BY attempt_number DESC LIMIT 1",
                         (task_id,),
@@ -166,8 +181,8 @@ def register_task_routes(
                             task_data["stdout"] = exec_rows[0].get("stdout_tail") or ""
                         if "stderr" not in task_data and exec_rows[0].get("stderr_tail"):
                             task_data["stderr"] = exec_rows[0].get("stderr_tail") or ""
-            except Exception as log_err:
-                logger.debug("Failed to enrich task logs: %s", log_err)
+        except Exception as log_err:
+            logger.debug("Failed to enrich task logs: %s", log_err)
 
         task_data.setdefault("stdout", "")
         task_data.setdefault("stderr", "")

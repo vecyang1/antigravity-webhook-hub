@@ -212,6 +212,7 @@ class AsyncHTTPServer:
         self._active_transports: set[asyncio.BaseTransport] = set()
         self._memory_monitor_task: Optional[asyncio.Task] = None
         self._db: Optional[Any] = None
+        self._fallback_route_resolver: Optional[Callable[[str, str], None]] = None
 
     # --- Routing Registration API ---
 
@@ -289,6 +290,24 @@ class AsyncHTTPServer:
                 params = r_pattern.match(norm_path)
                 if params is not None:
                     return r_pattern.handler, params, False
+
+        # 3. Dynamic route fallback resolver (lazy route wiring for minimal RSS)
+        if self._fallback_route_resolver is not None:
+            try:
+                self._fallback_route_resolver(method, norm_path)
+            except Exception:
+                pass
+            if exact_key in self._exact_routes:
+                return self._exact_routes[exact_key], {}, False
+            if method == "HEAD":
+                get_key = ("GET", norm_path)
+                if get_key in self._exact_routes:
+                    return self._exact_routes[get_key], {}, False
+            for r_pattern in self._pattern_routes:
+                if r_pattern.method == method or (method == "HEAD" and r_pattern.method == "GET"):
+                    params = r_pattern.match(norm_path)
+                    if params is not None:
+                        return r_pattern.handler, params, False
 
         # 3. Check for 405 Method Not Allowed
         path_exists = False
@@ -734,14 +753,14 @@ class AsyncHTTPServer:
         gc.collect(2)
         self._pressure_relief()
         if self._db is not None and hasattr(self._db, "shrink_memory"):
-            self._db.shrink_memory(truncate_wal=False)
+            self._db.shrink_memory(truncate_wal=True)
         while self._is_running:
             try:
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.3)
                 gc.collect(2)
                 self._pressure_relief()
                 if self._db is not None and hasattr(self._db, "shrink_memory"):
-                    self._db.shrink_memory(truncate_wal=False)
+                    self._db.shrink_memory(truncate_wal=True)
             except asyncio.CancelledError:
                 break
             except Exception:

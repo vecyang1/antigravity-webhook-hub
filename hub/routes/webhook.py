@@ -282,8 +282,8 @@ def register_webhook_routes(
     server.add_route("POST", "/webhook", handle_webhook)
     server.add_route("POST", "/webhook/{source}", handle_webhook)
 
-    # Ensure tasks routes are registered via hub.routes.tasks per PROJECT.md
-    if ("GET", "/tasks") not in server._exact_routes:
+    # Ensure tasks routes are registered via hub.routes.tasks per PROJECT.md (if no lazy fallback resolver)
+    if getattr(server, "_fallback_route_resolver", None) is None and ("GET", "/tasks") not in server._exact_routes:
         try:
             from hub.routes.tasks import register_task_routes
             register_task_routes(server, config, db, dispatcher=dispatcher, broker=broker)

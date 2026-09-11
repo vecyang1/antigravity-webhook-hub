@@ -8,7 +8,6 @@ and Bearer token fallback.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import json
@@ -333,6 +332,7 @@ def decode_jwt_unverified(jwt_token: str) -> tuple[dict[str, Any], dict[str, Any
         raise ValueError("Invalid JWT format (expected 3 dot-separated segments)")
 
     def b64url_decode(s: str) -> bytes:
+        import base64
         padding = "=" * ((4 - len(s) % 4) % 4)
         return base64.urlsafe_b64decode(s + padding)
 
@@ -428,6 +428,7 @@ def verify_dashboard_auth(
     if auth_header and auth_header.strip().lower().startswith("basic "):
         b64_creds = auth_header.strip()[6:].strip()
         try:
+            import base64
             decoded = base64.b64decode(b64_creds).decode("utf-8")
             if ":" in decoded:
                 user, pwd = decoded.split(":", 1)

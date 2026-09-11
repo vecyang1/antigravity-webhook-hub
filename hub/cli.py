@@ -130,13 +130,13 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
     from hub.broker import EventBroker
     from hub.db import DatabaseManager
     from hub.dispatcher import TaskDispatcher
-    from hub.routes.dashboard import register_dashboard_routes
-    from hub.routes.observability import register_observability_routes
-    from hub.routes.sse import register_sse_routes
-    from hub.routes.tasks import register_task_routes
-    from hub.routes.uptime_kuma import register_uptime_kuma_routes
     from hub.routes.webhook import register_webhook_routes
     from hub.server import AsyncHTTPServer
+
+    try:
+        gc.set_threshold(100, 5, 5)
+    except Exception:
+        pass
 
     pid = os.getpid()
 
@@ -151,6 +151,8 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
         db_mgr._conn.execute("PRAGMA cache_size = -16;")
         db_mgr._conn.execute("PRAGMA mmap_size = 0;")
         db_mgr._conn.execute("PRAGMA wal_autocheckpoint = 20;")
+        db_mgr._conn.execute("PRAGMA temp_store = FILE;")
+        db_mgr._conn.execute("PRAGMA threads = 0;")
     except Exception:
         pass
     db_mgr.init_schema()
@@ -174,13 +176,37 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
     server = AsyncHTTPServer(config.server)
     server._db = db_mgr
 
+    # Lazily wire management routes on demand to maintain minimal RSS footprint (<30MB)
+    _lazy_loaded: set[str] = set()
+
+    def _dynamic_route_resolver(method: str, path: str) -> None:
+        p = path.lower()
+        if (p.startswith("/tasks") or p.startswith("/activities") or p.startswith("/api/tasks") or p.startswith("/api/activities")) and "tasks" not in _lazy_loaded:
+            _lazy_loaded.add("tasks")
+            from hub.routes.tasks import register_task_routes
+            register_task_routes(server, config, db_mgr, dispatcher, broker)
+        elif (p in ("/healthz", "/ready", "/metrics", "/health")) and "obs" not in _lazy_loaded:
+            _lazy_loaded.add("obs")
+            from hub.routes.observability import register_observability_routes
+            register_observability_routes(server, config, db_mgr, broker, dispatcher)
+        elif (p.startswith("/events/stream") or p.startswith("/api/events/stream")) and "sse" not in _lazy_loaded:
+            _lazy_loaded.add("sse")
+            from hub.routes.sse import register_sse_routes
+            register_sse_routes(server, config, db_mgr, broker)
+        elif (p in ("/dashboard", "/ui") or p.startswith("/dashboard/")) and "dashboard" not in _lazy_loaded:
+            _lazy_loaded.add("dashboard")
+            from hub.routes.dashboard import register_dashboard_routes
+            register_dashboard_routes(server, config, db_mgr, broker, dispatcher)
+        elif ("uptime-kuma" in p) and "kuma" not in _lazy_loaded:
+            _lazy_loaded.add("kuma")
+            from hub.routes.uptime_kuma import register_uptime_kuma_routes
+            register_uptime_kuma_routes(server, config, db_mgr, dispatcher, broker)
+
+    server._fallback_route_resolver = _dynamic_route_resolver
+
     # 5. Wire System Routes
+    # Webhook routes are eagerly wired for immediate ingress availability
     register_webhook_routes(server, config, db_mgr, dispatcher, broker)
-    register_uptime_kuma_routes(server, config, db_mgr, dispatcher, broker)
-    register_task_routes(server, config, db_mgr, dispatcher, broker)
-    register_observability_routes(server, config, db_mgr, broker, dispatcher)
-    register_sse_routes(server, config, db_mgr, broker)
-    register_dashboard_routes(server, config, db_mgr, broker, dispatcher)
 
     # 6. Start HTTP Server
     try:
@@ -201,7 +227,11 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
 
     # Reclaim setup allocation memory
     apply_memory_pressure_relief()
-    db_mgr.shrink_memory(truncate_wal=False)
+    db_mgr.shrink_memory(truncate_wal=True)
+    try:
+        gc.freeze()
+    except Exception:
+        pass
 
     print(f"Antigravity Webhook Hub running at http://{config.server.host}:{config.server.port} (PID: {pid})")
 

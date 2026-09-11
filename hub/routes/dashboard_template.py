@@ -739,14 +739,79 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       border-color: var(--accent-blue);
       box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
     }}
-    .log-filter-select {{
-      background: #06090f;
+    /* Filter Pills */
+    .log-filter-pills {{
+      display: inline-flex;
+      align-items: center;
+      background: #080d1a;
       border: 1px solid var(--border-subtle);
-      border-radius: 5px;
-      padding: 4px 8px;
+      border-radius: 6px;
+      padding: 2px;
+      gap: 2px;
+    }}
+    .log-filter-pill {{
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
       font-size: 11px;
-      color: var(--text-main);
+      font-weight: 500;
+      padding: 3px 8px;
+      border-radius: 4px;
       cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.15s ease;
+      user-select: none;
+    }}
+    .log-filter-pill:hover {{
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.05);
+    }}
+    .log-filter-pill.active {{
+      background: #1e293b;
+      color: #f8fafc;
+      font-weight: 600;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    }}
+    .pill-badge {{
+      font-size: 9.5px;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 1px 5px;
+      border-radius: 9999px;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-muted);
+    }}
+    .log-filter-pill.active .pill-badge {{
+      background: rgba(255, 255, 255, 0.15);
+      color: #f8fafc;
+    }}
+    .log-filter-pill.pill-err.has-errs .pill-badge {{
+      background: rgba(244, 63, 94, 0.25);
+      color: #fb7185;
+      font-weight: 700;
+    }}
+    .log-filter-pill.pill-warn.has-warns .pill-badge {{
+      background: rgba(251, 191, 36, 0.25);
+      color: #fcd34d;
+      font-weight: 700;
+    }}
+    .log-search-clear {{
+      position: absolute;
+      right: 6px;
+      background: transparent;
+      border: none;
+      color: var(--text-subtle);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2px;
+      border-radius: 3px;
+      transition: color 0.15s ease;
+    }}
+    .log-search-clear:hover {{
+      color: var(--text-main);
     }}
     .log-tool-btn {{
       display: inline-flex;
@@ -787,9 +852,9 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       border-radius: 4px;
       background: rgba(245, 158, 11, 0.12);
     }}
-    /* Terminal Gutter & Lines */
+    /* Terminal Shell Prompt & Window */
     .terminal-window {{
-      background: #040711;
+      background: #030712;
       border: 1px solid #1e293b;
       border-radius: 8px;
       flex: 1;
@@ -797,12 +862,87 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       overflow-y: auto;
       overflow-x: auto;
       font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-      font-size: 12px;
-      line-height: 1.6;
       color: #e2e8f0;
       display: flex;
       flex-direction: column;
       box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.6);
+      position: relative;
+    }}
+    .terminal-window.density-comfortable {{
+      font-size: 12px;
+      line-height: 1.65;
+    }}
+    .terminal-window.density-compact {{
+      font-size: 11px;
+      line-height: 1.45;
+    }}
+    .term-prompt-banner {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #060913;
+      border-bottom: 1px solid #1e293b;
+      padding: 8px 12px;
+      gap: 12px;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }}
+    .term-prompt-left {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+    }}
+    .term-prompt-symbol {{
+      color: #10b981;
+      font-weight: 800;
+      font-size: 13px;
+      user-select: none;
+    }}
+    .term-prompt-cmd {{
+      color: #93c5fd;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      user-select: all;
+    }}
+    .term-prompt-copy-btn {{
+      background: transparent;
+      border: none;
+      color: #64748b;
+      cursor: pointer;
+      padding: 2px 4px;
+      display: inline-flex;
+      align-items: center;
+      border-radius: 3px;
+      transition: color 0.15s, background 0.15s;
+    }}
+    .term-prompt-copy-btn:hover {{
+      color: #f8fafc;
+      background: rgba(255, 255, 255, 0.08);
+    }}
+    .term-prompt-meta {{
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }}
+    .term-meta-pill {{
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: #94a3b8;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
     }}
     .terminal-inner {{
       min-width: 100%;
@@ -822,33 +962,73 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       background: rgba(255, 255, 255, 0.04);
     }}
     .log-row.is-stderr {{
-      background: rgba(239, 68, 68, 0.06);
-      border-left-color: rgba(239, 68, 68, 0.5);
+      background: rgba(244, 63, 94, 0.05);
+      border-left-color: #f43f5e;
     }}
     .log-row.is-traceback {{
-      background: rgba(239, 68, 68, 0.12);
-      border-left-color: #ef4444;
+      background: rgba(244, 63, 94, 0.09);
+      border-left-color: #fb7185;
     }}
     .log-row.is-pretty-json {{
       background: rgba(15, 23, 42, 0.4);
     }}
-    .log-gutter {{
-      width: 46px;
-      min-width: 46px;
-      padding: 0 8px 0 4px;
-      text-align: right;
-      color: #475569;
-      background: #080d1a;
-      font-size: 11px;
+    .log-gutter,
+    .log-gutter-col {{
+      width: 76px;
+      min-width: 76px;
+      padding: 0 6px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      background: #050814;
       user-select: none;
       -webkit-user-select: none;
       border-right: 1px solid #1e293b;
       flex-shrink: 0;
-      line-height: 1.6;
+      line-height: inherit;
     }}
-    .log-gutter-sub {{
-      color: #334155;
-      font-size: 10px;
+    .terminal-window.density-compact .log-gutter,
+    .terminal-window.density-compact .log-gutter-col {{
+      width: 68px;
+      min-width: 68px;
+      padding: 0 4px;
+      gap: 4px;
+    }}
+    .log-line-num {{
+      color: #475569;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }}
+    .stream-pill {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      border-radius: 3px;
+      padding: 0 3px;
+      height: 14px;
+      line-height: 1;
+      text-transform: uppercase;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", monospace;
+    }}
+    .stream-pill-out {{
+      color: #94a3b8;
+      background: rgba(148, 163, 184, 0.1);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+    }}
+    .stream-pill-err {{
+      color: #fb7185;
+      background: rgba(244, 63, 94, 0.18);
+      border: 1px solid rgba(244, 63, 94, 0.35);
+    }}
+    .stream-pill-sys {{
+      color: #c084fc;
+      background: rgba(192, 132, 252, 0.16);
+      border: 1px solid rgba(192, 132, 252, 0.35);
     }}
     .log-text {{
       flex: 1;
@@ -856,7 +1036,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       white-space: pre;
       word-break: normal;
       overflow-x: visible;
-      line-height: 1.6;
+      line-height: inherit;
     }}
     .terminal-window.wrap-mode .log-text {{
       white-space: pre-wrap;
@@ -865,12 +1045,12 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     /* Token Highlighting */
     .log-lvl {{
       display: inline-block;
-      font-size: 11px;
+      font-size: 10.5px;
       font-weight: 700;
       padding: 0 5px;
       border-radius: 3px;
-      line-height: 1.4;
-      margin-right: 4px;
+      line-height: 1.35;
+      margin-right: 5px;
       letter-spacing: 0.02em;
     }}
     .log-lvl-info {{
@@ -899,8 +1079,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       border: 1px solid rgba(192, 132, 252, 0.25);
     }}
     .log-ts {{
-      color: #67e8f9;
-      opacity: 0.9;
+      color: #64748b;
+      font-size: 10.5px;
+      margin-right: 6px;
+      user-select: none;
     }}
     .log-path {{
       color: #93c5fd;
@@ -942,7 +1124,92 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       padding: 0 2px;
       box-shadow: 0 0 6px rgba(245, 158, 11, 0.7);
     }}
-    /* Traceback syntax */
+    /* Traceback & JSON Cards */
+    .traceback-card {{
+      margin: 4px 8px;
+      background: rgba(225, 29, 72, 0.06);
+      border: 1px solid rgba(225, 29, 72, 0.28);
+      border-radius: 6px;
+      overflow: hidden;
+    }}
+    .traceback-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(225, 29, 72, 0.14);
+      padding: 5px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #fda4af;
+      border-bottom: 1px solid rgba(225, 29, 72, 0.2);
+    }}
+    .traceback-header-left {{
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }}
+    .traceback-body {{
+      padding: 6px 10px;
+      font-size: 11.5px;
+      line-height: 1.55;
+    }}
+    .traceback-copy-btn {{
+      background: rgba(225, 29, 72, 0.2);
+      border: 1px solid rgba(225, 29, 72, 0.35);
+      color: #fecdd3;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: background 0.15s;
+    }}
+    .traceback-copy-btn:hover {{
+      background: rgba(225, 29, 72, 0.35);
+    }}
+    .json-card {{
+      margin: 4px 8px;
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid #334155;
+      border-radius: 6px;
+      overflow: hidden;
+    }}
+    .json-card-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #0b1120;
+      padding: 4px 10px;
+      border-bottom: 1px solid #1e293b;
+      font-size: 10.5px;
+      color: #94a3b8;
+    }}
+    .json-card-body {{
+      padding: 8px 12px;
+      white-space: pre;
+      overflow-x: auto;
+      font-size: 11px;
+      line-height: 1.5;
+    }}
+    .json-copy-btn {{
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #cbd5e1;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: background 0.15s;
+    }}
+    .json-copy-btn:hover {{
+      background: #334155;
+      color: #f8fafc;
+    }}
     .log-traceback-title {{
       color: #f87171;
       font-weight: 700;
@@ -1397,16 +1664,41 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
             <div class="log-search-box">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
               <input type="text" class="log-search-input" id="logSearchInput" placeholder="Filter logs... (Cmd/Ctrl+F)" oninput="onLogSearchChange(this.value)">
+              <button class="log-search-clear" id="btnLogSearchClear" onclick="clearLogSearch()" style="display: none;" title="Clear search">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
             </div>
             <span class="log-matches-count" id="logMatchesCount" style="display: none;">0 matches</span>
-            <select class="log-filter-select" id="logLevelFilter" onchange="onLogLevelFilterChange(this.value)" title="Filter by log level">
-              <option value="all">All Levels</option>
-              <option value="error">Errors &amp; Stderr</option>
-              <option value="warn">Warnings &amp; Errors</option>
-              <option value="info">Info, Warn, Error</option>
-            </select>
+            
+            <div class="log-filter-pills" id="logFilterPills">
+              <input type="hidden" id="logLevelFilter" value="all">
+              <button type="button" class="log-filter-pill active" id="filterPillAll" onclick="setLogLevelFilter('all')" title="Show all log streams">
+                <span>All</span>
+                <span class="pill-badge" id="badgeCountAll">0</span>
+              </button>
+              <button type="button" class="log-filter-pill pill-err" id="filterPillError" onclick="setLogLevelFilter('error')" title="Filter errors and stderr">
+                <span>Errors</span>
+                <span class="pill-badge" id="badgeCountError">0</span>
+              </button>
+              <button type="button" class="log-filter-pill pill-warn" id="filterPillWarn" onclick="setLogLevelFilter('warn')" title="Filter warnings and errors">
+                <span>Warnings</span>
+                <span class="pill-badge" id="badgeCountWarn">0</span>
+              </button>
+              <button type="button" class="log-filter-pill" id="filterPillStdout" onclick="setLogLevelFilter('stdout')" title="Filter standard output">
+                <span>OUT</span>
+                <span class="pill-badge" id="badgeCountStdout">0</span>
+              </button>
+              <button type="button" class="log-filter-pill" id="filterPillStderr" onclick="setLogLevelFilter('stderr')" title="Filter standard error">
+                <span>ERR</span>
+                <span class="pill-badge" id="badgeCountStderr">0</span>
+              </button>
+            </div>
           </div>
           <div class="log-toolbar-right">
+            <button class="log-tool-btn" id="btnToggleDensity" onclick="toggleLogDensity()" title="Toggle density (Comfortable / Compact)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="21" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="21" y1="18" x2="3" y2="18"/></svg>
+              <span id="densityBtnLabel">Compact</span>
+            </button>
             <button class="log-tool-btn active" id="btnToggleWrap" onclick="toggleLogWrap()" title="Toggle soft line wrap">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="15" y2="12"/><polyline points="18 9 21 12 18 15"/><path d="M21 12h-7a4 4 0 0 0-4 4v2"/><line x1="3" y1="18" x2="7" y2="18"/></svg>
               <span>Wrap</span>
@@ -1419,6 +1711,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
               <span>Pretty JSON</span>
             </button>
+            <button class="log-tool-btn" id="btnDownloadLogs" onclick="downloadTaskLogs()" title="Download raw log file">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <span>Download</span>
+            </button>
             <button class="log-tool-btn" id="btnCopyLogs" onclick="copyDrawerLogs()" title="Copy logs to clipboard">
               <svg id="copyLogsIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               <span id="copyLogsLabel">Copy</span>
@@ -1430,7 +1726,21 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           </div>
         </div>
 
-        <div class="terminal-window wrap-mode" id="drawerTerminal" onscroll="handleTerminalScroll()">
+        <div class="terminal-window wrap-mode density-comfortable" id="drawerTerminal" onscroll="handleTerminalScroll()">
+          <div class="term-prompt-banner" id="drawerTermPromptBanner">
+            <div class="term-prompt-left">
+              <span class="term-prompt-symbol">❯</span>
+              <span class="term-prompt-cmd" id="termPromptCmd">--</span>
+              <button class="term-prompt-copy-btn" onclick="copyPromptCommand()" title="Copy executed command">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+            </div>
+            <div class="term-prompt-meta">
+              <span class="term-meta-pill" id="termMetaTime">--:--:--</span>
+              <span class="term-meta-pill" id="termMetaDuration">--</span>
+              <span class="term-meta-pill" id="termMetaExit">--</span>
+            </div>
+          </div>
           <div class="terminal-inner" id="drawerTerminalInner">
             <div style="padding: 24px; text-align: center; color: var(--text-subtle);">Connecting to live stream...</div>
           </div>
@@ -2061,13 +2371,45 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       const q = state.drawerSearchQuery ? state.drawerSearchQuery.toLowerCase() : '';
       const levelFilter = state.drawerLevelFilter || 'all';
 
+      // 1. Calculate live badge counts across all streams
+      const countAll = state.drawerLogs.length;
+      let countError = 0;
+      let countWarn = 0;
+      let countStdout = 0;
+      let countStderr = 0;
+
+      state.drawerLogs.forEach((l) => {{
+        if (l.level === 'error' || l.stream === 'stderr') countError++;
+        if (l.level === 'warn') countWarn++;
+        if (l.stream === 'stdout') countStdout++;
+        if (l.stream === 'stderr') countStderr++;
+      }});
+
+      const bAll = document.getElementById('badgeCountAll');
+      if (bAll) bAll.innerText = countAll;
+      const bErr = document.getElementById('badgeCountError');
+      if (bErr) bErr.innerText = countError;
+      const bWarn = document.getElementById('badgeCountWarn');
+      if (bWarn) bWarn.innerText = countWarn;
+      const bOut = document.getElementById('badgeCountStdout');
+      if (bOut) bOut.innerText = countStdout;
+      const bStderr = document.getElementById('badgeCountStderr');
+      if (bStderr) bStderr.innerText = countStderr;
+
+      const pillErr = document.getElementById('filterPillError');
+      if (pillErr) pillErr.classList.toggle('has-errs', countError > 0);
+      const pillWarn = document.getElementById('filterPillWarn');
+      if (pillWarn) pillWarn.classList.toggle('has-warns', countWarn > 0);
+
       let matchCount = 0;
       let visibleRows = [];
 
+      // 2. Filter and render rows
       state.drawerLogs.forEach((line) => {{
-        if (levelFilter === 'error' && line.level !== 'error') return;
-        if (levelFilter === 'warn' && line.level !== 'error' && line.level !== 'warn') return;
-        if (levelFilter === 'info' && line.level !== 'error' && line.level !== 'warn' && line.level !== 'info') return;
+        if (levelFilter === 'error' && line.level !== 'error' && line.stream !== 'stderr') return;
+        if (levelFilter === 'warn' && line.level !== 'error' && line.level !== 'warn' && line.stream !== 'stderr') return;
+        if (levelFilter === 'stdout' && line.stream !== 'stdout') return;
+        if (levelFilter === 'stderr' && line.stream !== 'stderr') return;
 
         let matchesQuery = true;
         if (q) {{
@@ -2081,34 +2423,74 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
         const isTraceback = line.text.includes('Traceback (most recent call last):') || line.text.startsWith('  File "') || /\\w+Error:/.test(line.text);
         const rowClass = 'log-row' + (line.stream === 'stderr' ? ' is-stderr' : '') + (isTraceback ? ' is-traceback' : '');
+        const streamClass = line.stream === 'stderr' ? 'err' : (line.stream === 'sys' ? 'sys' : 'out');
+        const streamLabel = line.stream === 'stderr' ? 'ERR' : (line.stream === 'sys' ? 'SYS' : 'OUT');
 
         // Pretty JSON expansion when enabled
         const jsonMatch = state.drawerPrettyJson ? tryParseJson(line.text) : null;
         if (jsonMatch) {{
+          const jsonCardId = 'json_card_' + line.lineNum;
           if (jsonMatch.type === 'full') {{
-            const prettyLines = JSON.stringify(jsonMatch.data, null, 2).split('\\n');
-            prettyLines.forEach((pLine, pIdx) => {{
-              let pContent = formatLogLineHtml(pLine, line.stream);
-              if (q) pContent = highlightSearchQuery(pContent, state.drawerSearchQuery);
-              const gutterContent = pIdx === 0 ? line.lineNum : '<span class="log-gutter-sub">·</span>';
-              visibleRows.push(
-                `<div class="${{rowClass}} is-pretty-json"><div class="log-gutter">${{gutterContent}}</div><div class="log-text">${{pContent}}</div></div>`
-              );
-            }});
+            const pretty = JSON.stringify(jsonMatch.data, null, 2);
+            let pContent = formatLogLineHtml(pretty, line.stream);
+            if (q) pContent = highlightSearchQuery(pContent, state.drawerSearchQuery);
+            const rawEscaped = escapeLogText(pretty);
+            visibleRows.push(
+              `<div class="${{rowClass}} is-pretty-json">` +
+                `<div class="log-gutter log-gutter-col">` +
+                  `<span class="log-line-num">${{line.lineNum}}</span>` +
+                  `<span class="stream-pill stream-pill-${{streamClass}}">${{streamLabel}}</span>` +
+                `</div>` +
+                `<div class="log-text" style="padding: 0 4px;">` +
+                  `<div class="json-card">` +
+                    `<div class="json-card-header">` +
+                      `<span>JSON Payload</span>` +
+                      `<button class="json-copy-btn" onclick="copyJsonPayload('${{jsonCardId}}')" title="Copy JSON">` +
+                        `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>` +
+                        `<span>Copy JSON</span>` +
+                      `</button>` +
+                    `</div>` +
+                    `<div class="json-card-body" id="${{jsonCardId}}" data-raw-json="${{rawEscaped}}">${{pContent}}</div>` +
+                  `</div>` +
+                `</div>` +
+              `</div>`
+            );
           }} else if (jsonMatch.type === 'embedded') {{
             let pfxContent = formatLogLineHtml(jsonMatch.prefix, line.stream);
             if (q) pfxContent = highlightSearchQuery(pfxContent, state.drawerSearchQuery);
             visibleRows.push(
-              `<div class="${{rowClass}}"><div class="log-gutter">${{line.lineNum}}</div><div class="log-text">${{pfxContent}}</div></div>`
+              `<div class="${{rowClass}}">` +
+                `<div class="log-gutter log-gutter-col">` +
+                  `<span class="log-line-num">${{line.lineNum}}</span>` +
+                  `<span class="stream-pill stream-pill-${{streamClass}}">${{streamLabel}}</span>` +
+                `</div>` +
+                `<div class="log-text">${{pfxContent}}</div>` +
+              `</div>`
             );
-            const prettyLines = JSON.stringify(jsonMatch.data, null, 2).split('\\n');
-            prettyLines.forEach((pLine) => {{
-              let pContent = formatLogLineHtml(pLine, line.stream);
-              if (q) pContent = highlightSearchQuery(pContent, state.drawerSearchQuery);
-              visibleRows.push(
-                `<div class="${{rowClass}} is-pretty-json"><div class="log-gutter"><span class="log-gutter-sub">·</span></div><div class="log-text">${{pContent}}</div></div>`
-              );
-            }});
+            const pretty = JSON.stringify(jsonMatch.data, null, 2);
+            let pContent = formatLogLineHtml(pretty, line.stream);
+            if (q) pContent = highlightSearchQuery(pContent, state.drawerSearchQuery);
+            const rawEscaped = escapeLogText(pretty);
+            visibleRows.push(
+              `<div class="${{rowClass}} is-pretty-json">` +
+                `<div class="log-gutter log-gutter-col">` +
+                  `<span class="log-line-num">·</span>` +
+                  `<span class="stream-pill stream-pill-${{streamClass}}">${{streamLabel}}</span>` +
+                `</div>` +
+                `<div class="log-text" style="padding: 0 4px;">` +
+                  `<div class="json-card">` +
+                    `<div class="json-card-header">` +
+                      `<span>Embedded JSON</span>` +
+                      `<button class="json-copy-btn" onclick="copyJsonPayload('${{jsonCardId}}')" title="Copy JSON">` +
+                        `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>` +
+                        `<span>Copy JSON</span>` +
+                      `</button>` +
+                    `</div>` +
+                    `<div class="json-card-body" id="${{jsonCardId}}" data-raw-json="${{rawEscaped}}">${{pContent}}</div>` +
+                  `</div>` +
+                `</div>` +
+              `</div>`
+            );
           }}
         }} else {{
           let contentHtml = formatLogLineHtml(line.text, line.stream);
@@ -2116,7 +2498,13 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
             contentHtml = highlightSearchQuery(contentHtml, state.drawerSearchQuery);
           }}
           visibleRows.push(
-            `<div class="${{rowClass}}"><div class="log-gutter">${{line.lineNum}}</div><div class="log-text">${{contentHtml}}</div></div>`
+            `<div class="${{rowClass}}">` +
+              `<div class="log-gutter log-gutter-col">` +
+                `<span class="log-line-num">${{line.lineNum}}</span>` +
+                `<span class="stream-pill stream-pill-${{streamClass}}">${{streamLabel}}</span>` +
+              `</div>` +
+              `<div class="log-text">${{contentHtml}}</div>` +
+            `</div>`
           );
         }}
       }});
@@ -2131,15 +2519,20 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         }}
       }}
 
+      const clearBtn = document.getElementById('btnLogSearchClear');
+      if (clearBtn) {{
+        clearBtn.style.display = q ? 'inline-flex' : 'none';
+      }}
+
       const lineCounter = document.getElementById('drawerLineCount');
       if (lineCounter) {{
         lineCounter.innerText = state.drawerLogs.length + ' lines';
       }}
 
       if (state.drawerLogs.length === 0) {{
-        inner.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-subtle);">No output logged yet.</div>';
+        inner.innerHTML = '<div style="padding: 36px 20px; text-align: center; color: var(--text-subtle); font-size: 12px;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin: 0 auto 8px auto; opacity: 0.5; display: block;"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>Waiting for live execution output...</div>';
       }} else if (visibleRows.length === 0) {{
-        inner.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-subtle);">No log lines match current filter.</div>';
+        inner.innerHTML = '<div style="padding: 36px 20px; text-align: center; color: var(--text-subtle); font-size: 12px;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin: 0 auto 8px auto; opacity: 0.5; display: block;"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>No log lines match current filter or search criteria.</div>';
       }} else {{
         inner.innerHTML = visibleRows.join('');
       }}
@@ -2161,7 +2554,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       }});
     }}
 
-    function appendDrawerLine(text, stream = 'stdout') {{
+    function appendDrawerLine(text, stream = 'stdout', timestamp = null) {{
       if (text === undefined || text === null) return;
       const lineNum = state.drawerLogs.length + 1;
       const level = detectLogLevel(text, stream);
@@ -2170,6 +2563,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         text: text,
         stream: stream,
         level: level,
+        timestamp: timestamp
       }});
       while (state.drawerLogs.length > MAX_TERMINAL_LINES) {{
         state.drawerLogs.shift();
@@ -2178,11 +2572,12 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
     async function copyDrawerLogs() {{
       const q = state.drawerSearchQuery ? state.drawerSearchQuery.toLowerCase() : '';
-      const levelFilter = state.drawerLevelFilter || 'all';
+      const filter = state.drawerLevelFilter || 'all';
       const linesToCopy = state.drawerLogs.filter(line => {{
-        if (levelFilter === 'error' && line.level !== 'error') return false;
-        if (levelFilter === 'warn' && line.level !== 'error' && line.level !== 'warn') return false;
-        if (levelFilter === 'info' && line.level !== 'error' && line.level !== 'warn' && line.level !== 'info') return false;
+        if (filter === 'error' && line.level !== 'error' && line.stream !== 'stderr') return false;
+        if (filter === 'warn' && line.level !== 'warn' && line.level !== 'error' && line.stream !== 'stderr') return false;
+        if (filter === 'stdout' && line.stream !== 'stdout') return false;
+        if (filter === 'stderr' && line.stream !== 'stderr') return false;
         if (q && !line.text.toLowerCase().includes(q)) return false;
         return true;
       }});
@@ -2208,6 +2603,89 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         }}, 2000);
       }} catch (err) {{
         showToast('Failed to copy: ' + err.message, 'error');
+      }}
+    }}
+
+    async function copyJsonPayload(jsonId) {{
+      const el = document.getElementById(jsonId);
+      if (!el) return;
+      try {{
+        await navigator.clipboard.writeText(el.dataset.rawJson || el.innerText);
+        showToast('JSON payload copied to clipboard', 'info');
+      }} catch (_) {{}}
+    }}
+
+    async function copyPromptCommand() {{
+      const cmdEl = document.getElementById('termPromptCmd');
+      if (!cmdEl) return;
+      const text = cmdEl.innerText.trim();
+      if (!text || text === '--') return;
+      try {{
+        await navigator.clipboard.writeText(text);
+        showToast('Executed command copied to clipboard', 'info');
+      }} catch (_) {{}}
+    }}
+
+    function downloadTaskLogs() {{
+      if (!state.drawerLogs || !state.drawerLogs.length) {{
+        showToast('No logs to download', 'info');
+        return;
+      }}
+      const lines = state.drawerLogs.map(l => {{
+        const ts = l.timestamp ? `[${{l.timestamp}}] ` : '';
+        return `${{ts}}[${{l.stream.toUpperCase()}}] ${{l.text}}`;
+      }});
+      const blob = new Blob([lines.join('\\n')], {{ type: 'text/plain;charset=utf-8' }});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${{state.activeTaskId || 'task'}}.log`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Log file downloaded', 'info');
+    }}
+
+    function setLogLevelFilter(filterVal) {{
+      state.drawerLevelFilter = filterVal;
+      const hiddenInput = document.getElementById('logLevelFilter');
+      if (hiddenInput) hiddenInput.value = filterVal;
+      ['all', 'error', 'warn', 'stdout', 'stderr'].forEach(k => {{
+        const btn = document.getElementById('filterPill' + k.charAt(0).toUpperCase() + k.slice(1));
+        if (btn) btn.classList.toggle('active', k === filterVal);
+      }});
+      renderDrawerLogs();
+    }}
+
+    function onLogLevelFilterChange(val) {{
+      setLogLevelFilter(val);
+    }}
+
+    function clearLogSearch() {{
+      state.drawerSearchQuery = '';
+      const input = document.getElementById('logSearchInput');
+      if (input) input.value = '';
+      const clearBtn = document.getElementById('btnLogSearchClear');
+      if (clearBtn) clearBtn.style.display = 'none';
+      renderDrawerLogs();
+    }}
+
+    function toggleLogDensity() {{
+      const term = document.getElementById('drawerTerminal');
+      const label = document.getElementById('densityBtnLabel');
+      if (!term) return;
+      const isCompact = term.classList.contains('density-compact');
+      if (isCompact) {{
+        term.classList.remove('density-compact');
+        term.classList.add('density-comfortable');
+        if (label) label.innerText = 'Compact';
+        localStorage.setItem('wh_log_density', 'comfortable');
+      }} else {{
+        term.classList.remove('density-comfortable');
+        term.classList.add('density-compact');
+        if (label) label.innerText = 'Comfortable';
+        localStorage.setItem('wh_log_density', 'compact');
       }}
     }}
 
@@ -2255,11 +2733,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
     function onLogSearchChange(val) {{
       state.drawerSearchQuery = (val || '').trim();
-      renderDrawerLogs();
-    }}
-
-    function onLogLevelFilterChange(val) {{
-      state.drawerLevelFilter = val;
+      const clearBtn = document.getElementById('btnLogSearchClear');
+      if (clearBtn) clearBtn.style.display = state.drawerSearchQuery ? 'inline-flex' : 'none';
       renderDrawerLogs();
     }}
 
@@ -2333,8 +2808,32 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
       const searchInput = document.getElementById('logSearchInput');
       if (searchInput) searchInput.value = '';
-      const filterSelect = document.getElementById('logLevelFilter');
-      if (filterSelect) filterSelect.value = 'all';
+      const clearBtn = document.getElementById('btnLogSearchClear');
+      if (clearBtn) clearBtn.style.display = 'none';
+
+      setLogLevelFilter('all');
+
+      // Initialize Prompt Banner
+      const promptCmd = document.getElementById('termPromptCmd');
+      if (promptCmd) promptCmd.innerText = '--';
+      const promptTime = document.getElementById('termMetaTime');
+      if (promptTime) promptTime.innerText = '--:--:--';
+      const promptDur = document.getElementById('termMetaDuration');
+      if (promptDur) promptDur.innerText = '--';
+      const promptExit = document.getElementById('termMetaExit');
+      if (promptExit) promptExit.innerText = '--';
+
+      // Apply stored density mode
+      const storedDensity = localStorage.getItem('wh_log_density') || 'comfortable';
+      const term = document.getElementById('drawerTerminal');
+      const densityLabel = document.getElementById('densityBtnLabel');
+      if (term) {{
+        term.classList.toggle('density-compact', storedDensity === 'compact');
+        term.classList.toggle('density-comfortable', storedDensity !== 'compact');
+      }}
+      if (densityLabel) {{
+        densityLabel.innerText = storedDensity === 'compact' ? 'Comfortable' : 'Compact';
+      }}
 
       document.getElementById('drawerTaskId').innerText = taskId;
       document.getElementById('drawerOverlay').classList.add('open');
@@ -2360,6 +2859,17 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           document.getElementById('drawerMetaDuration').innerText = durStr;
           updateDrawerDurationBadge(durStr);
 
+          // Update terminal prompt banner
+          const cmdStr = task.command || (task.action_params ? JSON.stringify(task.action_params) : '--');
+          if (promptCmd) promptCmd.innerText = cmdStr;
+          if (promptTime) promptTime.innerText = task.created_at ? task.created_at.slice(11, 19) : '--:--:--';
+          if (promptDur) promptDur.innerText = durStr;
+          if (promptExit) {{
+            promptExit.innerText = task.exit_code !== null && task.exit_code !== undefined
+              ? 'exit ' + task.exit_code
+              : (task.status === 'running' ? 'running' : task.status);
+          }}
+
           if (task.status === 'running') {{
             state.drawerDurationTimer = setInterval(() => {{
               if (state.activeTaskId !== taskId) {{
@@ -2369,27 +2879,35 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
               }}
               const liveDur = formatTaskDuration(task.created_at, null);
               document.getElementById('drawerMetaDuration').innerText = liveDur;
+              if (promptDur) promptDur.innerText = liveDur;
               updateDrawerDurationBadge(liveDur);
             }}, 1000);
           }}
 
           const cmdEl = document.getElementById('drawerMetaCommand');
           if (cmdEl) {{
-            cmdEl.innerText = task.command || (task.action_params ? JSON.stringify(task.action_params) : '--');
+            cmdEl.innerText = cmdStr;
           }}
 
           renderExitBadge(task.exit_code, task.status);
 
+          // AUTHORITATIVE CHRONOLOGICAL LOG INGESTION
           state.drawerLogs = [];
-          if (task.stdout) {{
-            task.stdout.split('\\n').forEach(line => {{
-              if (line.length) appendDrawerLine(line, 'stdout');
+          if (task.logs && Array.isArray(task.logs) && task.logs.length > 0) {{
+            task.logs.forEach(item => {{
+              appendDrawerLine(item.line !== undefined ? item.line : (item.text || ''), item.stream || 'stdout', item.timestamp);
             }});
-          }}
-          if (task.stderr) {{
-            task.stderr.split('\\n').forEach(line => {{
-              if (line.length) appendDrawerLine(line, 'stderr');
-            }});
+          }} else {{
+            if (task.stdout) {{
+              task.stdout.split('\\n').forEach(line => {{
+                if (line.length) appendDrawerLine(line, 'stdout');
+              }});
+            }}
+            if (task.stderr) {{
+              task.stderr.split('\\n').forEach(line => {{
+                if (line.length) appendDrawerLine(line, 'stderr');
+              }});
+            }}
           }}
           renderDrawerLogs();
         }}
@@ -2412,15 +2930,17 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
             const chunk = JSON.parse(e.data);
             const streamClass = chunk.stream === 'stderr' ? 'stderr' : 'stdout';
             const chunkLines = (chunk.line || chunk.chunk || e.data).split('\\n');
-            chunkLines.forEach(l => appendDrawerLine(l, streamClass));
+            chunkLines.forEach(l => appendDrawerLine(l, streamClass, chunk.timestamp));
             scheduleLogRender();
             if (chunk.status) {{
               document.getElementById('drawerTaskStatus').innerText = chunk.status;
               document.getElementById('drawerTaskStatus').className = 'badge badge-' + chunk.status;
+              if (promptExit && chunk.status === 'running') promptExit.innerText = 'running';
             }}
             if (chunk.exit_code !== undefined) {{
               document.getElementById('drawerMetaExit').innerText = chunk.exit_code;
               renderExitBadge(chunk.exit_code, chunk.status);
+              if (promptExit) promptExit.innerText = 'exit ' + chunk.exit_code;
             }}
           }} catch (_) {{
             appendDrawerLine(e.data, 'stdout');
