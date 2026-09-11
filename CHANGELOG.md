@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2] - 2026-09-11
+
+### Fixed
+- **Log Viewer & Drawer Rendering Engine Hardening (`hub/routes/dashboard_template.py`, `tests/api/test_dashboard_routes.py`)**:
+  - **HTML Entity & Quote Collision Fix**: Resolved issue where global `escapeHtml` converted double quotes to `&quot;`, preventing regexes for JSON keys (`"key":`), string values (`: "val"`), and Python traceback frames (`File "...", line ...`) from matching. Introduced `escapeLogText` preserving quote literals for safe element text while escaping dangerous `<>&` characters.
+  - **Tag-Shielded Search Highlighting**: Rebuilt `highlightSearchQuery` with entity/tag shielding regex (`(<[^>]+>|&[a-zA-Z0-9#]+;)|(query)`), ensuring search queries never corrupt HTML tag names (`<span>`) or class attributes (`class="..."`).
+  - **Traceback & Exception Highlighting**: Added dedicated syntax highlighting for Python headers (`Traceback (most recent call last):`), frame files (`.log-path`), line numbers (`.log-traceback-line`), function names (`.log-traceback-func`), and error types (`.log-lvl-error`).
+  - **Interactive Multi-Line Pretty JSON**: Implemented `tryParseJson` with `#btnTogglePrettyJson` toolbar toggle, seamlessly splitting full and embedded JSON into formatted multi-line rows with gutter sub-indicators (`·`).
+  - **Live Running Task Duration Timer**: Added real-time second-by-second duration counter in the drawer header for active `running` tasks with clean interval teardown on close/completion.
+  - **Browser Globals Mock for Headless Node Evaluation**: Added minimal DOM environment mocks (`window`, `document`, `localStorage`, `navigator`) in `test_dashboard_log_formatter_unit_and_safety` to allow standalone unit verification of client-side template scripts via Node.js.
+
 ## [1.6.1] - 2026-09-11
 
 ### Changed
