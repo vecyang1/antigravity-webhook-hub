@@ -14,6 +14,7 @@ tunnel/*.pem
 *.log
 webhook-hub.log
 .agents/signals/
+.run/
 
 # SQLite database files
 *.db
