@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.5] - 2026-09-11
+
+### Added
+- **Native Task Review & Batch Rerun CLI Toolchain (`hub/cli.py`, `tests/unit/test_cli.py`)**:
+  - **`webhook-hub tasks` Subcommand**: Direct CLI inspection of event-driven tasks supporting status filtering (`--status failed|succeeded|running|queued`), environment filtering (`--real` to isolate real business tasks vs `--test-only`), custom limits (`--limit N`), and machine-readable JSON output (`--json`).
+  - **Enhanced `webhook-hub rerun --failed`**: Batch recovery of failed and timed-out tasks with `--real-only` (safely preventing synthetic test suites from being re-enqueued) and `--dry-run` inspection.
+  - **Dual-Mode Operation**: Automatically queries the live gateway via HTTP when running, with seamless fallback to offline direct SQLite SSOT reading under lock.
+  - Eliminates the need for external ad-hoc Python/SQL scripts or fragmented tools to inspect failed tasks.
+  - Added full test coverage in `tests/unit/test_cli.py` (`test_cmd_tasks_list_and_filter`, `test_cmd_rerun_batch_failed`).
+
 ## [1.6.4] - 2026-09-11
 
 ### Fixed

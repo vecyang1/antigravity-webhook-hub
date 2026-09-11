@@ -1103,44 +1103,241 @@ def _add_dashboard_args(parser: argparse.ArgumentParser) -> None:
 
 
 # ==============================================================================
+# SUBCOMMAND: tasks
+# ==============================================================================
+
+def cmd_tasks(args: argparse.Namespace) -> int:
+    """Handle `webhook-hub tasks` command to list, inspect, and review tasks."""
+    import json
+    import urllib.request
+    import urllib.error
+    import urllib.parse
+    from hub.models import is_test_task
+
+    status = getattr(args, "status", "all")
+    real_only = getattr(args, "real_only", False)
+    test_only = getattr(args, "test_only", False)
+    source = getattr(args, "source", None)
+    limit = getattr(args, "limit", 20)
+    host = getattr(args, "host", "127.0.0.1")
+    port = getattr(args, "port", 9423)
+    db_arg = getattr(args, "db", None)
+
+    tasks_data = None
+    live_success = False
+
+    # 1. Try querying live gateway HTTP API
+    if db_arg is None:
+        params: dict[str, Any] = {"limit": str(limit)}
+        if status and status != "all":
+            params["status"] = status
+        if source:
+            params["source"] = source
+        if real_only:
+            params["filter_test"] = "real"
+        elif test_only:
+            params["filter_test"] = "only"
+
+        query_str = urllib.parse.urlencode(params)
+        target_url = f"http://{host}:{port}/tasks?{query_str}"
+        try:
+            req = urllib.request.Request(target_url, method="GET")
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                if resp.status == 200:
+                    tasks_data = json.loads(resp.read().decode("utf-8"))
+                    live_success = True
+        except Exception:
+            pass
+
+    # 2. Offline fallback to SQLite directly
+    if tasks_data is None:
+        from hub.db import DatabaseManager
+        db_path = db_arg
+        if not db_path:
+            try:
+                cfg = load_config(config_path=getattr(args, "config", None), env_path=getattr(args, "env_file", None))
+                db_path = cfg.database.path
+            except Exception:
+                db_path = "data/webhook_hub.db"
+
+        try:
+            db_mgr = DatabaseManager(db_path)
+            where_clauses = []
+            sql_params: list[Any] = []
+            if status and status != "all":
+                where_clauses.append("status = ?")
+                sql_params.append(status)
+            if source:
+                where_clauses.append("source = ?")
+                sql_params.append(source)
+
+            where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+            query = f"SELECT * FROM tasks {where_str} ORDER BY created_at DESC LIMIT ?"
+            fetch_limit = limit * 4 if (real_only or test_only) else limit
+            sql_params.append(fetch_limit)
+
+            with db_mgr._lock:
+                cur = db_mgr._conn.cursor()
+                try:
+                    cur.execute(query, tuple(sql_params))
+                    rows = [dict(r) for r in cur.fetchall()]
+                finally:
+                    cur.close()
+            parsed_tasks = []
+            for r in rows:
+                item = dict(r)
+                is_test = is_test_task(item)
+                item["is_test"] = is_test
+                if real_only and is_test:
+                    continue
+                if test_only and not is_test:
+                    continue
+                parsed_tasks.append(item)
+                if len(parsed_tasks) >= limit:
+                    break
+
+            tasks_data = {
+                "tasks": parsed_tasks,
+                "total": len(parsed_tasks),
+                "count": len(parsed_tasks),
+                "limit": limit,
+            }
+            db_mgr.close()
+        except Exception as err:
+            print(f"Error reading tasks from database ({db_path}): {err}", file=sys.stderr)
+            return 1
+
+    tasks_list = tasks_data.get("tasks", [])
+
+    if getattr(args, "json", False):
+        print(json.dumps(tasks_data, indent=2))
+        return 0
+
+    print("==================================================")
+    print(" Antigravity Webhook Hub — Tasks Review")
+    print("==================================================")
+    mode_str = f"LIVE GATEWAY (http://{host}:{port})" if live_success else "OFFLINE DIRECT (SQLite SSOT)"
+    print(f"  Mode:         {mode_str}")
+    print(f"  Status:       {status}")
+    filter_label = "Real Events Only" if real_only else ("Test Events Only" if test_only else "All Events")
+    print(f"  Filter:       {filter_label}")
+    print(f"  Total Found:  {len(tasks_list)} tasks")
+    print("==================================================")
+
+    if not tasks_list:
+        print("  No tasks matching filter criteria.")
+        return 0
+
+    # Header
+    print(f"{'TASK ID':<22} {'STATUS':<11} {'EXIT':<5} {'TYPE':<5} {'CREATED':<20} {'COMMAND / ACTION'}")
+    print("-" * 88)
+    for t in tasks_list:
+        tid = t.get("task_id", "")
+        st = t.get("status", "")
+        code = str(t.get("exit_code") if t.get("exit_code") is not None else "-")
+        is_t = "TEST" if t.get("is_test") else "REAL"
+        created = str(t.get("created_at", ""))[:19]
+        cmd = str(t.get("command") or t.get("target_action") or t.get("action_type") or "").strip().replace("\n", " ")
+        if len(cmd) > 35:
+            cmd = cmd[:32] + "..."
+        print(f"{tid:<22} {st:<11} {code:<5} {is_t:<5} {created:<20} {cmd}")
+    print("==================================================")
+    return 0
+
+
+def _add_tasks_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--status", choices=["all", "failed", "succeeded", "running", "queued", "timed_out"], default="all", help="Filter tasks by execution status")
+    parser.add_argument("--real", dest="real_only", action="store_true", help="Filter to show only real business tasks (exclude synthetic/test events)")
+    parser.add_argument("--test-only", dest="test_only", action="store_true", help="Filter to show only synthetic/test events")
+    parser.add_argument("--source", type=str, default=None, help="Filter tasks by ingress source")
+    parser.add_argument("--limit", "-n", type=int, default=20, help="Maximum number of tasks to display (default: 20)")
+    parser.add_argument("--host", default="127.0.0.1", help="Gateway host when connecting to live server")
+    parser.add_argument("--port", "-p", type=int, default=9423, help="Gateway port when connecting to live server")
+    parser.add_argument("--db", type=str, default=None, help="Path to SQLite database file when offline")
+    parser.add_argument("--config", "-c", type=str, default=None, help="Path to config.yaml file")
+    parser.add_argument("--env-file", type=str, default=None, help="Path to .env file")
+    parser.add_argument("--json", action="store_true", help="Output result in JSON format for AI agents")
+
+
+# ==============================================================================
 # SUBCOMMAND: rerun
 # ==============================================================================
 
 def cmd_rerun(args: argparse.Namespace) -> int:
-    """Handle `webhook-hub rerun <task_id>` command."""
+    """Handle `webhook-hub rerun <task_id>` or `webhook-hub rerun --failed` command."""
     import json
     import urllib.request
     import urllib.error
+    from hub.models import is_test_task
 
-    task_id = args.task_id
+    task_id = getattr(args, "task_id", None)
+    rerun_failed = getattr(args, "failed", False)
+    real_only = getattr(args, "real_only", False)
+    dry_run = getattr(args, "dry_run", False)
     host = getattr(args, "host", "127.0.0.1")
     port = getattr(args, "port", 9423)
-    target_url = f"http://{host}:{port}/tasks/{task_id}/rerun"
-
     db_arg = getattr(args, "db", None)
 
-    # 1. Try running server via HTTP if no explicit --db was specified
-    if db_arg is None:
-        try:
-            req = urllib.request.Request(target_url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
-                if resp.status == 200:
-                    body = json.loads(resp.read().decode("utf-8"))
-                    if getattr(args, "json", False):
-                        print(json.dumps(body, indent=2))
-                    else:
-                        print(f"Task {task_id} successfully re-enqueued (live gateway).")
-                    return 0
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                print(f"Error: Task {task_id} not found on server.", file=sys.stderr)
-                return 1
-        except Exception:
-            pass
+    if not task_id and not rerun_failed:
+        print("Error: Specify a task_id to re-run, or use --failed to re-enqueue all failed tasks.", file=sys.stderr)
+        print("Usage: ./bin/webhook-hub rerun <task_id>", file=sys.stderr)
+        print("       ./bin/webhook-hub rerun --failed [--real-only] [--dry-run]", file=sys.stderr)
+        return 1
 
-    # 2. Fallback to direct DB update if offline
+    # Single task rerun
+    if task_id:
+        target_url = f"http://{host}:{port}/tasks/{task_id}/rerun"
+        if db_arg is None:
+            try:
+                req = urllib.request.Request(target_url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    if resp.status == 200:
+                        body = json.loads(resp.read().decode("utf-8"))
+                        if getattr(args, "json", False):
+                            print(json.dumps(body, indent=2))
+                        else:
+                            print(f"Task {task_id} successfully re-enqueued (live gateway).")
+                        return 0
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    print(f"Error: Task {task_id} not found on server.", file=sys.stderr)
+                    return 1
+            except Exception:
+                pass
+
+        from hub.db import DatabaseManager
+        db_path = db_arg
+        if not db_path:
+            try:
+                cfg = load_config(config_path=getattr(args, "config", None), env_path=getattr(args, "env_file", None))
+                db_path = cfg.database.path
+            except Exception:
+                db_path = "data/webhook_hub.db"
+
+        try:
+            db_mgr = DatabaseManager(db_path)
+            task = db_mgr.get_task(task_id)
+            if not task:
+                print(f"Error: Task {task_id} not found in database ({db_path}).", file=sys.stderr)
+                return 1
+            ok = db_mgr.rerun_task(task_id)
+            if ok:
+                if getattr(args, "json", False):
+                    print(json.dumps({"status": "queued", "task_id": task_id, "mode": "direct_sqlite"}, indent=2))
+                else:
+                    print(f"Task {task_id} reset to 'queued' in SQLite ({db_path}).")
+                    print("Start the daemon to execute: ./bin/webhook-hub start -d")
+                return 0
+            else:
+                print(f"Error: Failed to reset task {task_id}.", file=sys.stderr)
+                return 1
+        except Exception as err:
+            print(f"Error accessing database {db_path}: {err}", file=sys.stderr)
+            return 1
+
+    # Batch re-run failed tasks
     from hub.db import DatabaseManager
-    db_path = getattr(args, "db", None)
+    db_path = db_arg
     if not db_path:
         try:
             cfg = load_config(config_path=getattr(args, "config", None), env_path=getattr(args, "env_file", None))
@@ -1150,28 +1347,83 @@ def cmd_rerun(args: argparse.Namespace) -> int:
 
     try:
         db_mgr = DatabaseManager(db_path)
-        task = db_mgr.get_task(task_id)
-        if not task:
-            print(f"Error: Task {task_id} not found in database ({db_path}).", file=sys.stderr)
-            return 1
-        ok = db_mgr.rerun_task(task_id)
-        if ok:
-            if getattr(args, "json", False):
-                print(json.dumps({"status": "queued", "task_id": task_id, "mode": "direct_sqlite"}, indent=2))
-            else:
-                print(f"Task {task_id} reset to 'queued' in SQLite ({db_path}).")
-                print("Start the daemon to execute: ./bin/webhook-hub start -d")
-            return 0
-        else:
-            print(f"Error: Failed to reset task {task_id}.", file=sys.stderr)
-            return 1
+        limit = getattr(args, "limit", 50)
+        with db_mgr._lock:
+            cur = db_mgr._conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT * FROM tasks WHERE status IN ('failed', 'timed_out') ORDER BY created_at DESC LIMIT ?",
+                    (limit * 2,),
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+            finally:
+                cur.close()
+        candidates = []
+        for r in rows:
+            item = dict(r)
+            if real_only and is_test_task(item):
+                continue
+            candidates.append(item)
+            if len(candidates) >= limit:
+                break
     except Exception as err:
         print(f"Error accessing database {db_path}: {err}", file=sys.stderr)
         return 1
 
+    if getattr(args, "json", False):
+        if dry_run:
+            print(json.dumps({"mode": "dry_run", "count": len(candidates), "task_ids": [c["task_id"] for c in candidates]}, indent=2))
+            return 0
+
+    print("==================================================")
+    print(f" Antigravity Webhook Hub — Batch Rerun Failed Tasks {'[DRY RUN]' if dry_run else ''}")
+    print("==================================================")
+    print(f"  Filter:       {'Real Events Only' if real_only else 'All Failed Events'}")
+    print(f"  Candidates:   {len(candidates)} task(s)")
+    print("==================================================")
+
+    if not candidates:
+        print("  No failed tasks matching criteria found.")
+        return 0
+
+    if dry_run:
+        for c in candidates:
+            cmd = (c.get("command") or "")[:40].replace("\n", " ")
+            print(f"  • {c['task_id']} [{c['status']}] (is_test={is_test_task(c)}): {cmd}")
+        print("\n  Run without --dry-run to re-enqueue.")
+        return 0
+
+    re_enqueued = 0
+    for c in candidates:
+        tid = c["task_id"]
+        re_ok = False
+        if db_arg is None:
+            try:
+                target_url = f"http://{host}:{port}/tasks/{tid}/rerun"
+                req = urllib.request.Request(target_url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                    if resp.status == 200:
+                        re_ok = True
+            except Exception:
+                pass
+        if not re_ok:
+            re_ok = db_mgr.rerun_task(tid)
+        if re_ok:
+            re_enqueued += 1
+            print(f"  [RE-ENQUEUED] {tid}")
+        else:
+            print(f"  [FAILED]      {tid}")
+
+    print(f"\n  Successfully re-enqueued {re_enqueued}/{len(candidates)} task(s).")
+    return 0
+
 
 def _add_rerun_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("task_id", help="Task ID to re-enqueue and rerun")
+    parser.add_argument("task_id", nargs="?", default=None, help="Task ID to re-enqueue and rerun")
+    parser.add_argument("--failed", action="store_true", help="Re-enqueue all failed and timed-out tasks")
+    parser.add_argument("--real-only", action="store_true", default=False, help="When using --failed, only re-run real business tasks (exclude synthetic/test events)")
+    parser.add_argument("--dry-run", action="store_true", help="Preview which tasks would be re-enqueued without modifying state")
+    parser.add_argument("--limit", type=int, default=50, help="Maximum number of failed tasks to re-enqueue")
     parser.add_argument("--host", default="127.0.0.1", help="Gateway host when connecting to live server")
     parser.add_argument("--port", "-p", type=int, default=9423, help="Gateway port when connecting to live server")
     parser.add_argument("--db", type=str, default=None, help="Path to SQLite database file when offline")
@@ -1377,6 +1629,9 @@ def build_parser() -> Any:
     p_dashboard = subparsers.add_parser("dashboard", aliases=["ui"], help="Open or display Webhook Hub Observable Dashboard URL")
     _add_dashboard_args(p_dashboard)
 
+    p_tasks = subparsers.add_parser("tasks", help="List, inspect, and review webhook tasks (filter failed, real vs test)")
+    _add_tasks_args(p_tasks)
+
     p_rerun = subparsers.add_parser("rerun", help="Re-enqueue an existing task for re-execution")
     _add_rerun_args(p_rerun)
 
@@ -1392,7 +1647,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     known_commands = {
         "start", "stop", "status", "logs", "test-send", "verify",
         "review-contact", "contact-review", "sweep", "pick-unprocessed", "recover",
-        "dashboard", "ui", "rerun",
+        "dashboard", "ui", "tasks", "rerun",
         "-h", "--help"
     }
     if argv and argv[0] not in known_commands and argv[0].startswith("-"):
@@ -1490,6 +1745,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         del p
         gc.collect()
         return cmd_dashboard(args)
+
+    elif subcommand == "tasks":
+        p = argparse.ArgumentParser(prog="webhook-hub tasks")
+        _add_tasks_args(p)
+        args = p.parse_args(sub_args)
+        args.subcommand = "tasks"
+        del p
+        gc.collect()
+        return cmd_tasks(args)
 
     elif subcommand == "rerun":
         p = argparse.ArgumentParser(prog="webhook-hub rerun")

@@ -52,7 +52,7 @@ def test_build_parser_subcommands():
     ]
     assert len(subparsers_action) == 1
     choices = subparsers_action[0].choices
-    expected_subcommands = {"start", "stop", "status", "logs", "test-send", "verify", "dashboard", "rerun"}
+    expected_subcommands = {"start", "stop", "status", "logs", "test-send", "verify", "dashboard", "tasks", "rerun"}
     assert expected_subcommands.issubset(set(choices.keys()))
 
 
@@ -587,6 +587,156 @@ def test_cmd_rerun_direct_sqlite(tmp_path, capsys):
     assert updated["error_message"] is None
     assert updated["retry_count"] == 1
     db.close()
+
+
+def test_cmd_tasks_list_and_filter(tmp_path, capsys):
+    """Verify `webhook-hub tasks` lists and filters tasks correctly."""
+    db_file = tmp_path / "test_cli_tasks.db"
+    db = DatabaseManager(str(db_file), cache_size=-16)
+    db.init_schema()
+
+    def insert_event(eid, src="production"):
+        db.insert_webhook_event({
+            "event_id": eid,
+            "source": src,
+            "payload_hash": f"hash_{eid}",
+            "headers_json": "{}",
+            "raw_payload": "{}",
+            "method": "POST",
+            "path": f"/webhook/{src}",
+            "status": "received",
+        })
+
+    # 1. Real succeeded task
+    insert_event("evt_1", "production")
+    db.insert_task({
+        "task_id": "tsk_real_succ_1",
+        "event_id": "evt_1",
+        "command": "python3 deploy.py",
+        "source": "production",
+        "status": "succeeded",
+        "exit_code": 0,
+    })
+
+    # 2. Synthetic test failed task
+    insert_event("evt_2", "default")
+    db.insert_task({
+        "task_id": "tsk_test_fail_2",
+        "event_id": "evt_2",
+        "command": "echo 'dedup_test'",
+        "source": "default",
+        "status": "failed",
+        "exit_code": 1,
+        "error_message": "test failure",
+    })
+
+    # 3. Real failed task
+    insert_event("evt_3", "production")
+    db.insert_task({
+        "task_id": "tsk_real_fail_3",
+        "event_id": "evt_3",
+        "command": "python3 /Users/vecsatfoxmailcom/worker.py",
+        "source": "production",
+        "status": "failed",
+        "exit_code": 2,
+        "error_message": "real failure",
+    })
+    db.close()
+
+    # Query all
+    code = main(["tasks", "--db", str(db_file)])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Total Found:  3 tasks" in out
+    assert "tsk_real_succ_1" in out
+    assert "tsk_test_fail_2" in out
+    assert "tsk_real_fail_3" in out
+
+    # Query failed only
+    code = main(["tasks", "--status", "failed", "--db", str(db_file)])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Total Found:  2 tasks" in out
+    assert "tsk_test_fail_2" in out
+    assert "tsk_real_fail_3" in out
+    assert "tsk_real_succ_1" not in out
+
+    # Query failed + real only (filters out test event)
+    code = main(["tasks", "--status", "failed", "--real", "--db", str(db_file)])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Total Found:  1 tasks" in out
+    assert "tsk_real_fail_3" in out
+    assert "tsk_test_fail_2" not in out
+
+    # Query JSON
+    code = main(["tasks", "--status", "failed", "--real", "--json", "--db", str(db_file)])
+    assert code == 0
+    out = capsys.readouterr().out
+    parsed = json.loads(out)
+    assert parsed["total"] == 1
+    assert parsed["tasks"][0]["task_id"] == "tsk_real_fail_3"
+
+
+def test_cmd_rerun_batch_failed(tmp_path, capsys):
+    """Verify `webhook-hub rerun --failed` re-enqueues failed tasks and respects --real-only."""
+    db_file = tmp_path / "test_cli_batch_rerun.db"
+    db = DatabaseManager(str(db_file), cache_size=-16)
+    db.init_schema()
+
+    def insert_event(eid, src="production"):
+        db.insert_webhook_event({
+            "event_id": eid,
+            "source": src,
+            "payload_hash": f"hash_{eid}",
+            "headers_json": "{}",
+            "raw_payload": "{}",
+            "method": "POST",
+            "path": f"/webhook/{src}",
+            "status": "received",
+        })
+
+    insert_event("evt_1", "default")
+    db.insert_task({
+        "task_id": "tsk_batch_test_1",
+        "event_id": "evt_1",
+        "command": "echo 'sweeper_recovered_test'",
+        "source": "default",
+        "status": "failed",
+        "exit_code": 1,
+    })
+
+    insert_event("evt_2", "production")
+    db.insert_task({
+        "task_id": "tsk_batch_real_2",
+        "event_id": "evt_2",
+        "command": "python3 /opt/app/real_sync.py",
+        "source": "production",
+        "status": "failed",
+        "exit_code": 1,
+    })
+
+    # Dry-run with --real-only
+    code = main(["rerun", "--failed", "--real-only", "--dry-run", "--db", str(db_file)])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Candidates:   1 task(s)" in out
+    assert "tsk_batch_real_2" in out
+    assert "tsk_batch_test_1" not in out
+
+    # Actual batch rerun with --real-only
+    code = main(["rerun", "--failed", "--real-only", "--db", str(db_file)])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Successfully re-enqueued 1/1 task(s)" in out
+
+    # Verify database state
+    real_task = db.get_task("tsk_batch_real_2")
+    assert real_task["status"] == "queued"
+    test_task = db.get_task("tsk_batch_test_1")
+    assert test_task["status"] == "failed"  # Should remain failed
+    db.close()
+
 
 
 
