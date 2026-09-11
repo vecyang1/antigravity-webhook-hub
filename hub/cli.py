@@ -133,6 +133,7 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
     from hub.routes.observability import register_observability_routes
     from hub.routes.sse import register_sse_routes
     from hub.routes.tasks import register_task_routes
+    from hub.routes.uptime_kuma import register_uptime_kuma_routes
     from hub.routes.webhook import register_webhook_routes
     from hub.server import AsyncHTTPServer
 
@@ -174,6 +175,7 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
 
     # 5. Wire System Routes
     register_webhook_routes(server, config, db_mgr, dispatcher, broker)
+    register_uptime_kuma_routes(server, config, db_mgr, dispatcher, broker)
     register_task_routes(server, config, db_mgr, dispatcher, broker)
     register_observability_routes(server, config, db_mgr, broker, dispatcher)
     register_sse_routes(server, config, db_mgr, broker)

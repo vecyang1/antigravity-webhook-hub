@@ -806,6 +806,12 @@ def wire_routes(
         pass
 
     try:
+        from hub.routes.uptime_kuma import register_uptime_kuma_routes
+        register_uptime_kuma_routes(server, config, db, dispatcher, broker)
+    except ImportError:
+        pass
+
+    try:
         from hub.routes.tasks import register_task_routes
         register_task_routes(server, config, db, dispatcher, broker)
     except ImportError:

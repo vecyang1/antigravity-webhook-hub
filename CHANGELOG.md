@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-09-11
+
+### Added
+- **Uptime Kuma Webhook Ingress & Self-Healing Dispatcher (`hub/routes/uptime_kuma.py`)**:
+  - Implemented dual endpoints `POST /api/webhook/uptime-kuma` and `POST /webhook/uptime-kuma` for real-time Uptime Kuma DOWN alerts.
+  - Bearer token authentication (`KUMA_WEBHOOK_BEARER_TOKEN` / `config.security.bearer_tokens`).
+  - Strict schema contract validation for heartbeat, monitor, and incident metadata.
+  - **Anti-Flap Jitter Debounce**: Instant active double-check HTTP probe upon DOWN alert. If probe succeeds immediately, alert is classified as `debounced_flap`, suppressed from firing alarms, and recorded in SQLite SSOT as `processed` (`flap_suppressed=True`).
+  - **Anti-Flap Cooldown Rate Limiting**: Enforces a 60-second in-memory suppression window per monitor ID to prevent triage storms.
+  - **Native macOS Observability**: Emits native macOS desktop banner notifications via AppleScript (`osascript`) upon confirmed outages and triage launches.
+  - **Autonomous Self-Healing Dispatch**: Asynchronously dispatches `00 - System/scripts/audit_maintenance_alert_triage.py` on confirmed outages with zero main-thread blocking.
+- **Two-Sided Test Suite (`tests/api/test_uptime_kuma_routes.py`)**:
+  - 10 automated test cases verifying legitimate UP, DOWN flap suppression, DOWN confirmed triage queueing, cooldown rate-limiting, legacy route backwards-compatibility, and adversarial paths (401 missing/invalid auth, 400 empty/malformed/missing fields) asserting zero database side effects on failure.
+
+### Fixed
+- **Port 9423 Ingress Collision**:
+  - Resolved port binding collision where Docker container `chatgpt2api` bound both `9423:80` and `10884:80`, intercepting Cloudflare Tunnel traffic. Re-bound `chatgpt2api` exclusively to `10884:80`, freeing port 9423 for Webhook Hub.
+
 ## [1.3.4] - 2026-09-10
 
 ### Fixed
