@@ -257,6 +257,11 @@ class TaskDispatcher:
         if self.broker:
             try:
                 await self.broker.publish("sweeper_run", summary)
+                # Also publish to 'events' topic so /events/stream subscribers receive it
+                sweeper_evt = dict(summary)
+                sweeper_evt["event"] = "sweeper_run"
+                sweeper_evt["type"] = "sweeper_run"
+                await self.broker.publish("events", sweeper_evt)
             except Exception as broker_err:
                 logger.debug("Failed to publish sweeper_run to broker: %s", broker_err)
 
@@ -382,6 +387,7 @@ class TaskDispatcher:
         if not self.broker:
             return
         payload = {
+            "event": "status_changed" if status not in ("succeeded", "failed", "timed_out") else "completed",
             "type": "status_changed",
             "task_id": task_id,
             "status": status,
@@ -399,6 +405,10 @@ class TaskDispatcher:
                 await self.broker.publish_event(task_id, "status_changed", payload)
             except Exception:
                 pass
+        try:
+            await self.broker.publish("events", payload)
+        except Exception:
+            pass
 
     async def execute_task(self, task_id: str) -> ExecutionResult:
         """
@@ -518,32 +528,6 @@ class TaskDispatcher:
 
                 stdout_lines.append(f"Emitted agent signal: {final_path}")
                 self._record_log(task_id, "stdout", stdout_lines[-1], execution_id=execution_id)
-
-                # Record observable activity in Antigravity sidecar data so it shows in Antigravity sidebar
-                try:
-                    sidecar_events_dir = Path.home() / ".gemini" / "antigravity" / "sidecar_data" / "webhook-hub-sentinel" / "events"
-                    sidecar_events_dir.mkdir(parents=True, exist_ok=True)
-                    now_ms = str(int(time.time() * 1000))
-                    ts_name = time.strftime("%Y%m%d_%H%M%S", time.gmtime()) + f".{int(now_ms[-3:]):03d}.json"
-                    event_payload = {
-                        "timestampMs": now_ms,
-                        "commandInvocationTimestampMs": now_ms,
-                        "error": "",
-                        "payload": {
-                            "newConversation": {
-                                "prompt": f"Antigravity Webhook Activity [{task_data.get('source', 'webhook')}]: {prompt_val}",
-                                "conversationId": str(uuid.uuid4()),
-                                "taskId": task_id,
-                                "source": task_data.get("source", "default"),
-                                "action": action_type,
-                            }
-                        }
-                    }
-                    (sidecar_events_dir / ts_name).write_text(json.dumps(event_payload), encoding="utf-8")
-                    stdout_lines.append(f"Recorded Antigravity sidebar activity: {ts_name}")
-                except Exception as sidecar_err:
-                    logger.debug("Failed to emit Antigravity sidecar activity event: %s", sidecar_err)
-
                 final_status = "succeeded"
             elif action_type in ("contact_review", "review_contact", "contact-review"):
                 # Antigravity Contact Review native in-process dispatch with live SSE and DB streaming
@@ -790,6 +774,19 @@ class TaskDispatcher:
 
         await self._broadcast_status(task_id, final_status, exit_code, error_message)
 
+        # Record observable activity in Antigravity sidecar_data store for sidebar visibility
+        try:
+            self._record_antigravity_sidebar_activity(
+                task_id=task_id,
+                task_data=task_data if isinstance(task_data, dict) else {},
+                status=final_status,
+                exit_code=exit_code,
+                error_message=error_message,
+                task_result_data=task_result_data,
+            )
+        except Exception as sidecar_err:
+            logger.debug("Failed to record Antigravity sidecar activity: %s", sidecar_err)
+
         res_obj = ExecutionResult(
             task_id=task_id,
             status=final_status,
@@ -821,3 +818,91 @@ class TaskDispatcher:
                 pass
 
         return res_obj
+
+    def _record_antigravity_sidebar_activity(
+        self,
+        task_id: str,
+        task_data: dict[str, Any],
+        status: str,
+        exit_code: Optional[int] = None,
+        error_message: Optional[str] = None,
+        task_result_data: Optional[dict[str, Any]] = None,
+    ) -> Optional[Path]:
+        """
+        Record observable activity event into Antigravity sidecar_data store
+        so webhook-triggered activities render in the Antigravity sidebar (Scheduled Tasks view).
+        """
+        obs_cfg = getattr(self.config, "observability", None)
+        enabled = getattr(obs_cfg, "enabled", True) if obs_cfg else True
+        emit = getattr(obs_cfg, "emit_sidecar_events", True) if obs_cfg else True
+        if not (enabled and emit):
+            return None
+
+        slug = getattr(obs_cfg, "sidecar_slug", "webhook-hub-sentinel") if obs_cfg else "webhook-hub-sentinel"
+        custom_dir = getattr(obs_cfg, "sidecar_data_dir", None) if obs_cfg else None
+
+        try:
+            if custom_dir:
+                base_dir = Path(custom_dir)
+            else:
+                base_dir = Path.home() / ".gemini" / "antigravity" / "sidecar_data"
+
+            events_dir = base_dir / slug / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+
+            source = str(task_data.get("source") or "webhook")
+            action_type = str(task_data.get("action_type") or "cli")
+
+            # Craft human-readable summary for Antigravity sidebar display
+            if action_type in ("agent_signal", "signal"):
+                action_params = task_data.get("action_params")
+                if not action_params and task_data.get("action_params_json"):
+                    action_params = task_data.get("action_params_json")
+                if isinstance(action_params, str):
+                    try:
+                        action_params = json.loads(action_params)
+                    except Exception:
+                        action_params = {}
+                if not isinstance(action_params, dict):
+                    action_params = {}
+                prompt_hint = action_params.get("prompt") or task_data.get("prompt") or task_data.get("command") or task_id
+                summary = f"Agent Signal [{source}]: {prompt_hint}"
+            elif action_type in ("contact_review", "review_contact", "contact-review"):
+                verdict = (task_result_data.get("verdict") if task_result_data else None) or status.upper()
+                target = (task_result_data.get("target_name") if task_result_data else None) or source
+                summary = f"Contact Review [{target}]: {verdict}"
+            else:
+                cmd_hint = task_data.get("command") or task_data.get("target_action") or task_id
+                summary = f"Webhook Task [{source}/{action_type}]: {cmd_hint}"
+
+            if status != "succeeded":
+                err_text = error_message or (f"Exit code {exit_code}" if exit_code is not None else f"Failed with status {status}")
+            else:
+                err_text = ""
+
+            now_ms = str(int(time.time() * 1000))
+            ts_name = time.strftime("%Y%m%d_%H%M%S", time.gmtime()) + f".{int(now_ms[-3:]):03d}.json"
+
+            event_payload = {
+                "timestampMs": now_ms,
+                "commandInvocationTimestampMs": now_ms,
+                "error": err_text,
+                "payload": {
+                    "newConversation": {
+                        "prompt": f"Antigravity Webhook Activity: {summary}",
+                        "conversationId": str(uuid.uuid4()),
+                        "taskId": task_id,
+                        "source": source,
+                        "action": action_type,
+                        "status": status,
+                        "exitCode": exit_code,
+                    }
+                },
+            }
+
+            event_file = events_dir / ts_name
+            event_file.write_text(json.dumps(event_payload), encoding="utf-8")
+            return event_file
+        except Exception as sidecar_err:
+            logger.debug("Failed to record Antigravity sidebar activity: %s", sidecar_err)
+            return None

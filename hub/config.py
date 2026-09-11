@@ -74,6 +74,14 @@ class SweeperConfig:
 
 
 @dataclass(slots=True)
+class ObservabilityConfig:
+    enabled: bool = True
+    sidecar_slug: str = "webhook-hub-sentinel"
+    emit_sidecar_events: bool = True
+    sidecar_data_dir: Optional[str] = None
+
+
+@dataclass(slots=True)
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
@@ -81,6 +89,7 @@ class AppConfig:
     dispatch: DispatchConfig = field(default_factory=DispatchConfig)
     tunnel: TunnelConfig = field(default_factory=TunnelConfig)
     sweeper: SweeperConfig = field(default_factory=SweeperConfig)
+    observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,6 +135,12 @@ class AppConfig:
                 "auto_retry_interrupted": self.sweeper.auto_retry_interrupted,
                 "max_auto_retries": self.sweeper.max_auto_retries,
                 "rehydrate_orphaned_events": self.sweeper.rehydrate_orphaned_events,
+            },
+            "observability": {
+                "enabled": self.observability.enabled,
+                "sidecar_slug": self.observability.sidecar_slug,
+                "emit_sidecar_events": self.observability.emit_sidecar_events,
+                "sidecar_data_dir": self.observability.sidecar_data_dir,
             },
         }
 
@@ -420,6 +435,16 @@ def load_config(
     if "SWEEPER_REHYDRATE_ORPHANED_EVENTS" in combined_env:
         cfg.sweeper.rehydrate_orphaned_events = _to_bool(combined_env["SWEEPER_REHYDRATE_ORPHANED_EVENTS"])
 
+    # Observability & Antigravity sidebar
+    if "ANTIGRAVITY_OBSERVABILITY_ENABLED" in combined_env:
+        cfg.observability.enabled = _to_bool(combined_env["ANTIGRAVITY_OBSERVABILITY_ENABLED"])
+    if "ANTIGRAVITY_SIDECAR_SLUG" in combined_env:
+        cfg.observability.sidecar_slug = str(combined_env["ANTIGRAVITY_SIDECAR_SLUG"])
+    if "ANTIGRAVITY_EMIT_SIDECAR_EVENTS" in combined_env:
+        cfg.observability.emit_sidecar_events = _to_bool(combined_env["ANTIGRAVITY_EMIT_SIDECAR_EVENTS"])
+    if "ANTIGRAVITY_SIDECAR_DATA_DIR" in combined_env:
+        cfg.observability.sidecar_data_dir = str(combined_env["ANTIGRAVITY_SIDECAR_DATA_DIR"])
+
     # 5. Apply CLI / Explicit overrides (highest precedence)
     if cli_overrides:
         for k, v in cli_overrides.items():
@@ -463,6 +488,12 @@ def load_config(
                         setattr(cfg.sweeper, k, int(v))
                     else:
                         setattr(cfg.sweeper, k, v)
+                elif hasattr(cfg.observability, k):
+                    curr = getattr(cfg.observability, k)
+                    if isinstance(curr, bool):
+                        setattr(cfg.observability, k, _to_bool(v))
+                    else:
+                        setattr(cfg.observability, k, v)
 
     return cfg
 

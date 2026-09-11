@@ -284,3 +284,28 @@ async def test_task_rerun_endpoint(obs_server: Any):
         task_ref = db.get_task("tsk_rerun_test_100")
         assert task_ref["status"] == "queued"
         assert task_ref["error_message"] is None
+
+
+async def test_head_method_support(obs_server: Any):
+    """Verify HTTP HEAD method on health and dashboard routes returns 200 OK with empty body."""
+    base_url, server, db = obs_server
+
+    async with httpx.AsyncClient() as client:
+        # HEAD /healthz
+        resp_healthz = await client.head(f"{base_url}/healthz")
+        assert resp_healthz.status_code == 200
+        assert resp_healthz.text == ""
+        assert "content-length" in resp_healthz.headers
+        assert int(resp_healthz.headers["content-length"]) > 0
+
+        # HEAD /health
+        resp_health = await client.head(f"{base_url}/health")
+        assert resp_health.status_code == 200
+        assert resp_health.text == ""
+
+        # HEAD /dashboard
+        resp_dash = await client.head(f"{base_url}/dashboard")
+        assert resp_dash.status_code == 200
+        assert resp_dash.text == ""
+        assert "text/html" in resp_dash.headers.get("content-type", "")
+        assert int(resp_dash.headers.get("content-length", "0")) > 0

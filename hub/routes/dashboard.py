@@ -1182,6 +1182,14 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       }}, 250);
     }}
 
+    let tasksRefreshTimeout = null;
+    function refreshTasksDebounced(delay = 150) {{
+      clearTimeout(tasksRefreshTimeout);
+      tasksRefreshTimeout = setTimeout(() => {{
+        refreshTasksAuthoritative();
+      }}, delay);
+    }}
+
     // Real-time Push Subscription via Server-Sent Events (SSE)
     function setupGlobalEventSource() {{
       if (state.globalEventSource) {{
@@ -1202,16 +1210,16 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       }};
 
       // Reactive update: when an event arrives, re-read authoritative state from SSOT
-      sse.addEventListener('status_change', (e) => {{
-        refreshTasksAuthoritative();
-      }});
-
-      sse.addEventListener('task_created', (e) => {{
-        refreshTasksAuthoritative();
-      }});
+      const onEventUpdate = () => refreshTasksDebounced(150);
+      sse.addEventListener('status_changed', onEventUpdate);
+      sse.addEventListener('completed', onEventUpdate);
+      sse.addEventListener('status_change', onEventUpdate);
+      sse.addEventListener('task_created', onEventUpdate);
+      sse.addEventListener('event', onEventUpdate);
+      sse.addEventListener('message', onEventUpdate);
 
       sse.addEventListener('sweeper_run', (e) => {{
-        refreshTasksAuthoritative();
+        refreshTasksDebounced(100);
         showToast('Auto-picker sweeper executed recovery pass', 'info');
       }});
     }}
@@ -1225,6 +1233,18 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
       const terminal = document.getElementById('drawerTerminal');
       terminal.innerHTML = '<span class="terminal-line-system">Fetching task details & logs...</span>\\n';
+
+      const MAX_TERMINAL_LINES = 500;
+      function appendTerminalLine(text, streamClass = 'terminal-line-stdout') {{
+        const div = document.createElement('div');
+        div.className = streamClass;
+        div.textContent = text;
+        terminal.appendChild(div);
+        while (terminal.children.length > MAX_TERMINAL_LINES) {{
+          terminal.removeChild(terminal.firstElementChild);
+        }}
+        terminal.scrollTop = terminal.scrollHeight;
+      }}
 
       try {{
         const resp = await fetch('/tasks/' + taskId);
@@ -1240,12 +1260,12 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           terminal.innerHTML = '';
           if (task.stdout) {{
             task.stdout.split('\\n').forEach(line => {{
-              terminal.innerHTML += `<div class="terminal-line-stdout">${{escapeHtml(line)}}</div>`;
+              appendTerminalLine(line, 'terminal-line-stdout');
             }});
           }}
           if (task.stderr) {{
             task.stderr.split('\\n').forEach(line => {{
-              terminal.innerHTML += `<div class="terminal-line-stderr">${{escapeHtml(line)}}</div>`;
+              appendTerminalLine(line, 'terminal-line-stderr');
             }});
           }}
           if (!task.stdout && !task.stderr) {{
@@ -1264,17 +1284,30 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       try {{
         const taskSse = new EventSource('/tasks/' + taskId + '/stream');
         state.drawerEventSource = taskSse;
-        taskSse.onmessage = (e) => {{
+        const handleChunk = (e) => {{
           try {{
             const chunk = JSON.parse(e.data);
-            const lineClass = chunk.stream === 'stderr' ? 'terminal-line-stderr' : 'terminal-line-stdout';
-            terminal.innerHTML += `<div class="${{lineClass}}">${{escapeHtml(chunk.line || chunk.chunk || e.data)}}</div>`;
-            terminal.scrollTop = terminal.scrollHeight;
+            const streamClass = chunk.stream === 'stderr' ? 'terminal-line-stderr' : 'terminal-line-stdout';
+            appendTerminalLine(chunk.line || chunk.chunk || e.data, streamClass);
+            if (chunk.status) {{
+              document.getElementById('drawerTaskStatus').innerText = chunk.status;
+              document.getElementById('drawerTaskStatus').className = 'badge badge-' + chunk.status;
+            }}
           }} catch (_) {{
-            terminal.innerHTML += `<div class="terminal-line-stdout">${{escapeHtml(e.data)}}</div>`;
-            terminal.scrollTop = terminal.scrollHeight;
+            appendTerminalLine(e.data, 'terminal-line-stdout');
           }}
         }};
+        taskSse.addEventListener('log', handleChunk);
+        taskSse.addEventListener('message', handleChunk);
+        taskSse.addEventListener('status_changed', (e) => {{
+          handleChunk(e);
+          refreshTasksDebounced(200);
+        }});
+        taskSse.addEventListener('completed', (e) => {{
+          handleChunk(e);
+          refreshTasksDebounced(100);
+        }});
+        taskSse.onmessage = handleChunk;
       }} catch (_) {{}}
     }}
 

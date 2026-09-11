@@ -300,3 +300,112 @@ async def test_agent_signal_sidecar_event_emission(dashboard_test_app: dict[str,
         assert "newConversation" in content["payload"]
         prompt_text = content["payload"]["newConversation"]["prompt"]
         assert "Inspect high error rate" in prompt_text
+        assert content["error"] == ""
+
+
+async def test_cli_failure_sidecar_event_records_error(dashboard_test_app: dict[str, Any], tmp_path: Path):
+    """Verify task dispatcher emits Antigravity sidecar activity events with error for failed tasks."""
+    dispatcher: TaskDispatcher = dashboard_test_app["dispatcher"]
+    db: DatabaseManager = dashboard_test_app["db"]
+
+    fake_home = tmp_path / "fake_home_err"
+    fake_home.mkdir()
+
+    with patch("hub.dispatcher.Path.home", return_value=fake_home):
+        evt_id = "evt_fail_test_1"
+        task_id = "tsk_fail_test_1"
+        db.insert_webhook_event({
+            "event_id": evt_id,
+            "source": "cli_monitor",
+            "payload_hash": "8" * 64,
+            "headers_json": "{}",
+            "raw_payload": "{}",
+            "method": "POST",
+            "path": "/webhook",
+            "status": "received",
+        })
+        db.insert_task({
+            "task_id": task_id,
+            "event_id": evt_id,
+            "command": "python3 -c 'import sys; sys.exit(42)'",
+            "source": "cli_monitor",
+            "action_type": "cli",
+            "status": "queued",
+        })
+
+        # Run task execution via dispatcher
+        await dispatcher.execute_task(task_id)
+
+        # Verify sidecar event json file was created with error populated
+        events_dir = fake_home / ".gemini" / "antigravity" / "sidecar_data" / "webhook-hub-sentinel" / "events"
+        assert events_dir.exists()
+        event_files = list(events_dir.glob("*.json"))
+        assert len(event_files) >= 1
+
+        content = json.loads(event_files[0].read_text(encoding="utf-8"))
+        assert "payload" in content
+        assert content["error"] != ""
+        assert "42" in content["error"]
+        assert content["payload"]["newConversation"]["status"] == "failed"
+        assert content["payload"]["newConversation"]["exitCode"] == 42
+
+
+async def test_sse_global_events_receive_status_changed_and_sweeper(dashboard_test_app: dict[str, Any]):
+    """Verify global events broker receives status_changed and sweeper_run events."""
+    dispatcher: TaskDispatcher = dashboard_test_app["dispatcher"]
+    broker: EventBroker = dashboard_test_app["broker"]
+    db: DatabaseManager = dashboard_test_app["db"]
+
+    q = broker.subscribe("events")
+    try:
+        evt_id = "evt_sse_test_1"
+        task_id = "tsk_sse_test_1"
+        db.insert_webhook_event({
+            "event_id": evt_id,
+            "source": "sse_source",
+            "payload_hash": "7" * 64,
+            "headers_json": "{}",
+            "raw_payload": "{}",
+            "method": "POST",
+            "path": "/webhook",
+            "status": "received",
+        })
+        db.insert_task({
+            "task_id": task_id,
+            "event_id": evt_id,
+            "command": "echo sse_test_output",
+            "source": "sse_source",
+            "action_type": "cli",
+            "status": "queued",
+        })
+
+        await dispatcher.execute_task(task_id)
+
+        # Drain events received on global queue
+        received_events = []
+        for _ in range(5):
+            try:
+                msg = q.get_nowait()
+                received_events.append(msg)
+            except Exception:
+                break
+
+        # Check status_changed or completed is among events
+        status_types = [m.get("event") or m.get("type") for m in received_events if isinstance(m, dict)]
+        assert any(t in ("status_changed", "completed") for t in status_types), f"Got {status_types}"
+
+        # Trigger sweep and verify sweeper_run received on events topic
+        await dispatcher.sweep_unprocessed_tasks(reason="test_sse")
+        sweep_events = []
+        for _ in range(5):
+            try:
+                msg = q.get_nowait()
+                sweep_events.append(msg)
+            except Exception:
+                break
+
+        sweep_types = [m.get("event") or m.get("type") for m in sweep_events if isinstance(m, dict)]
+        assert "sweeper_run" in sweep_types, f"Got {sweep_types}"
+
+    finally:
+        broker.unsubscribe("events", q)

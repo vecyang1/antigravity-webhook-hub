@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-09-11
+
+### Fixed
+- **HTTP HEAD Method Support (`hub/server.py`, `tests/api/test_observability_routes.py`)**:
+  - Implemented HTTP `HEAD` method handling in `AsyncHTTPServer`: fallback route matching against GET routes and empty body delivery while preserving calculated `Content-Length` headers.
+  - Prevents 405 Method Not Allowed responses when external uptime monitors (Uptime Kuma, Coolify, Cloudflare) probe `/healthz`, `/health`, or `/dashboard`.
+- **Sidecar Observability Hardening & Generalized Emission (`hub/config.py`, `hub/dispatcher.py`)**:
+  - Added `ObservabilityConfig` (`enabled`, `sidecar_slug`, `emit_sidecar_events`, `sidecar_data_dir`) with environment variable parsing (`ANTIGRAVITY_OBSERVABILITY_ENABLED`, etc.) and flat override support.
+  - Generalized Antigravity sidebar activity logging to record all task execution types (`agent_signal`, `contact_review`, `cli`, `launchd`), not only `agent_signal`.
+  - Fixed `action_params_json` payload extraction so task prompts and summaries are properly rendered in the Antigravity sidebar.
+  - Added failure error capturing (`error` field populated) so failed tasks render appropriate visual failure indicators in the IDE sidebar.
+- **SSE Broker Synchronization & Dashboard Performance (`hub/dispatcher.py`, `hub/routes/dashboard.py`)**:
+  - Wired `TaskDispatcher._broadcast_status` and `sweep_unprocessed_tasks` to publish on the global `"events"` topic with standard broker event names (`status_changed`, `completed`, `sweeper_run`).
+  - Aligned dashboard frontend event listeners with broker event names to ensure instant UI state transitions.
+  - Replaced unbounded `innerHTML +=` string concatenation with bounded (500-line capped) DOM element appending and debounced (150ms) task refreshing to eliminate DOM re-parsing overhead and UI stutter during high-throughput log streaming.
+- **E2E Verification Suite Expansion (`scripts/verify_e2e.py`)**:
+  - Expanded `scripts/verify_e2e.py` from 10 to 12 automated checks, adding automated testing of UI routes (`/dashboard`, `/ui`), `/health`, `/tasks/summary`, HTTP HEAD method, and sidecar sentinel JSON activity event emission.
+
 ## [1.5.0] - 2026-09-11
 
 ### Added

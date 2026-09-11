@@ -277,9 +277,15 @@ class AsyncHTTPServer:
         if exact_key in self._exact_routes:
             return self._exact_routes[exact_key], {}, False
 
+        # Fallback to GET for HEAD requests
+        if method == "HEAD":
+            get_key = ("GET", norm_path)
+            if get_key in self._exact_routes:
+                return self._exact_routes[get_key], {}, False
+
         # 2. Pattern match
         for r_pattern in self._pattern_routes:
-            if r_pattern.method == method:
+            if r_pattern.method == method or (method == "HEAD" and r_pattern.method == "GET"):
                 params = r_pattern.match(norm_path)
                 if params is not None:
                     return r_pattern.handler, params, False
@@ -535,7 +541,7 @@ class AsyncHTTPServer:
 
                 # 7. Write HTTP Response
                 should_keep_alive = client_wants_keep_alive and (response.status_code < 500)
-                await self._write_response(writer, response, should_keep_alive)
+                await self._write_response(writer, response, should_keep_alive, is_head=(method == "HEAD"))
 
                 is_stream_resp = response.is_stream
                 del body
@@ -574,9 +580,10 @@ class AsyncHTTPServer:
         self,
         writer: asyncio.StreamWriter,
         response: HTTPResponse,
-        keep_alive: bool,
+        keep_alive: bool = True,
+        is_head: bool = False,
     ) -> None:
-        """Serialize and send HTTP/1.1 response over writer."""
+        """Serialize and write HTTPResponse to asyncio.StreamWriter."""
         status_reasons = {
             200: "OK",
             201: "Created",
@@ -616,6 +623,14 @@ class AsyncHTTPServer:
             header_lines.append("\r\n")
             writer.write("".join(header_lines).encode("latin1"))
             await writer.drain()
+
+            if is_head:
+                if hasattr(response.stream_generator, "aclose"):
+                    try:
+                        await response.stream_generator.aclose()
+                    except Exception:
+                        pass
+                return
 
             # Stream chunks using HTTP/1.1 chunked encoding
             try:
@@ -657,7 +672,7 @@ class AsyncHTTPServer:
             header_lines.append("\r\n")
 
             writer.write("".join(header_lines).encode("latin1"))
-            if response.body:
+            if response.body and not is_head:
                 writer.write(response.body)
             await writer.drain()
 

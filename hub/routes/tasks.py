@@ -511,6 +511,8 @@ def register_task_routes(
     server.add_route("GET", "/tasks", handle_tasks_list)
     server.add_route("GET", "/tasks/summary", handle_tasks_summary)
     server.add_route("GET", "/activities/summary", handle_tasks_summary)
+    server.add_route("GET", "/api/tasks/summary", handle_tasks_summary)
+    server.add_route("GET", "/api/activities/summary", handle_tasks_summary)
     server.add_route("GET", "/tasks/unprocessed", handle_unprocessed_tasks)
     server.add_route("POST", "/tasks/sweep", handle_sweep_tasks)
     server.add_route("GET", "/tasks/{task_id}", handle_task_detail)
