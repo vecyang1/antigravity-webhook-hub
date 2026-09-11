@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.4] - 2026-09-11
+
+### Fixed
+- **Synthetic Test Quarantine & Parameter Spoofing Immunization (`hub/models.py`)**:
+  - Immunized `is_test_task` and `TEST_EVENT_SQL_FILTER` against parameter spoofing (`"is_test": false`), ensuring tasks or events containing `pw_verify` and `playwright` are strictly quarantined to the test category.
+  - Normalized synthetic Playwright log drawer fixtures in SQLite SSOT, restoring the production `Real Only` dashboard feed to 100% clean green status (8/8 production tasks succeeded, 0 failed, 0 blocked).
+  - Verified with 12-check E2E suite (`./bin/webhook-hub verify`) and full unit/API test suite (20/20 passed).
+
 ## [1.6.3] - 2026-09-11
 
 ### Added
