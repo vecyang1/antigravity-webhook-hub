@@ -238,10 +238,13 @@ Accepts incoming webhook payloads. Returns `202 Accepted` immediately upon crypt
 
 ---
 
-### Observability Endpoints
+### Observability & UI Endpoints
 
-#### `GET /healthz`
-Returns system liveness, database status, and memory RSS validation.
+#### `GET /dashboard` or `GET /ui`
+Observable Web Dashboard and Activity Console (embedded single-page application with dark mode UI, live Server-Sent Events activity feed, search/filter controls, and interactive test simulation drawer).
+
+#### `GET /healthz` or `GET /health`
+Returns system liveness, database status, and memory RSS validation (supports both GET and HEAD methods for uptime monitors).
 ```json
 {
   "status": "ok",
@@ -251,12 +254,34 @@ Returns system liveness, database status, and memory RSS validation.
     "status": "connected"
   },
   "system": {
-    "memory_rss_mb": 28.5,
+    "memory_rss_mb": 19.3,
     "memory_healthy": true,
     "memory_budget_mb": 30.0
   }
 }
 ```
+
+#### `GET /tasks/summary` (or `/activities/summary`)
+Returns aggregate counts and status breakdowns directly from the SQLite Single Source of Truth (SSOT).
+```json
+{
+  "status": "success",
+  "total_tasks": 100,
+  "total_events": 108,
+  "by_status": {
+    "queued": 0,
+    "running": 0,
+    "succeeded": 97,
+    "failed": 2,
+    "timed_out": 1
+  },
+  "by_source": {"default": 79, "contact-review": 14},
+  "by_action": {"cli": 86, "contact_review": 14}
+}
+```
+
+#### `POST /tasks/{task_id}/rerun`
+Re-enqueues an existing task into SQLite SSOT and dispatcher queue for immediate execution retry.
 
 #### `GET /ready`
 Readiness probe verifying database connectivity and task dispatcher worker availability. Returns `200 OK` when ready, or `503 Service Unavailable`.
@@ -328,7 +353,7 @@ Subscribes to live execution logs and progress events exclusively scoped to a si
 
 ### 1. Standalone End-to-End Verification Suite
 
-Run the zero-dependency verification script covering the complete 10-point contract:
+Run the zero-dependency verification script covering the complete 12-point contract:
 
 ```bash
 python3 scripts/verify_e2e.py
@@ -347,6 +372,8 @@ Verification suite checks:
 8. Adversarial: Duplicate payload deduplication (`202 Accepted`, single execution)
 9. Adversarial: Subprocess timeout & process group termination
 10. Auto-Picker & Unprocessed Task Sweeper (recovers orphaned events & stale running tasks)
+11. Dashboard, Observability UI & HEAD Support (`/dashboard`, `/ui`, `/health`, `/tasks/summary`, `HEAD`)
+12. Antigravity Sidebar Sentinel Activity Emission (verifies sidecar JSON files with valid schema)
 
 ### 2. Comprehensive Test Suite
 
