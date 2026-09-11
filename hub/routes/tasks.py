@@ -14,7 +14,7 @@ import uuid
 from typing import Any, Optional
 
 from hub.config import AppConfig
-from hub.models import HTTPRequest, HTTPResponse
+from hub.models import HTTPRequest, HTTPResponse, TEST_EVENT_SQL_FILTER, is_test_task
 from hub.server import AsyncHTTPServer
 
 logger = logging.getLogger("hub.routes.tasks")
@@ -37,6 +37,16 @@ def register_task_routes(
         source_filter = req.query_params.get("source")
         action_filter = req.query_params.get("action_type") or req.query_params.get("action")
         search_query = req.query_params.get("q") or req.query_params.get("search")
+
+        filter_test = (req.query_params.get("filter_test") or req.query_params.get("test_filter") or "").lower().strip()
+        hide_test_param = (req.query_params.get("hide_test") or req.query_params.get("hide_tests") or "").lower().strip()
+        is_test_param = (req.query_params.get("is_test") or "").lower().strip()
+
+        test_mode = "all"
+        if hide_test_param in ("true", "1", "yes") or filter_test in ("hide", "real", "production") or is_test_param in ("0", "false"):
+            test_mode = "real"
+        elif filter_test in ("only", "test", "synthetic") or is_test_param in ("1", "true"):
+            test_mode = "test"
 
         try:
             limit = min(max(1, int(req.query_params.get("limit", 50))), 500)
@@ -65,6 +75,10 @@ def register_task_routes(
                 if action_filter:
                     where_clauses.append("action_type = ?")
                     params.append(action_filter)
+                if test_mode == "real":
+                    where_clauses.append(f"NOT {TEST_EVENT_SQL_FILTER}")
+                elif test_mode == "test":
+                    where_clauses.append(TEST_EVENT_SQL_FILTER)
                 if search_query:
                     where_clauses.append(
                         "(task_id LIKE ? OR event_id LIKE ? OR command LIKE ? OR target_action LIKE ?)"
@@ -82,7 +96,15 @@ def register_task_routes(
                 count_rows = await db.execute_read(count_sql, tuple(count_params))
                 total_count = count_rows[0].get("cnt", 0) if count_rows else 0
 
-                tasks = await db.execute_read(query_sql, tuple(fetch_params))
+                raw_tasks = await db.execute_read(query_sql, tuple(fetch_params))
+                tasks = [dict(t) for t in raw_tasks]
+                for t in tasks:
+                    t["is_test"] = is_test_task(t)
+
+                if test_mode == "real":
+                    tasks = [t for t in tasks if not t["is_test"]]
+                elif test_mode == "test":
+                    tasks = [t for t in tasks if t["is_test"]]
             except Exception as e:
                 logger.warning("Error querying tasks list: %s", e)
 
@@ -93,6 +115,7 @@ def register_task_routes(
                 "count": len(tasks),
                 "limit": limit,
                 "offset": offset,
+                "filter_test": test_mode,
             },
             status_code=200,
         )
@@ -431,14 +454,25 @@ def register_task_routes(
                 evt_rows = await db.execute_read("SELECT COUNT(*) as cnt FROM webhook_events")
                 if evt_rows:
                     total_events = int(evt_rows[0].get("cnt", 0))
+
+                real_rows = await db.execute_read(f"SELECT COUNT(*) as cnt FROM tasks WHERE NOT {TEST_EVENT_SQL_FILTER}")
+                real_tasks = int(real_rows[0].get("cnt", 0)) if real_rows else 0
+                test_tasks = max(0, total_tasks - real_tasks)
             except Exception as e:
                 logger.warning("Error aggregating tasks summary: %s", e)
+                real_tasks = 0
+                test_tasks = 0
+        else:
+            real_tasks = 0
+            test_tasks = 0
 
         return HTTPResponse.json(
             {
                 "status": "success",
                 "total_tasks": total_tasks,
                 "total_events": total_events,
+                "real_tasks": real_tasks,
+                "test_tasks": test_tasks,
                 "by_status": counts_by_status,
                 "by_source": counts_by_source,
                 "by_action": counts_by_action,

@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.2] - 2026-09-11
+
+### Added
+- **Test Event Auto-Hide & Observability Filter (`hub/routes/dashboard.py`, `hub/routes/tasks.py`, `hub/models.py`)**:
+  - Added dedicated test event filter toggle button and segmented pill controls (`Real Only`, `All Events`, `Tests Only`) with live badge counts in Dashboard table header and topbar.
+  - Implemented automatic classification of synthetic verification tasks (e.g. E2E runner tests, sweeper verification tasks, test-send events, tasks with `echo '...'`, `test_`, `nonce`, or `dry_run: true`).
+  - Added `filter_test` (`real`, `all`, `test`), `hide_test` (`true`/`false`), and `is_test` (`0`/`1`) query parameter filtering on `GET /tasks` supporting SQLite-level condition pruning and Python model enrichment (`is_test: bool`).
+  - Added `real_tasks` and `test_tasks` metrics to `GET /tasks/summary` for instant SSOT metric aggregation.
+  - Added visual `[REAL]` and `[TEST]` status badges on every activity row in the dashboard table.
+  - Added "Real Tasks (Production)" metric card alongside "Total Tasks" in the dashboard metrics grid.
+  - Persisted user filter preference in browser `localStorage` (`antigravity_hub_filter_mode`), defaulting to 'real' so production events are immediately visible without synthetic clutter.
+  - Added comprehensive test `test_tasks_test_event_filtering_and_classification` in `tests/api/test_dashboard_routes.py`.
+- **Scheduled Cadence Sentinel Rescheduled to Daily Midnight (`CAD-20260911-webhook-hub-sentinel`)**:
+  - Rescheduled Antigravity sidecar (`~/.gemini/config/sidecars/webhook-hub-sentinel/sidecar.json`) and 2nd Brain cadence command card (`CAD-20260911-webhook-hub-sentinel`) from 4-hourly (`0 */4 * * *`) to daily midnight (`0 0 * * *`).
+  - Integrated 12-check E2E verification (`./bin/webhook-hub verify`), automated bug diagnosis in `webhook-hub.log`, auto-remediation, and full Chinese output for the daily health sweep.
+
+### Fixed
+- **Cloudflare Tunnel Dashboard URL Standard Port 443 (`hub/cli.py`, `tests/unit/test_cli.py`)**:
+  - Corrected tunnel dashboard URL from `https://webhook.worldinspirelab.com:9423/dashboard` to `https://webhook.worldinspirelab.com/dashboard`, eliminating non-standard port 9423 on public Cloudflare Tunnel ingress while preserving port 9423 on local loopback URL (`http://127.0.0.1:9423/dashboard`).
+  - Updated CLI unit test expectation in `tests/unit/test_cli.py`.
+
 ## [1.5.1] - 2026-09-11
 
 ### Fixed

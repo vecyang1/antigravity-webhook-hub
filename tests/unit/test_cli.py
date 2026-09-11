@@ -537,7 +537,7 @@ def test_cmd_dashboard_output(capsys):
     captured = capsys.readouterr()
     assert "Antigravity Webhook Hub" in captured.out
     assert "http://127.0.0.1:9423/dashboard" in captured.out
-    assert "https://webhook.worldinspirelab.com:9423/dashboard" in captured.out
+    assert "https://webhook.worldinspirelab.com/dashboard" in captured.out
 
     # JSON mode
     code_json = main(["dashboard", "--json"])

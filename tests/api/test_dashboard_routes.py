@@ -91,6 +91,15 @@ async def test_dashboard_and_ui_html_rendering(dashboard_test_app: dict[str, Any
         assert "🚀" not in body
         assert "🎨" not in body
 
+        # Ensure filter toggle and pill controls are present
+        assert "toggleFilterBtn" in body
+        assert "filter-pill-group" in body
+        assert "pillReal" in body
+        assert "pillTest" in body
+        assert "statRealTasks" in body
+        assert "badge-test" in body
+        assert "badge-real" in body
+
         # 2. /ui alias
         resp_ui = await client.get(f"{base_url}/ui")
         assert resp_ui.status_code == 200
@@ -409,3 +418,126 @@ async def test_sse_global_events_receive_status_changed_and_sweeper(dashboard_te
 
     finally:
         broker.unsubscribe("events", q)
+
+
+async def test_tasks_test_event_filtering_and_classification(dashboard_test_app: dict[str, Any]):
+    """Verify test event detection, SQL/in-memory filtering, and summary metrics."""
+    base_url = dashboard_test_app["base_url"]
+    db: DatabaseManager = dashboard_test_app["db"]
+
+    # 1. Insert genuine production tasks
+    db.insert_webhook_event({
+        "event_id": "evt_real_prod_1",
+        "source": "slack_people",
+        "payload_hash": "a" * 64,
+        "headers_json": "{}",
+        "raw_payload": '{"contact": {"name": "Alice Wong", "company": "Inspire Labs"}}',
+        "method": "POST",
+        "path": "/webhook/slack_people",
+        "status": "received",
+    })
+    db.insert_task({
+        "task_id": "tsk_real_prod_1",
+        "event_id": "evt_real_prod_1",
+        "command": "bin/webhook-hub review-contact",
+        "source": "slack_people",
+        "action_type": "contact_review",
+        "action_params_json": json.dumps({"contact": {"name": "Alice Wong", "company": "Inspire Labs"}}),
+        "status": "succeeded",
+    })
+
+    # 2. Insert synthetic / test tasks
+    # 2a. Echo command verification task
+    db.insert_task({
+        "task_id": "tsk_synth_echo",
+        "event_id": "evt_synth_echo",
+        "command": "echo 'step2_evt_verify_123456'",
+        "target_action": "echo 'step2_evt_verify_123456'",
+        "source": "default",
+        "action_type": "cli",
+        "action_params_json": "{}",
+        "status": "succeeded",
+    })
+    # 2b. Nonce test task
+    db.insert_task({
+        "task_id": "tsk_synth_nonce",
+        "event_id": "evt_synth_nonce",
+        "command": "echo 'dedup_test'",
+        "source": "default",
+        "action_type": "cli",
+        "action_params_json": json.dumps({"action": "cli", "nonce": "abc12345"}),
+        "status": "succeeded",
+    })
+    # 2c. CLI test-send source task
+    db.insert_task({
+        "task_id": "tsk_synth_cli_send",
+        "event_id": "evt_synth_cli_send",
+        "command": "echo 'test payload'",
+        "source": "cli_test_send",
+        "action_type": "cli",
+        "action_params_json": json.dumps({"source": "cli_test_send"}),
+        "status": "succeeded",
+    })
+    # 2d. Sweeper orphan recovered task
+    db.insert_task({
+        "task_id": "tsk_synth_sweeper",
+        "event_id": "evt_orphan_99999",
+        "command": "echo 'sweeper_recovered_evt_orphan_99999'",
+        "source": "default",
+        "action_type": "cli",
+        "action_params_json": "{}",
+        "status": "succeeded",
+    })
+
+    async with httpx.AsyncClient() as client:
+        # Default GET /tasks: returns all tasks with is_test tag
+        resp_all = await client.get(f"{base_url}/tasks")
+        assert resp_all.status_code == 200
+        data_all = resp_all.json()
+        all_tasks = data_all["tasks"]
+        task_map = {t["task_id"]: t for t in all_tasks}
+
+        assert task_map["tsk_real_prod_1"]["is_test"] is False
+        assert task_map["tsk_synth_echo"]["is_test"] is True
+        assert task_map["tsk_synth_nonce"]["is_test"] is True
+        assert task_map["tsk_synth_cli_send"]["is_test"] is True
+        assert task_map["tsk_synth_sweeper"]["is_test"] is True
+
+        # Filter mode 'real': hide test tasks
+        resp_real = await client.get(f"{base_url}/tasks?filter_test=real")
+        assert resp_real.status_code == 200
+        data_real = resp_real.json()
+        real_ids = [t["task_id"] for t in data_real["tasks"]]
+        assert "tsk_real_prod_1" in real_ids
+        assert "tsk_synth_echo" not in real_ids
+        assert "tsk_synth_nonce" not in real_ids
+        assert "tsk_synth_cli_send" not in real_ids
+        assert "tsk_synth_sweeper" not in real_ids
+        assert all(t["is_test"] is False for t in data_real["tasks"])
+
+        # Also support hide_test=true
+        resp_hide = await client.get(f"{base_url}/tasks?hide_test=true")
+        assert resp_hide.status_code == 200
+        assert [t["task_id"] for t in resp_hide.json()["tasks"]] == real_ids
+
+        # Filter mode 'test': only test tasks
+        resp_test = await client.get(f"{base_url}/tasks?filter_test=test")
+        assert resp_test.status_code == 200
+        data_test = resp_test.json()
+        test_ids = [t["task_id"] for t in data_test["tasks"]]
+        assert "tsk_real_prod_1" not in test_ids
+        assert "tsk_synth_echo" in test_ids
+        assert "tsk_synth_nonce" in test_ids
+        assert "tsk_synth_cli_send" in test_ids
+        assert "tsk_synth_sweeper" in test_ids
+        assert all(t["is_test"] is True for t in data_test["tasks"])
+
+        # GET /tasks/summary includes real_tasks and test_tasks
+        resp_summary = await client.get(f"{base_url}/tasks/summary")
+        assert resp_summary.status_code == 200
+        summary = resp_summary.json()
+        assert "real_tasks" in summary
+        assert "test_tasks" in summary
+        assert summary["real_tasks"] >= 1
+        assert summary["test_tasks"] >= 4
+

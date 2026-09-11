@@ -1023,7 +1023,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     host = getattr(args, "host", "127.0.0.1")
     port = getattr(args, "port", 9423)
     local_url = f"http://{host}:{port}/dashboard"
-    tunnel_url = "https://webhook.worldinspirelab.com:9423/dashboard"
+    tunnel_url = "https://webhook.worldinspirelab.com/dashboard"
 
     health_url = f"http://{host}:{port}/healthz"
     is_running = False

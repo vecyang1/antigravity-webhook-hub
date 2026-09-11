@@ -500,6 +500,76 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     .task-id-code:hover {{
       text-decoration: underline;
     }}
+    /* Event Filter Controls */
+    .filter-pill-group {{
+      display: inline-flex;
+      align-items: center;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 2px;
+      gap: 2px;
+    }}
+    .filter-pill {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 4px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }}
+    .filter-pill:hover {{
+      color: var(--text-main);
+      background: var(--bg-hover);
+    }}
+    .filter-pill.active {{
+      background: var(--accent-blue);
+      color: #ffffff;
+    }}
+    .filter-pill .pill-badge {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: 9px;
+      font-size: 10px;
+      font-weight: 700;
+      background: rgba(0, 0, 0, 0.35);
+      color: var(--text-muted);
+    }}
+    .filter-pill.active .pill-badge {{
+      background: rgba(255, 255, 255, 0.25);
+      color: #ffffff;
+    }}
+    .badge-test {{
+      background: rgba(148, 163, 184, 0.15);
+      color: #94a3b8;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      font-size: 10px;
+      padding: 1px 6px;
+      text-transform: uppercase;
+    }}
+    .badge-real {{
+      background: rgba(16, 185, 129, 0.15);
+      color: #10b981;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      font-size: 10px;
+      padding: 1px 6px;
+      text-transform: uppercase;
+    }}
+    .btn-filter-active {{
+      background: rgba(59, 130, 246, 0.2) !important;
+      border-color: var(--accent-blue) !important;
+      color: #93c5fd !important;
+    }}
     /* Drawer */
     .drawer-overlay {{
       position: fixed;
@@ -846,6 +916,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           <div class="view-title" id="viewTitle">All Activities</div>
         </div>
         <div class="topbar-right">
+          <button id="toggleFilterBtn" class="btn btn-secondary btn-filter-active" onclick="toggleTestFilter()" title="Toggle: Auto-hide synthetic test events vs show all events">
+            <svg id="filterEyeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span id="toggleFilterText">Real Only (Tests Hidden)</span>
+          </button>
           <div class="search-input-wrapper">
             <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
             <input type="text" id="taskSearchInput" class="search-input" placeholder="Search tasks, events, actions..." oninput="handleSearchInput(this.value)">
@@ -861,6 +935,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       <div class="content-viewport">
         <!-- Metric Cards -->
         <div class="metric-grid">
+          <div class="metric-box">
+            <span class="metric-box-title">Real Tasks (Production)</span>
+            <span class="metric-box-value" style="color: var(--status-success);" id="statRealTasks">0</span>
+          </div>
           <div class="metric-box">
             <span class="metric-box-title">Total Tasks</span>
             <span class="metric-box-value" id="statTotalTasks">0</span>
@@ -882,8 +960,25 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         <!-- Task Table Card -->
         <div class="table-card">
           <div class="table-header">
-            <div class="table-title">Activity Feed & Execution Registry</div>
-            <div style="font-size: 12px; color: var(--text-muted);" id="tableSubtitle">Showing latest tasks</div>
+            <div>
+              <div class="table-title">Activity Feed & Execution Registry</div>
+              <div style="font-size: 12px; color: var(--text-muted);" id="tableSubtitle">Showing latest tasks</div>
+            </div>
+            <div class="filter-pill-group" role="group" aria-label="Event Filter Mode">
+              <button id="pillReal" class="filter-pill active" onclick="setEventFilterMode('real')" title="Show only real production events">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>Real Only</span>
+                <span class="pill-badge" id="pillRealCount">0</span>
+              </button>
+              <button id="pillAll" class="filter-pill" onclick="setEventFilterMode('all')" title="Show all activities (real and tests)">
+                <span>All Events</span>
+                <span class="pill-badge" id="pillAllCount">0</span>
+              </button>
+              <button id="pillTest" class="filter-pill" onclick="setEventFilterMode('test')" title="Show only synthetic test events">
+                <span>Tests Only</span>
+                <span class="pill-badge" id="pillTestCount">0</span>
+              </button>
+            </div>
           </div>
           <div class="table-wrapper">
             <table>
@@ -995,6 +1090,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     const state = {{
       tasks: [],
       categoryFilter: 'all',
+      eventFilterMode: localStorage.getItem('antigravity_hub_filter_mode') || 'real',
       searchQuery: '',
       activeTaskId: null,
       drawerEventSource: null,
@@ -1068,6 +1164,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           url += '&status=failed';
         }}
 
+        if (state.eventFilterMode) {{
+          url += '&filter_test=' + encodeURIComponent(state.eventFilterMode);
+        }}
+
         if (state.searchQuery.trim()) {{
           url += '&q=' + encodeURIComponent(state.searchQuery.trim());
         }}
@@ -1099,18 +1199,31 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     }}
 
     function renderSummary(summary) {{
-      document.getElementById('statTotalTasks').innerText = summary.total_tasks || 0;
+      const totalTasks = summary.total_tasks || 0;
+      const realTasks = summary.real_tasks !== undefined ? summary.real_tasks : 0;
+      const testTasks = summary.test_tasks !== undefined ? summary.test_tasks : Math.max(0, totalTasks - realTasks);
+
+      document.getElementById('statTotalTasks').innerText = totalTasks;
+      const elRealTasks = document.getElementById('statRealTasks');
+      if (elRealTasks) elRealTasks.innerText = realTasks;
       document.getElementById('statTotalEvents').innerText = summary.total_events || 0;
       const byStatus = summary.by_status || {{}};
       document.getElementById('statSucceeded').innerText = byStatus.succeeded || 0;
       document.getElementById('statRunning').innerText = (byStatus.running || 0) + (byStatus.queued || 0);
 
-      document.getElementById('countAll').innerText = summary.total_tasks || 0;
+      document.getElementById('countAll').innerText = totalTasks;
       document.getElementById('countAgent').innerText = (summary.by_action || {{}}).agent_signal || 0;
       document.getElementById('countContact').innerText = (summary.by_source || {{}})['contact-review'] || 0;
       document.getElementById('countKuma').innerText = (summary.by_source || {{}})['uptime-kuma'] || 0;
       document.getElementById('countCli').innerText = (summary.by_action || {{}}).cli || 0;
       document.getElementById('countFailed').innerText = (byStatus.failed || 0) + (byStatus.timed_out || 0);
+
+      const pillReal = document.getElementById('pillRealCount');
+      const pillAll = document.getElementById('pillAllCount');
+      const pillTest = document.getElementById('pillTestCount');
+      if (pillReal) pillReal.innerText = realTasks;
+      if (pillAll) pillAll.innerText = totalTasks;
+      if (pillTest) pillTest.innerText = testTasks;
     }}
 
     function renderTelemetry(health) {{
@@ -1131,12 +1244,27 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
     function renderTasksTable() {{
       const tbody = document.getElementById('tasksTableBody');
+      const subtitle = document.getElementById('tableSubtitle');
+      if (subtitle) {{
+        if (state.eventFilterMode === 'real') {{
+          subtitle.innerText = `Showing ${{state.tasks.length}} real production activities (test events hidden)`;
+        }} else if (state.eventFilterMode === 'test') {{
+          subtitle.innerText = `Showing ${{state.tasks.length}} synthetic / verification test activities`;
+        }} else {{
+          subtitle.innerText = `Showing all ${{state.tasks.length}} activities (real & synthetic tests)`;
+        }}
+      }}
+
       if (!state.tasks || state.tasks.length === 0) {{
         tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 40px;">No observable activities matching current filter.</td></tr>`;
         return;
       }}
 
       tbody.innerHTML = state.tasks.map(t => {{
+        const isTest = t.is_test || false;
+        const typeBadge = isTest
+          ? `<span class="badge badge-test" title="Automated / Synthetic verification test">TEST</span>`
+          : `<span class="badge badge-real" title="Real production webhook event">REAL</span>`;
         const statusBadge = `<span class="badge badge-${{t.status}}">${{t.status}}</span>`;
         const sourceTag = `<span class="source-tag">${{escapeHtml(t.source || 'default')}}</span>`;
         const actionType = escapeHtml(t.action_type || 'cli');
@@ -1145,7 +1273,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
         return `
           <tr onclick="openDrawer('${{t.task_id}}')">
-            <td>${{statusBadge}}</td>
+            <td>${{statusBadge}} ${{typeBadge}}</td>
             <td><span class="task-id-code">${{escapeHtml(t.task_id)}}</span></td>
             <td>${{sourceTag}}</td>
             <td><strong>${{actionType}}</strong></td>
@@ -1158,6 +1286,50 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           </tr>
         `;
       }}).join('');
+    }}
+
+    function setEventFilterMode(mode) {{
+      state.eventFilterMode = mode;
+      localStorage.setItem('antigravity_hub_filter_mode', mode);
+      syncFilterUI();
+      if (mode === 'real') {{
+        showToast('Filter: Showing real production activities only', 'info');
+      }} else if (mode === 'test') {{
+        showToast('Filter: Showing synthetic test events only', 'info');
+      }} else {{
+        showToast('Filter: Showing all activities', 'info');
+      }}
+      refreshTasksAuthoritative();
+    }}
+
+    function toggleTestFilter() {{
+      if (state.eventFilterMode === 'real') {{
+        setEventFilterMode('all');
+      }} else {{
+        setEventFilterMode('real');
+      }}
+    }}
+
+    function syncFilterUI() {{
+      const mode = state.eventFilterMode;
+      document.querySelectorAll('.filter-pill').forEach(btn => btn.classList.remove('active'));
+      const activePill = document.getElementById(
+        mode === 'real' ? 'pillReal' : (mode === 'test' ? 'pillTest' : 'pillAll')
+      );
+      if (activePill) activePill.classList.add('active');
+
+      const toggleBtn = document.getElementById('toggleFilterBtn');
+      const toggleText = document.getElementById('toggleFilterText');
+      if (mode === 'real') {{
+        if (toggleBtn) toggleBtn.classList.add('btn-filter-active');
+        if (toggleText) toggleText.innerText = 'Real Only (Tests Hidden)';
+      }} else if (mode === 'test') {{
+        if (toggleBtn) toggleBtn.classList.remove('btn-filter-active');
+        if (toggleText) toggleText.innerText = 'Tests Only';
+      }} else {{
+        if (toggleBtn) toggleBtn.classList.remove('btn-filter-active');
+        if (toggleText) toggleText.innerText = 'All Events (Show All)';
+      }}
     }}
 
     function escapeHtml(str) {{
@@ -1415,6 +1587,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
     // Bootstrap
     window.addEventListener('DOMContentLoaded', () => {{
+      syncFilterUI();
       refreshTasksAuthoritative();
       setupGlobalEventSource();
       // Periodic fallback polling every 10s if SSE reconnects

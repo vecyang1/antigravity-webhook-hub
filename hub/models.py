@@ -373,3 +373,106 @@ class ExecutionLog:
             stream=data.get("stream", "stdout"),
             message=data.get("message", ""),
         )
+
+
+TEST_EVENT_SQL_FILTER = """(
+    command LIKE 'echo %'
+    OR target_action LIKE 'echo %'
+    OR source LIKE '%test%'
+    OR source LIKE '%verifier%'
+    OR source LIKE '%simulator%'
+    OR task_id LIKE '%test%'
+    OR event_id LIKE '%test%'
+    OR event_id LIKE '%orphan%'
+    OR action_params_json LIKE '%"nonce":%'
+    OR action_params_json LIKE '%''nonce'':%'
+    OR action_params_json LIKE '%"dry_run": true%'
+    OR action_params_json LIKE '%"dry_run":true%'
+    OR command LIKE '%CF_TUNNEL%'
+    OR command LIKE '%BEARER_AUTH%'
+    OR command LIKE '%PUBLIC_CF_TUNNEL%'
+    OR command LIKE '%PUBLIC_VERIFY%'
+    OR command LIKE '%REVERIFY%'
+    OR command LIKE '%sweeper_recovered%'
+    OR command LIKE '%dedup_test%'
+    OR command LIKE '%time.sleep%'
+)"""
+
+
+def is_test_task(task: Optional[dict[str, Any]]) -> bool:
+    """Determine if a task record is an automated, synthetic, or verification test event."""
+    if not task or not isinstance(task, dict):
+        return False
+
+    task_id = (task.get("task_id") or "").lower()
+    event_id = (task.get("event_id") or "").lower()
+    source = (task.get("source") or "").lower()
+    command = str(task.get("command") or "").strip()
+    target_action = str(task.get("target_action") or "").strip()
+    raw_params = task.get("action_params_json") or task.get("action_params") or ""
+
+    if isinstance(raw_params, dict):
+        try:
+            params_str = json.dumps(raw_params)
+        except Exception:
+            params_str = str(raw_params)
+    else:
+        params_str = str(raw_params).strip()
+
+    cmd_lower = command.lower()
+    target_lower = target_action.lower()
+
+    # 1. ID checks
+    if "test" in task_id or "test" in event_id or "orphan" in event_id:
+        return True
+
+    # 2. Source checks (synthetic E2E runners, simulators, test-send CLI)
+    if any(k in source for k in ("test", "simulator", "verifier")):
+        return True
+
+    # 3. Command / target_action checks
+    if command.startswith("echo ") or target_action.startswith("echo "):
+        return True
+
+    if any(k in cmd_lower or k in target_lower for k in (
+        "dedup_test",
+        "step2_evt_verify",
+        "verify_step",
+        "sweeper_recovered",
+        "cf_tunnel_e2e_verified",
+        "bearer_auth_public_verified",
+        "public_cf_tunnel_verified",
+        "public_verify_success",
+        "reverify_success",
+        "stress test pass",
+        "hello from m4 test",
+        "hello challenger",
+        "test webhook payload",
+        "time.sleep",
+    )):
+        return True
+
+    # 4. Action params / payload checks
+    if params_str:
+        params_lower = params_str.lower()
+        if '"nonce":' in params_lower or "'nonce':" in params_lower or "nonce" in params_lower:
+            return True
+        if '"dry_run": true' in params_lower or '"dry_run":true' in params_lower or "'dry_run': true" in params_lower:
+            return True
+        if any(k in params_lower for k in (
+            "test contact review verification",
+            "test-verify@worldinspirelab.com",
+            "cloudflare-tunnel-test",
+            "live-verification-test",
+            "sync-test",
+            "manual_simulator",
+            "slack_supplementary_test",
+            "testing tunnel ingress connectivity",
+            "testing sync parameter return value",
+            "testing uptime kuma ingress",
+            "live public tunnel probe",
+        )):
+            return True
+
+    return False
+
