@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] - 2026-09-12
+
+### Security
+- **Git History Secret Purge (`git-filter-repo`)**:
+  - Permanently wiped legacy Slack User Token (`xoxp-...`) from all historical commits (previously introduced in early draft commit `adfe4fd` and removed from HEAD in `6cb62c7`).
+  - Force-pushed sanitized commit history to GitHub `main` and verified orphan commit SHA returns HTTP 404.
+  - Maintained 100% repository integrity and test suite pass rate (249/250 tests, verified adversarial proof).
+- **Toolchain Security Hardening (`github-ops`)**:
+  - Enhanced Gate 4 `CREDENTIAL_PATTERN` in `github-ops/scripts/audit_repo_publish.py` to statically intercept Slack OAuth tokens (`xoxp-`, `xoxb-`, `xapp-`), Anthropic API keys (`sk-ant-`), and Google API keys (`AIza...`).
+  - Added unit test coverage in `tests/test_audit_repo_publish.py` (46/46 tests passing).
+
 ## [1.8.1] - 2026-09-12
 
 ### Added
