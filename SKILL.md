@@ -1,7 +1,7 @@
 ---
 name: webhook-hub
 description: Control, monitor, and query the local Antigravity Webhook Hub daemon and event dispatcher on macOS.
-version: 1.8.1
+version: 1.8.4
 author: V
 date: 2026-09-12
 source: local repository
@@ -225,6 +225,13 @@ To prevent duplicate records from URL formatting differences:
 When a 24/7 cloud workflow (e.g. n8n on `n.worldinspirelab.com`) calls a local gateway via tunnel (`webhook.worldinspirelab.com`):
 - **Laptop Sleep / 502 Edge Behavior**: When the laptop sleeps, Cloudflare edge returns `502 Bad Gateway`. The cloud HTTP node MUST have `neverError: true` and `onError: continueRegularOutput`.
 - **Graceful Degradation**: Cloud workflows must never drop events on 502; they must either route to a cloud fallback database write or post an offline alert guiding the user to wake the laptop.
+
+### Slack File Attachment & Token Dual-Track Contract
+When downloading private attachments from Slack to upload to Notion (`download_slack_file`):
+- **Bot Token (`xoxb-`) as Primary for Files**: In Slack's OAuth model, `files:read` is canonically granted to Bot Tokens. When downloading private file attachments from Slack (`url_private_download` / `download_slack_file`), `SLACK_BOT_TOKEN` is prioritized.
+- **User Token (`xoxp-`) for User Scopes**: Used for user-scoped reads (channel history, user search).
+- **Self-Healing Fallback (Rung 3)**: File download clients must never fail-fast on a single token. If an explicit or user token returns `HTTP 401 Unauthorized` or `HTTP 403 Forbidden` (`missing_scope`), the client automatically intercepts the error and retries with candidate Bot tokens (`xoxb-`) before failing.
+- **Zero Secrets in Code (Rung 4)**: Token resolution fails closed from environment variables, 1Password (`Agent Automation`), or local `.env`, strictly prohibiting hardcoded token fallbacks.
 
 ### SSOT Verification & Notification
 1. **Live Re-read Verification**: After property mutation, the pipeline re-reads the page from the Notion API to verify property persistence before concluding.
