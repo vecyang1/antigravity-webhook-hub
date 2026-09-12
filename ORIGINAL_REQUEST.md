@@ -4,7 +4,7 @@
 
 A lightweight, zero-footprint local webhook gateway and event dispatcher for Antigravity on macOS that securely receives HTTP requests from external websites and dispatches agent runs, scheduled tasks, and local automation with contract-first type safety and verifiable end-to-end execution.
 
-Working directory: /Users/vecsatfoxmailcom/Documents/A-coding/26.09.08-antigravity-webhook-hub
+Working directory: ./
 Integrity mode: development
 
 ## Requirements

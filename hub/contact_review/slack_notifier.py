@@ -40,8 +40,8 @@ def resolve_slack_bot_token() -> str:
                     if val:
                         return val
 
-    # 3. 26.09.07-n8n-operations-hub .env
-    hub_env_path = Path("/Users/vecsatfoxmailcom/Documents/A-coding/26.09.07-n8n-operations-hub/.env")
+    # 3. Optional operations hub .env
+    hub_env_path = Path(__file__).resolve().parent.parent.parent.parent / "26.09.07-n8n-operations-hub" / ".env"
     if hub_env_path.is_file():
         for line in hub_env_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()

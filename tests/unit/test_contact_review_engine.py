@@ -63,7 +63,7 @@ def test_verdict_create_when_no_candidates(engine):
     contact = ContactInput(
         name="Brand New Person",
         phone="+84 987 654 321",
-        email="brandnew@company.com",
+        email="brandnew@example.com",
         company="Startup Co",
     )
     result = engine.evaluate(contact, candidates=[])

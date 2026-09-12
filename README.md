@@ -3,7 +3,7 @@
 A lightweight, zero-footprint local webhook gateway and decoupled event dispatcher engineered for Antigravity AI agents on macOS.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Memory Budget](https://img.shields.io/badge/RAM-%3C30MB-brightgreen.svg)]()
 [![Idle CPU](https://img.shields.io/badge/idle_CPU-0%25-brightgreen.svg)]()
 
@@ -251,7 +251,7 @@ Observable Web Dashboard and Activity Console:
   DASHBOARD_BASIC_AUTH_PASS=your_secure_password
   DASHBOARD_AUTH_TOKEN=your_secure_dashboard_token
   DASHBOARD_CF_ACCESS_AUD=your_cloudflare_access_aud_tag
-  DASHBOARD_ALLOWED_EMAILS=user@example.com,admin@worldinspirelab.com
+  DASHBOARD_ALLOWED_EMAILS=user@example.com,admin@example.org
   ```
 
 #### `GET /healthz` or `GET /health`
@@ -397,5 +397,5 @@ python3 -m pytest tests/ -v
 ---
 
 ## License
-
-Released under the [MIT License](LICENSE).
+ 
+Released under the [GNU General Public License v3.0 or later (GPL-3.0-or-later)](LICENSE).

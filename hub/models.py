@@ -430,7 +430,7 @@ TEST_EVENT_SQL_FILTER = """(
             OR action_params_json LIKE '%"is_test":true%'
             OR action_params_json LIKE '%"is_test": 1%'
             OR action_params_json LIKE '%test contact review verification%'
-            OR action_params_json LIKE '%test-verify@worldinspirelab.com%'
+            OR action_params_json LIKE '%test-verify@%'
             OR action_params_json LIKE '%cloudflare-tunnel-test%'
             OR action_params_json LIKE '%live-verification-test%'
             OR action_params_json LIKE '%sync-test%'
@@ -534,7 +534,7 @@ def is_test_task(task: Optional[dict[str, Any]]) -> bool:
 
         if any(k in params_lower for k in (
             "test contact review verification",
-            "test-verify@worldinspirelab.com",
+            "test-verify@",
             "cloudflare-tunnel-test",
             "live-verification-test",
             "sync-test",

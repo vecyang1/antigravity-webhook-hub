@@ -2024,7 +2024,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
             </div>
             <div class="agent-telemetry-item">
               <span class="agent-telemetry-label">Events Directory</span>
-              <span class="agent-telemetry-val" style="font-family: var(--font-mono); font-size: 12px; color: #94a3b8;">~/.gemini/antigravity/sidecar_data/webhook-hub-sentinel/events/</span>
+              <span class="agent-telemetry-val" style="font-family: var(--font-mono); font-size: 12px; color: #94a3b8;">$HOME/.antigravity/sidecar_data/webhook-hub-sentinel/events/</span>
             </div>
             <div class="agent-telemetry-item">
               <span class="agent-telemetry-label">Total Pulses Queued</span>

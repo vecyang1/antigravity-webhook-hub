@@ -635,7 +635,7 @@ def test_cmd_tasks_list_and_filter(tmp_path, capsys):
     db.insert_task({
         "task_id": "tsk_real_fail_3",
         "event_id": "evt_3",
-        "command": "python3 /Users/vecsatfoxmailcom/worker.py",
+        "command": "python3 /path/to/worker.py",
         "source": "production",
         "status": "failed",
         "exit_code": 2,

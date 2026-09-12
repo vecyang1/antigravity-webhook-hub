@@ -303,8 +303,9 @@ def register_uptime_kuma_routes(
             event_id = f"evt_{uuid.uuid4().hex[:16]}"
             task_id = f"tsk_{uuid.uuid4().hex[:16]}"
 
-            triage_script = (
-                "/Users/vecsatfoxmailcom/Documents/Cowork/Antigravity Cowork/26.06.06 2nd Brain/00 - System/scripts/audit_maintenance_alert_triage.py"
+            triage_script = os.getenv(
+                "UPTIME_KUMA_TRIAGE_SCRIPT",
+                "scripts/audit_maintenance_alert_triage.py",
             )
             command = f'python3 "{triage_script}" --no-success-marker'
 

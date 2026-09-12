@@ -56,9 +56,9 @@ def _get_signals_dir(config: Optional[AppConfig] = None) -> Path:
     if cwd_signals.exists():
         return cwd_signals
     # Check default known repository path
-    default_path = Path("/Users/vecsatfoxmailcom/Documents/A-coding/26.09.08-antigravity-webhook-hub/.agents/signals")
-    if default_path.exists():
-        return default_path
+    repo_signals = Path(__file__).resolve().parent.parent.parent / ".agents" / "signals"
+    if repo_signals.exists():
+        return repo_signals
     if config and hasattr(config, "database") and getattr(config.database, "path", None):
         cand = Path(config.database.path).resolve().parent.parent / ".agents" / "signals"
         if cand.exists():
@@ -76,9 +76,9 @@ def _get_cadence_dir() -> Path:
     cwd_cadence = Path.cwd() / ".run" / "cadence"
     if cwd_cadence.exists():
         return cwd_cadence
-    default_cadence = Path("/Users/vecsatfoxmailcom/Documents/A-coding/26.09.08-antigravity-webhook-hub/.run/cadence")
-    if default_cadence.exists():
-        return default_cadence
+    repo_cadence = Path(__file__).resolve().parent.parent.parent / ".run" / "cadence"
+    if repo_cadence.exists():
+        return repo_cadence
     return cwd_cadence
 
 

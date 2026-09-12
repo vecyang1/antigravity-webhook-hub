@@ -102,7 +102,7 @@ The test suite consists of two independent verification layers:
 ```text
 ============================= test session starts ==============================
 platform darwin -- Python 3.14.7, pytest-9.1.1, pluggy-1.6.0
-rootdir: /Users/vecsatfoxmailcom/Documents/A-coding/26.09.08-antigravity-webhook-hub
+rootdir: /path/to/antigravity-webhook-hub
 configfile: pyproject.toml
 plugins: anyio-4.13.0
 collected 63 items

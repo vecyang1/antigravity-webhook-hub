@@ -7,7 +7,7 @@ name = "antigravity-webhook-hub"
 version = "1.0.0"
 description = "A lightweight, zero-footprint local webhook gateway and event dispatcher for Antigravity on macOS"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.11"
 authors = [
     { name = "V / Antigravity Engineering" }
@@ -16,6 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: MacOS",
     "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
 ]
 dependencies = [
     "PyYAML>=6.0",

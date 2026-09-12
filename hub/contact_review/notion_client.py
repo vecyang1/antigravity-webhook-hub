@@ -58,7 +58,7 @@ def resolve_notion_token() -> str:
                         return val
 
     # 3. notion-mcp-connector skill .env
-    skill_env_path = Path("/Users/vecsatfoxmailcom/.gemini/antigravity/skills/notion-mcp-connector/.env")
+    skill_env_path = Path.home() / ".gemini" / "antigravity" / "skills" / "notion-mcp-connector" / ".env"
     if skill_env_path.is_file():
         for line in skill_env_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -101,8 +101,8 @@ def resolve_slack_token(explicit_token: Optional[str] = None) -> str:
 
     # 3. Standard skill/n8n .env paths
     candidate_paths = [
-        Path("/Users/vecsatfoxmailcom/.gemini/config/skills/webhook-hub/.env"),
-        Path("/Users/vecsatfoxmailcom/.gemini/antigravity/skills/n8n-automation/.env"),
+        Path.home() / ".gemini" / "config" / "skills" / "webhook-hub" / ".env",
+        Path.home() / ".gemini" / "antigravity" / "skills" / "n8n-automation" / ".env",
     ]
     for env_p in candidate_paths:
         if env_p.is_file():

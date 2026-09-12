@@ -13,9 +13,9 @@ import sys
 import urllib.request
 import urllib.error
 
-N8N_URL = "https://n.worldinspirelab.com"
-WORKFLOW_ID = "3J5doqEyxA7lT1OO"
-ENV_FILE = pathlib.Path("/Users/vecsatfoxmailcom/.gemini/antigravity/skills/n8n-automation/.env")
+N8N_URL = os.getenv("N8N_URL", "https://n.worldinspirelab.com")
+WORKFLOW_ID = os.getenv("N8N_WORKFLOW_ID", "3J5doqEyxA7lT1OO")
+ENV_FILE = pathlib.Path(os.getenv("N8N_ENV_FILE", "")) if os.getenv("N8N_ENV_FILE") else pathlib.Path.home() / ".gemini" / "antigravity" / "skills" / "n8n-automation" / ".env"
 
 # 1. Resolve API key
 api_key = os.environ.get("N8N_API_KEY")

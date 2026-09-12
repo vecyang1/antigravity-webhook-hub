@@ -236,7 +236,7 @@ When a Mac sleeps or loses battery for hours (e.g. 3 hours), in-flight tasks and
 
 Activities triggered by Webhook Hub are observable through two synchronized surfaces:
 
-1. **Antigravity IDE Sidebar**: Registered as scheduled sentinel `webhook-hub-sentinel` (Cadence Card `CAD-20260911-webhook-hub-sentinel`). When incoming webhooks trigger `agent_signal` or review tasks, event snapshots are recorded to `~/.gemini/antigravity/sidecar_data/webhook-hub-sentinel/events/*.json`, making activities directly visible in the IDE's Scheduled Tasks / Sidecars panel.
+1. **Antigravity IDE Sidebar**: Registered as scheduled sentinel `webhook-hub-sentinel` (Cadence Card `CAD-20260911-webhook-hub-sentinel`). When incoming webhooks trigger `agent_signal` or review tasks, event snapshots are recorded to `$HOME/.antigravity/sidecar_data/webhook-hub-sentinel/events/*.json`, making activities directly visible in the IDE's Scheduled Tasks / Sidecars panel.
 2. **Embedded Web Console (`/dashboard` & `/ui`)**: Zero-dependency dark slate web interface with live SSE streaming (`/events/stream`), real-time RSS memory gauge (<30MB budget), task filtering, live stdout/stderr inspection drawer, one-click re-run, and interactive webhook simulator.
 
 

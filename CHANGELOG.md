@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-09-12
+
+### Added
+- **Open-Source Public Release under GPL-3.0-or-later**:
+  - Transitioned project license from MIT to GNU General Public License v3.0 or later (`GPL-3.0-or-later`).
+  - Added official GNU GPLv3 license text, project attribution, and badges across `README.md` and `pyproject.toml`.
+  - Added portable launchd template `tunnel/com.example.webhook-hub.plist.example`.
+
+### Security
+- **Privacy & Sanitization Gates (`github-ops`)**:
+  - Untracked private internal agent run artifacts (`.agents/`), virtual environments (`.venv/`), and derived graph artifacts (`graphify-out/`).
+  - Virtualized all test mock data and configuration defaults to RFC 2606/6761 reserved domains (`example.com`, `example.org`, `example.net`).
+  - Eliminated hardcoded machine user paths (`/Users/...`, `~/.gemini/`) across runtime routes, CLI tests, and scripts in favor of dynamic portable resolution (`Path.home()`, `Path.cwd()`, environment variables).
+  - Verified 0 security or privacy findings via automated repository sanitization audit (`audit_repo_publish.py`).
+
 ## [1.7.2] - 2026-09-12
 
 ### Added
@@ -50,7 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Agent & Sentinel Observability Hub & Interactive UI/UX Pro Max Views (`hub/routes/agent_activities.py`, `hub/routes/dashboard_template.py`, `hub/routes/tasks.py`)**:
   - **Sentinel AI Runs View**: Dedicated telemetry board displaying cadence runs (`CAD-20260911-webhook-hub-sentinel`), execution status, tool usage badges, and 3-stage collapsible accordions for full injected prompt (`agentapi new-conversation`), autonomous tool execution stepper timeline (inspecting tool names, args, and outputs), and final delivered markdown reports.
   - **CRM Agent Signals & Dispatches View**: Full inspection table of emitted signals from `.agents/signals/contact_review/` featuring verdict badges (`CREATE` purple, `CORRECT` emerald, `NO_CHANGE` slate), confidence score pills, direct Notion CRM page external links, and interactive "Inspect" modal displaying formatted property diffs and raw JSON payload.
-  - **Sidebar Pulse Queue View**: Live monitoring table of Antigravity conversation sidebar events from `~/.gemini/antigravity/sidecar_data/webhook-hub-sentinel/events/`, linking dispatched tasks directly to execution log drawers.
+  - **Sidebar Pulse Queue View**: Live monitoring table of Antigravity conversation sidebar events from `$HOME/.antigravity/sidecar_data/webhook-hub-sentinel/events/`, linking dispatched tasks directly to execution log drawers.
   - **Task Drawer Agent Activity Integration**: Embedded "Associated Agent Activity & Dispatches" card inside the slide-out log drawer, automatically enriching contact-review tasks with proposed property diffs, verdict badges, and one-click Notion navigation.
   - **High-Performance Lazy Endpoints**: Added `/api/agent-activities/summary`, `/api/agent-activities/sentinels`, `/api/agent-activities/sentinels/{id}`, `/api/agent-activities/signals`, and `/api/agent-activities/pulses` with zero caching and on-demand transcript parsing.
   - **Strict Memory Budget Compliance**: Maintained gateway process RSS strictly < 25 MB (budget: `< 30.0 MB`), verified via automated GC pressure relief and lazy route resolution in `hub/cli.py`.
@@ -118,18 +133,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Cadence Sentinel Rescheduled to 6 Times Daily (`CAD-20260911-webhook-hub-sentinel`)**:
-  - Rescheduled Antigravity sidecar (`~/.gemini/config/sidecars/webhook-hub-sentinel/sidecar.json`) and 2nd Brain cadence registry (`00 - System/registries/cadence-commands.md`) to run every 4 hours (`0 */4 * * *` / 6 times per day: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00).
+  - Rescheduled cadence sentinel sidecar and external cadence registry (`cadence-commands.md`) to run every 4 hours (`0 */4 * * *` / 6 times per day: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00).
   - Maintained 12-check E2E verification, memory RSS budget validation (<30MB), unprocessed task auto-sweep, and Chinese reporting.
   - Verified with `cadence_ctl doctor --strict` (0 errors, 0 warnings) and `audit_cadence_registry.py --strict` (0 errors across 64 cards).
 
 ### Fixed
 - **Root-Cause Elimination of Error Alert Floods ("Coolify VPS Dashboard")**:
-  - Investigated recurring error emails (`[Antigravity Webhook Hub] [🔴 Down]`) from `Coolify VPS Dashboard <notification@globalgrowthco.com>`.
+  - Investigated recurring error emails (`[Antigravity Webhook Hub] [🔴 Down]`) from `Coolify VPS Dashboard <notification@example.com>`.
   - Identified source as self-hosted Uptime Kuma (Monitor #84) deployed under Coolify on VPS `openclaw-eu` routing via Cloudflare Tunnel (`webhook.worldinspirelab.com/healthz`).
   - Diagnosed root cause:
-    1. Aggressive 60s probe interval with 2 retries (total 120s buffer) combined with unconditional SMTP email alerting on a local workstation monitor. Whenever the user closed their MacBook lid, traveled, or slept, probe failures triggered down/up email storms to `yanghxmail@gmail.com`.
+    1. Aggressive 60s probe interval with 2 retries (total 120s buffer) combined with unconditional SMTP email alerting on a local workstation monitor. Whenever the user closed their MacBook lid, traveled, or slept, probe failures triggered down/up email storms to `user@example.com`.
     2. Extending retry window alone was insufficient because MacBook sleeps for hours during non-working periods, which still tripped the threshold and generated false-positive alarm emails.
-  - Architectural fix in `26.08.16-adnova-cli/scripts/kuma_apply.py` & `kuma_contract.py`:
+  - Architectural fix in `adnova-cli/scripts/kuma_apply.py` & `kuma_contract.py`:
     - Added `email: False` declaration for `Antigravity Webhook Hub`, explicitly decoupling workstation-bound edge ingress from SMTP email paging while preserving status page visibility and webhook alerting.
     - Updated `kuma_apply.py` notification wiring to omit notification #2 (`email (SMTP via Coolify's account)`) for monitors with `email: False`.
     - Updated `kuma_contract.py` voice invariant check to validate that declared `email: False` monitors carry exactly their declared notification channels (84/84 monitors passing).
@@ -158,7 +173,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `DashboardConfig` to `AppConfig` supporting Cloudflare Access Zero Trust JWT assertions (`cf-access-jwt-assertion`), HTTP Basic Auth, and token fallback (`Authorization: Bearer`, `?token=`, `X-Dashboard-Token`).
   - Implemented `verify_dashboard_auth` in `hub/security.py` with timing-safe HTTP Basic Auth comparison, unverified JWT payload claims decoding (validating expiration `exp`, application audience `aud`, and email allowlist `identity`), and query token parsing.
   - Gated all `/dashboard` and `/ui` routes with authentication challenge: unauthenticated requests receive styled 401 Unauthorized HTML with `WWW-Authenticate: Basic realm="..."` challenge, while API endpoints receive 401 JSON. Ingress webhooks (`/webhook/*`) and health probes (`/healthz`) remain completely unaffected and open.
-  - Deployed Cloudflare Access application `ee150248-6ee0-4e7d-a5fe-8ffeeeef1b50` on `webhook.worldinspirelab.com/dashboard` with 90-day session policy for Vec (`yanghxmail@gmail.com`).
+  - Deployed Cloudflare Access application `ee150248-6ee0-4e7d-a5fe-8ffeeeef1b50` on `webhook.worldinspirelab.com/dashboard` with 90-day session policy for Vec (`user@example.com`).
 - **Template Isolation & RSS Memory Guard (<30MB) (`hub/routes/dashboard_template.py`, `hub/routes/dashboard.py`)**:
   - Extracted 85KB HTML template into standalone `dashboard_template.py` and lazy-imported `render_dashboard_html` inside `handle_dashboard`.
   - Reduced daemon baseline RSS from 28.3MB to 18.7MB, guaranteeing zero RSS memory breaches under concurrent load and passing all adversarial memory constraints.
@@ -176,7 +191,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Persisted user filter preference in browser `localStorage` (`antigravity_hub_filter_mode`), defaulting to 'real' so production events are immediately visible without synthetic clutter.
   - Added comprehensive test `test_tasks_test_event_filtering_and_classification` in `tests/api/test_dashboard_routes.py`.
 - **Scheduled Cadence Sentinel Rescheduled to Daily Midnight (`CAD-20260911-webhook-hub-sentinel`)**:
-  - Rescheduled Antigravity sidecar (`~/.gemini/config/sidecars/webhook-hub-sentinel/sidecar.json`) and 2nd Brain cadence command card (`CAD-20260911-webhook-hub-sentinel`) from 4-hourly (`0 */4 * * *`) to daily midnight (`0 0 * * *`).
+  - Rescheduled cadence sentinel sidecar and external cadence command card (`CAD-20260911-webhook-hub-sentinel`) from 4-hourly (`0 */4 * * *`) to daily midnight (`0 0 * * *`).
   - Integrated 12-check E2E verification (`./bin/webhook-hub verify`), automated bug diagnosis in `webhook-hub.log`, auto-remediation, and full Chinese output for the daily health sweep.
 
 ### Fixed
@@ -222,9 +237,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Real-time task activity feed with status badges, source tags, execution duration, and log drawers streaming historical and live stdout/stderr via SSE.
   - Interactive Webhook Simulator modal supporting preset sources (`agent_signal`, `contact-review`, `uptime-kuma`, `cli`) with direct SSOT write-and-re-read verification.
 - **Antigravity IDE Sidebar Sentinel Integration**:
-  - Registered Antigravity Sidecar Sentinel in `~/.gemini/config/sidecars/webhook-hub-sentinel/sidecar.json` and `~/.gemini/config/config.json`.
-  - Added Cadence Card `CAD-20260911-webhook-hub-sentinel` in 2nd Brain (`00 - System/registries/cadence-commands.md`) strictly passing all 62 validation checks.
-  - Enabled background recording of webhook-triggered activities to `~/.gemini/antigravity/sidecar_data/webhook-hub-sentinel/events/*.json` on `agent_signal` execution.
+  - Registered sidecar sentinel configuration in sidecar registry.
+  - Added Cadence Card `CAD-20260911-webhook-hub-sentinel` in external cadence registry strictly passing all validation checks.
+  - Enabled background recording of webhook-triggered activities to `$HOME/.antigravity/sidecar_data/webhook-hub-sentinel/events/*.json` on `agent_signal` execution.
 - **Task Re-run & Authoritative SSOT Reset (`hub/db.py`, `hub/routes/tasks.py`)**:
   - Added atomic `rerun_task(task_id)` method in `DatabaseManager` resetting task status to `queued`, incrementing `retry_count`, clearing execution markers/errors, and re-enqueueing in `dispatcher`.
   - Added `POST /tasks/{task_id}/rerun` API endpoint broadcasting `status_change` to SSE subscribers.

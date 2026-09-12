@@ -83,7 +83,7 @@ def test_contact_input_from_dict_nested_n8n():
         "contact": {
             "name": "David Miller",
             "phone_number": "+84 999 888 777",
-            "email": "david@tech.io",
+            "email": "david@example.org",
             "company": "Tech Innovations",
             "entity": "Partner",
             "instagram": "david_tech",
@@ -99,7 +99,7 @@ def test_contact_input_from_dict_nested_n8n():
     assert c.name == "David Miller"
     assert c.phone == "+84 999 888 777"
     assert c.phone_digits() == "84999888777"
-    assert c.email == "david@tech.io"
+    assert c.email == "david@example.org"
     assert c.company == "Tech Innovations"
     assert c.entity == "Partner"
     assert c.social_handles.get("instagram") == "david_tech"
@@ -112,7 +112,7 @@ def test_candidate_match_properties():
     props = {
         "Full Name": {"type": "title", "title": [{"plain_text": "Alice Johnson"}]},
         "Phone": {"type": "rich_text", "rich_text": [{"plain_text": "+1 234 567 8900"}]},
-        "Email": {"type": "email", "email": "alice@corp.com"},
+        "Email": {"type": "email", "email": "alice@example.com"},
         "Company": {"type": "rich_text", "rich_text": [{"plain_text": "Corp LLC"}]},
         "Birthday": {"type": "date", "date": {"start": "1988-12-01"}},
         "URL": {"type": "url", "url": "https://alice.dev"},
@@ -128,7 +128,7 @@ def test_candidate_match_properties():
         properties=props,
     )
     assert m.page_name == "Alice Johnson"
-    assert m.get_email() == "alice@corp.com"
+    assert m.get_email() == "alice@example.com"
     assert m.get_phone() == "+1 234 567 8900"
     assert m.get_birthday() == "1988-12-01"
     assert m.get_url() == "https://alice.dev"

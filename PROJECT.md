@@ -45,7 +45,7 @@ A lightweight, zero-footprint local webhook gateway and event dispatcher for Ant
 
 ## Code Layout
 ```
-/Users/vecsatfoxmailcom/Documents/A-coding/26.09.08-antigravity-webhook-hub/
+antigravity-webhook-hub/
 ├── bin/
 │   └── webhook-hub              # Executable CLI wrapper
 ├── hub/

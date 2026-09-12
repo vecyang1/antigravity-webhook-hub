@@ -89,7 +89,7 @@ class DashboardConfig:
     auth_token: str = ""
     cloudflare_access_aud: str = ""
     cloudflare_access_team: str = "veecccc"
-    allowed_emails: list[str] = field(default_factory=lambda: ["yanghxmail@gmail.com"])
+    allowed_emails: list[str] = field(default_factory=lambda: ["user@example.com"])
 
 
 @dataclass(slots=True)

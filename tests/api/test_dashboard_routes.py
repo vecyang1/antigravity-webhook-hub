@@ -6,7 +6,7 @@ Verifies:
 - GET /tasks/summary & GET /activities/summary direct SQLite SSOT aggregations.
 - GET /tasks advanced filtering (source, status, action_type, search query q).
 - POST /tasks/{id}/rerun lifecycle & state transition.
-- Antigravity Sidecar Sentinel event logging in ~/.gemini/antigravity/sidecar_data/.
+- Antigravity Sidecar Sentinel event logging in sidecar_data/events/.
 """
 
 from __future__ import annotations
@@ -707,7 +707,7 @@ async def test_dashboard_authentication_cloudflare_access(free_port: int, temp_d
     config.database.path = temp_db_path
     config.dashboard.auth_enabled = True
     config.dashboard.cloudflare_access_aud = "test_aud_hash_12345"
-    config.dashboard.allowed_emails = ["vec@example.com", "admin@worldinspirelab.com"]
+    config.dashboard.allowed_emails = ["vec@example.com", "admin@example.org"]
 
     server = AsyncHTTPServer(config.server)
     register_dashboard_routes(server, config)
@@ -791,7 +791,7 @@ async def test_dashboard_authentication_basic_and_token(free_port: int, temp_db_
     config.dashboard.auth_enabled = True
     config.dashboard.basic_auth_user = "admin"
     config.dashboard.basic_auth_pass = "supersecret123"
-    config.dashboard.auth_token = "secret-token-xyz"
+    config.dashboard.auth_token = "test-auth-token-xyz-12345"
 
     server = AsyncHTTPServer(config.server)
     register_dashboard_routes(server, config)
@@ -813,28 +813,28 @@ async def test_dashboard_authentication_basic_and_token(free_port: int, temp_db_
             assert r_basic_ok.status_code == 200
 
             # 3. Basic Auth wrong password
-            bad_creds = base64.b64encode(b"admin:wrongpassword").decode()
+            b64_bad = base64.b64encode(b"admin:wrongpass").decode()
             r_basic_bad = await client.get(
                 f"{base_url}/dashboard",
-                headers={"Authorization": f"Basic {bad_creds}"},
+                headers={"Authorization": f"Basic {b64_bad}"},
             )
             assert r_basic_bad.status_code == 401
 
             # 4. Bearer token
             r_bearer = await client.get(
                 f"{base_url}/dashboard",
-                headers={"Authorization": "Bearer secret-token-xyz"},
+                headers={"Authorization": "Bearer test-auth-token-xyz-12345"},
             )
             assert r_bearer.status_code == 200
 
             # 5. Query parameter ?token=
-            r_query = await client.get(f"{base_url}/dashboard?token=secret-token-xyz")
+            r_query = await client.get(f"{base_url}/dashboard?token=test-auth-token-xyz-12345")
             assert r_query.status_code == 200
 
             # 6. X-Dashboard-Token header
             r_hdr = await client.get(
                 f"{base_url}/dashboard",
-                headers={"X-Dashboard-Token": "secret-token-xyz"},
+                headers={"X-Dashboard-Token": "test-auth-token-xyz-12345"},
             )
             assert r_hdr.status_code == 200
     finally:

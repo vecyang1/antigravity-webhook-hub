@@ -13,8 +13,21 @@ tunnel/*.pem
 .webhook-hub.pid
 *.log
 webhook-hub.log
-.agents/signals/
+.agents/
 .run/
+
+# Environment, virtualenv and secrets
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+
+# Cloudflare tunnel generated credentials & configs
+tunnel/config.yml
+tunnel/*.json
+tunnel/*.pem
+tunnel/*.plist
 
 # SQLite database files
 *.db
@@ -41,5 +54,6 @@ htmlcov/
 .DS_Store
 .vscode/
 .idea/
-graphify-out/cache/
+graphify-out/
 backups/
+

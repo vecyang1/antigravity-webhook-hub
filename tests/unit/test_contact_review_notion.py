@@ -56,7 +56,7 @@ async def test_ssot_verification_matching_and_mismatch():
         "id": "page_123",
         "properties": {
             "Full Name": {"type": "title", "title": [{"plain_text": "Alice Smith"}]},
-            "Email": {"type": "email", "email": "alice@smith.org"},
+            "Email": {"type": "email", "email": "alice@example.org"},
             "Company": {"type": "rich_text", "rich_text": [{"plain_text": "Smith Consulting"}]},
             "Birthday": {"type": "date", "date": {"start": "1990-05-20"}},
             "URL": {"type": "url", "url": "https://linkedin.com/in/alice/"},
@@ -67,7 +67,7 @@ async def test_ssot_verification_matching_and_mismatch():
     with patch.object(client, "get_page", return_value=live_page):
         # Case 1: Exact expected matches -> Verified
         expected = {
-            "Email": {"email": "alice@smith.org"},
+            "Email": {"email": "alice@example.org"},
             "Company": {"rich_text": [{"type": "text", "text": {"content": "Smith Consulting"}}]},
             "Birthday": {"date": {"start": "1990-05-20"}},
             "URL": {"url": "https://linkedin.com/in/alice"},  # Normalized URL matches trailing slash
@@ -78,7 +78,7 @@ async def test_ssot_verification_matching_and_mismatch():
 
         # Case 2: Expected value differs -> Verification fails
         wrong_expected = {
-            "Email": {"email": "wrong@different.com"},
+            "Email": {"email": "wrong@example.net"},
         }
         failed, _ = await client.verify_page_properties("page_123", wrong_expected)
         assert failed is False
