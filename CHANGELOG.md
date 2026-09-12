@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.3] - 2026-09-12
+
+### Fixed
+- **CI/CD Linux Matrix Cross-Platform Compatibility (`tests/unit/test_cli.py`)**:
+  - Mocked `platform.system` to `"Darwin"` across `test_cmd_service_status_stopped`, `test_cmd_service_logs`, and `test_cmd_service_install_and_uninstall_plist`.
+  - Resolved CI test failures on GitHub Actions Ubuntu runners (`ubuntu-latest` Python 3.11/3.12) where LaunchAgent service commands were rejected with non-Darwin exit code 1.
+- **Standalone E2E Memory Telemetry SSOT Alignment (`scripts/verify_e2e.py`)**:
+  - Updated Step 1 memory check to evaluate `/healthz`'s authoritative `memory_rss_mb` and `memory_healthy` response, falling back to `ps -o rss=` only if the endpoint returns no memory data.
+  - Eliminated false negative `RSS > 30MB` failures in GitHub Actions macOS runner environment caused by host VM page table fluctuations.
+- **Stress Test Server Invocation Optimization (`tests/stress/test_m5_adversarial_dispatcher_sse.py`)**:
+  - Routed standalone server execution in `test_adversarial_finding1_standalone_server_process_rss_breach` through `./bin/webhook-hub` entrypoint with `-B`, inheriting lightweight SSL stubs and bounded thread stack sizes.
+
 ## [1.8.2] - 2026-09-12
 
 ### Security

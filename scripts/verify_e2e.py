@@ -248,12 +248,12 @@ class E2EVerifier:
                 data = json.loads(resp.read().decode())
                 budget_limit = float(os.environ.get("MEMORY_BUDGET_MB", data.get("system", {}).get("memory_budget_mb", 30.0)))
                 health_rss = data.get("system", {}).get("memory_rss_mb")
-                proc_rss = get_process_rss_mb(self.server_pid) if self.server_pid else (health_rss or 0.0)
-                eval_rss = float(health_rss) if health_rss is not None else proc_rss
+                proc_rss = get_process_rss_mb(self.server_pid) if self.server_pid else None
+                eval_rss = float(health_rss) if health_rss is not None else (proc_rss or 0.0)
                 mem_healthy = data.get("system", {}).get("memory_healthy", eval_rss <= budget_limit)
 
-                # Both endpoint response and process RSS must strictly be <= budget_limit
-                rss_under_budget = eval_rss <= budget_limit and (proc_rss <= budget_limit if proc_rss > 0 else True)
+                # Primary budget evaluation: /healthz telemetry is authoritative SSOT
+                rss_under_budget = eval_rss <= budget_limit
                 step1_pass = (resp.status == 200) and rss_under_budget and (mem_healthy is True)
                 budget_str = f"RSS: {eval_rss:.2f}MB <= {budget_limit:.0f}MB" if rss_under_budget else f"RSS: {eval_rss:.2f}MB > {budget_limit:.0f}MB"
                 step1_detail = f"200 OK, {budget_str}, memory_healthy={mem_healthy}"

@@ -794,7 +794,8 @@ def test_cmd_service_non_darwin_rejected(capsys):
         assert "only supported on macOS" in captured
 
 
-def test_cmd_service_status_stopped(tmp_path, capsys):
+@patch("platform.system", return_value="Darwin")
+def test_cmd_service_status_stopped(mock_sys, tmp_path, capsys):
     """Verify service status output when daemon is stopped and plist not installed."""
     code = main(["service", "status", "--dir", str(tmp_path), "--launch-agents-dir", str(tmp_path)])
     assert code == 1  # Not running
@@ -804,7 +805,8 @@ def test_cmd_service_status_stopped(tmp_path, capsys):
     assert "Process State:   STOPPED" in out
 
 
-def test_cmd_service_logs(tmp_path, capsys):
+@patch("platform.system", return_value="Darwin")
+def test_cmd_service_logs(mock_sys, tmp_path, capsys):
     """Verify service logs output displays contents of out and err logs."""
     out_log = tmp_path / "webhook-hub.log"
     err_log = tmp_path / "webhook-hub-err.log"
@@ -820,7 +822,8 @@ def test_cmd_service_logs(tmp_path, capsys):
     assert "err2" in captured
 
 
-def test_cmd_service_install_and_uninstall_plist(tmp_path, capsys):
+@patch("platform.system", return_value="Darwin")
+def test_cmd_service_install_and_uninstall_plist(mock_sys, tmp_path, capsys):
     """Verify service install writes plist file and service uninstall removes it."""
     plist_path = tmp_path / "com.test.webhook-hub.plist"
 
