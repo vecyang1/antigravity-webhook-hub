@@ -565,16 +565,89 @@ class NotionPeopleClient:
     async def download_slack_file(
         self, download_url: str, slack_token: Optional[str] = None
     ) -> tuple[bytes, str]:
-        """Download private file from Slack using resolved Slack token."""
-        token = resolve_slack_token(slack_token)
+        """
+        Download private file from Slack using resolved candidate Slack tokens.
+        Attempts Bot Token (which carries files:read scope) and User Token with
+        automatic self-healing fallback on HTTP 401/403 errors.
+        """
+        candidate_tokens: list[str] = []
+        if slack_token and slack_token.strip():
+            candidate_tokens.append(slack_token.strip())
+
+        # Bot token is the authoritative principal for file downloads (files:read scope)
+        for env_var in ("SLACK_BOT_TOKEN", "SLACK_USER_TOKEN", "SLACK_TOKEN"):
+            val = os.environ.get(env_var)
+            if val and val.strip() and val.strip() not in candidate_tokens:
+                candidate_tokens.append(val.strip())
+
+        # Check local .env and candidate paths
+        for env_path in [
+            Path(".env"),
+            Path.home() / ".gemini" / "config" / "skills" / "webhook-hub" / ".env",
+            Path.home() / ".gemini" / "antigravity" / "skills" / "n8n-automation" / ".env",
+        ]:
+            if env_path.is_file():
+                try:
+                    for line in env_path.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            if k.strip() in ("SLACK_BOT_TOKEN", "SLACK_USER_TOKEN", "SLACK_TOKEN"):
+                                val = v.strip().strip("'\"")
+                                if val and val not in candidate_tokens:
+                                    candidate_tokens.append(val)
+                except Exception:
+                    pass
+
+        # If explicit token was not provided, prioritize bot tokens (xoxb-) which hold files:read
+        if not (slack_token and slack_token.strip()):
+            candidate_tokens.sort(key=lambda t: 0 if t.startswith("xoxb-") else 1)
+
         loop = asyncio.get_running_loop()
 
         def _dl() -> tuple[bytes, str]:
-            headers = {"Authorization": f"Bearer {token}"} if token else {}
-            req = urllib.request.Request(download_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                ctype = resp.headers.get_content_type() or "image/png"
-                return resp.read(), ctype
+            if not candidate_tokens:
+                req = urllib.request.Request(download_url)
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    hdr = resp.headers
+                    ctype = (
+                        hdr.get_content_type()
+                        if hasattr(hdr, "get_content_type")
+                        else (hdr.get("Content-Type") if hasattr(hdr, "get") else None)
+                    ) or "image/png"
+                    return resp.read(), ctype
+
+            last_err: Optional[Exception] = None
+            for token in candidate_tokens:
+                headers = {"Authorization": f"Bearer {token}"}
+                req = urllib.request.Request(download_url, headers=headers)
+                try:
+                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                        hdr = resp.headers
+                        ctype = (
+                            hdr.get_content_type()
+                            if hasattr(hdr, "get_content_type")
+                            else (hdr.get("Content-Type") if hasattr(hdr, "get") else None)
+                        ) or "image/png"
+                        return resp.read(), ctype
+                except urllib.error.HTTPError as err:
+                    last_err = err
+                    if err.code in (401, 403):
+                        logger.warning(
+                            "Slack file download auth rejected (HTTP %d %s) for token %s...; attempting next candidate token",
+                            err.code,
+                            err.reason,
+                            token[:10],
+                        )
+                        continue
+                    raise
+                except Exception as err:
+                    last_err = err
+                    raise
+
+            if last_err:
+                raise last_err
+            raise RuntimeError("Failed to download Slack file: no candidate tokens succeeded")
 
         return await loop.run_in_executor(None, _dl)
 

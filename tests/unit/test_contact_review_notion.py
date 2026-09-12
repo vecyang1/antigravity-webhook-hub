@@ -134,8 +134,54 @@ def test_resolve_slack_token(monkeypatch):
     assert resolve_slack_token("explicit_token_123") == "explicit_token_123"
 
     # 2. Environment variable resolution
-    monkeypatch.setenv("SLACK_USER_TOKEN", "xoxp-test-user-token")
-    assert resolve_slack_token() == "xoxp-test-user-token"
+    monkeypatch.setenv("SLACK_USER_TOKEN", "mock_slack_user_token_val")
+    assert resolve_slack_token() == "mock_slack_user_token_val"
+
+
+@pytest.mark.asyncio
+async def test_download_slack_file_fallback(monkeypatch):
+    """Verify download_slack_file gracefully falls back to bot token on HTTP 403."""
+    import io
+    import urllib.error
+    from hub.contact_review.notion_client import NotionPeopleClient
+
+    client = NotionPeopleClient(api_token="test_token", database_id="fake_db")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "mock_slack_bot_token_val")
+
+    call_count = 0
+
+    class MockResponse:
+        def __init__(self, data: bytes):
+            self._data = data
+            self.headers = {"Content-Type": "image/jpeg"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+        def read(self):
+            return self._data
+
+    def mock_urlopen(req, timeout=None):
+        nonlocal call_count
+        call_count += 1
+        auth_header = req.headers.get("Authorization", "")
+        # First call with user token fails with 403 Forbidden
+        if "mock_failing_token" in auth_header:
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, io.BytesIO(b"missing_scope"))
+        # Second call with bot token succeeds
+        return MockResponse(b"image_binary_data")
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        data, ctype = await client.download_slack_file(
+            "https://files.slack.com/files-pri/T123/img.jpg",
+            "mock_failing_token",
+        )
+        assert data == b"image_binary_data"
+        assert ctype == "image/jpeg"
+        assert call_count == 2
 
 
 @pytest.mark.asyncio

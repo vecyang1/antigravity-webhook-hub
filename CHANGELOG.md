@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.4] - 2026-09-12
+
+### Fixed & Enhanced
+- **Slack Private File Download Self-Healing & Scopes Resiliency (`hub/contact_review/notion_client.py`)**:
+  - Prioritized `SLACK_BOT_TOKEN` (`xoxb-`) for Slack file downloads (`download_slack_file`), as bot tokens inherently hold the requisite `files:read` scope.
+  - Implemented multi-token candidate fallback: if the primary or explicit token receives `HTTP 401 Unauthorized` or `HTTP 403 Forbidden` (e.g. user token lacking `files:read`), the client automatically retries with secondary candidate tokens without failing the image transfer pipeline.
+  - Verified empirically against live Slack endpoints (`HTTP 200 OK`, full binary payload received) and added unit test coverage (`test_download_slack_file_fallback`).
+
 ## [1.8.3] - 2026-09-12
 
 ### Fixed
