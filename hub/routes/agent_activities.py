@@ -32,6 +32,14 @@ from hub.server import AsyncHTTPServer
 logger = logging.getLogger("hub.routes.agent_activities")
 
 
+def _safe_mtime(p: Path) -> float:
+    """Safely return file modification time, defaulting to 0.0 on missing or unreadable file."""
+    try:
+        return p.stat().st_mtime
+    except Exception:
+        return 0.0
+
+
 def _get_sidecar_events_dir(config: Optional[AppConfig] = None) -> Path:
     """Resolve the directory containing Antigravity sidebar pulse events."""
     if config and hasattr(config, "observability") and getattr(config.observability, "sidecar_data_dir", None):
@@ -239,7 +247,7 @@ def discover_sentinel_conversations(
 
     # Method A: Scan sidecar events for newConversation with Sentinel prompts
     if s_dir.exists():
-        for ef in sorted(s_dir.glob("*.json"), reverse=True):
+        for ef in sorted(s_dir.glob("*.json"), key=_safe_mtime, reverse=True):
             try:
                 data = json.loads(ef.read_text(encoding="utf-8"))
                 nc = data.get("payload", {}).get("newConversation", {})
@@ -322,7 +330,7 @@ def get_task_agent_activity(
     if not matching_signal and ("contact" in action_type or "contact" in source):
         params_str = str(task_data.get("action_params_json") or "") + " " + logs_text
         if signals_dir.exists():
-            for sig_path in sorted(signals_dir.glob("**/*.signal.json"), reverse=True):
+            for sig_path in sorted(signals_dir.glob("**/*.signal.json"), key=_safe_mtime, reverse=True):
                 try:
                     sdata = json.loads(sig_path.read_text(encoding="utf-8"))
                     t_name = sdata.get("target_name")
@@ -336,7 +344,7 @@ def get_task_agent_activity(
     events_dir = _get_sidecar_events_dir(config)
     matching_pulse = None
     if events_dir.exists():
-        event_files = sorted(events_dir.glob("*.json"), reverse=True)[:80]
+        event_files = sorted(events_dir.glob("*.json"), key=_safe_mtime, reverse=True)[:80]
         for ef in event_files:
             try:
                 ed = json.loads(ef.read_text(encoding="utf-8"))
@@ -404,7 +412,7 @@ def register_agent_activities_routes(
         # Agent signals
         signals: list[dict[str, Any]] = []
         if signals_dir.exists():
-            for p in sorted(signals_dir.glob("**/*.signal.json"), reverse=True):
+            for p in sorted(signals_dir.glob("**/*.signal.json"), key=_safe_mtime, reverse=True):
                 try:
                     sd = json.loads(p.read_text(encoding="utf-8"))
                     signals.append(normalize_signal_data(sd, p))
@@ -420,7 +428,7 @@ def register_agent_activities_routes(
         pulse_count = 0
         latest_pulse = None
         if sidecar_events_dir.exists():
-            pulse_files = sorted(sidecar_events_dir.glob("*.json"), reverse=True)
+            pulse_files = sorted(sidecar_events_dir.glob("*.json"), key=_safe_mtime, reverse=True)
             pulse_count = len(pulse_files)
             if pulse_files:
                 try:
@@ -523,7 +531,7 @@ def register_agent_activities_routes(
 
         signals: list[dict[str, Any]] = []
         if signals_dir.exists():
-            for p in sorted(signals_dir.glob("**/*.signal.json"), reverse=True):
+            for p in sorted(signals_dir.glob("**/*.signal.json"), key=_safe_mtime, reverse=True):
                 try:
                     data = json.loads(p.read_text(encoding="utf-8"))
                     data = normalize_signal_data(data, p)
@@ -553,7 +561,8 @@ def register_agent_activities_routes(
 
     # 5. GET /api/agent-activities/pulses
     async def handle_pulses_list(req: HTTPRequest) -> HTTPResponse:
-        """List recent Antigravity sidebar pulse queue events."""
+        """List recent Antigravity sidebar pulse queue events, sorted chronologically descending."""
+        search_query = (req.query_params.get("q") or req.query_params.get("search") or "").lower().strip()
         try:
             limit = min(max(1, int(req.query_params.get("limit", 50))), 200)
         except (ValueError, TypeError):
@@ -563,27 +572,44 @@ def register_agent_activities_routes(
         total_count = 0
 
         if sidecar_events_dir.exists():
-            files = sorted(sidecar_events_dir.glob("*.json"), reverse=True)
+            files = sorted(sidecar_events_dir.glob("*.json"), key=_safe_mtime, reverse=True)
             total_count = len(files)
-            for ef in files[:limit]:
+            for ef in files:
+                if len(pulses) >= limit:
+                    break
                 try:
                     d = json.loads(ef.read_text(encoding="utf-8"))
                     nc = d.get("payload", {}).get("newConversation", {})
-                    ts_ms = d.get("timestampMs") or ""
+                    ts_ms = str(d.get("timestampMs") or "")
                     ts_iso = ""
                     if ts_ms.isdigit():
                         ts_iso = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(ts_ms) / 1000.0)) + " UTC"
+                    else:
+                        mtime = _safe_mtime(ef)
+                        if mtime > 0:
+                            ts_iso = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(mtime)) + " UTC"
+
+                    prompt = nc.get("prompt", "")
+                    task_id = nc.get("taskId")
+                    source = nc.get("source")
+                    action = nc.get("action")
+                    status = nc.get("status")
+
+                    if search_query:
+                        match_text = f"{prompt} {task_id or ''} {source or ''} {action or ''} {status or ''} {ef.name}".lower()
+                        if search_query not in match_text:
+                            continue
 
                     pulses.append({
                         "file_name": ef.name,
                         "timestamp_ms": ts_ms,
                         "timestamp_iso": ts_iso,
                         "error": d.get("error", ""),
-                        "prompt": nc.get("prompt", ""),
-                        "task_id": nc.get("taskId"),
-                        "source": nc.get("source"),
-                        "action": nc.get("action"),
-                        "status": nc.get("status"),
+                        "prompt": prompt,
+                        "task_id": task_id,
+                        "source": source,
+                        "action": action,
+                        "status": status,
                         "exit_code": nc.get("exitCode"),
                     })
                 except Exception:

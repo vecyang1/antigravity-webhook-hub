@@ -15,8 +15,8 @@
     "semantic_hash": ""
   },
   "hub/dispatcher.py": {
-    "mtime": 1789194886.8615746,
-    "ast_hash": "95291778a9f37653e7505ac0b82273ba",
+    "mtime": 1789108078.9868941,
+    "ast_hash": "cb7faebca5081500614601869a847ba4",
     "semantic_hash": ""
   },
   "hub/models.py": {
@@ -735,8 +735,8 @@
     "semantic_hash": ""
   },
   "hub/routes/tasks.py": {
-    "mtime": 1789194478.903376,
-    "ast_hash": "9bc56293e42f47998480e1d334949299",
+    "mtime": 1789119325.6776738,
+    "ast_hash": "224dda3b9fca30fbc0acec1c95ed5cae",
     "semantic_hash": ""
   },
   "scripts/challenge_m5_dispatcher_sse_stress.py": {
@@ -1060,8 +1060,8 @@
     "semantic_hash": ""
   },
   "CHANGELOG.md": {
-    "mtime": 1789122003.6861525,
-    "ast_hash": "0d281ca3da3db7239241bb01a34816ff",
+    "mtime": 1789121189.3060756,
+    "ast_hash": "96ab9a3ddb49f40f3c5528057e904e3d",
     "semantic_hash": ""
   },
   "README.md": {
@@ -1170,18 +1170,18 @@
     "semantic_hash": ""
   },
   "tests/api/test_dashboard_routes.py": {
-    "mtime": 1789194702.2521892,
-    "ast_hash": "ff10ea6910c536c5cc13d3e5be19d3cd",
+    "mtime": 1789112752.6192944,
+    "ast_hash": "e4c3ced615becca9dc00acfb14efec39",
     "semantic_hash": ""
   },
   "hub/routes/agent_activities.py": {
-    "mtime": 1789194468.389176,
-    "ast_hash": "7b52a977e0a0a725ac547da11efd6345",
+    "mtime": 1789121671.043048,
+    "ast_hash": "d62c96d972464e4950f56d3c45fa3ef7",
     "semantic_hash": ""
   },
   "hub/routes/dashboard_template.py": {
-    "mtime": 1789194612.8052108,
-    "ast_hash": "2fac005fa8448ff2b31e9cafe977d682",
+    "mtime": 1789121855.357743,
+    "ast_hash": "b7236b3a89b1993e6d9a79c4a2204814",
     "semantic_hash": ""
   },
   "scripts/capture_dashboard_views.py": {
@@ -1190,8 +1190,8 @@
     "semantic_hash": ""
   },
   "tests/api/test_agent_activities_routes.py": {
-    "mtime": 1789194681.667152,
-    "ast_hash": "f87fa9e499ce7f96d0e1588ba4600fc6",
+    "mtime": 1789121875.4298744,
+    "ast_hash": "4d475b7d697779c4c13edb8f49b927c5",
     "semantic_hash": ""
   },
   "tunnel/manage_daemon.sh": {

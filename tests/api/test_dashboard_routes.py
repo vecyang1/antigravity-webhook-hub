@@ -167,6 +167,10 @@ async def test_activities_and_tasks_summary_api(dashboard_test_app: dict[str, An
             assert data["by_status"]["running"] >= 1
             assert data["by_status"]["succeeded"] >= 1
             assert data["by_status"]["failed"] >= 1
+            assert "real_by_status" in data
+            assert "test_by_status" in data
+            assert isinstance(data["real_by_status"], dict)
+            assert isinstance(data["test_by_status"], dict)
             assert "agent_signal" in data["by_source"]
             assert "contact_review" in data["by_source"]
 

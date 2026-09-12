@@ -11,6 +11,7 @@ Verifies:
 """
 
 import json
+import os
 import pytest
 import httpx
 from pathlib import Path
@@ -26,11 +27,15 @@ from hub.server import AsyncHTTPServer
 
 
 @pytest.fixture
-async def agent_activities_app(free_port: int, temp_db_path: str):
+async def agent_activities_app(free_port: int, temp_db_path: str, tmp_path: Path):
     config = AppConfig()
     config.server.port = free_port
     config.server.host = "127.0.0.1"
     config.database.path = temp_db_path
+
+    sidecar_dir = tmp_path / "sidecar" / "webhook-hub-sentinel" / "events"
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    config.observability.sidecar_data_dir = str(tmp_path / "sidecar")
 
     db = DatabaseManager(temp_db_path, cache_size=-16)
     db.init_schema()
@@ -56,6 +61,7 @@ async def agent_activities_app(free_port: int, temp_db_path: str):
         "broker": broker,
         "dispatcher": dispatcher,
         "config": config,
+        "sidecar_dir": sidecar_dir,
     }
 
     await server.stop()
@@ -300,3 +306,65 @@ async def test_corrupted_signal_and_transcript_resilience(tmp_path):
     assert parsed is not None
     assert parsed["conversation_id"] == cid
     assert parsed["final_report"] == "Delivered after corruption"
+
+
+@pytest.mark.asyncio
+async def test_pulses_chronological_ordering_by_mtime(agent_activities_app):
+    """Verify that pulses are strictly sorted by mtime descending, even if filenames have mixed timezones."""
+    base_url = agent_activities_app["base_url"]
+    sidecar_dir = agent_activities_app["sidecar_dir"]
+
+    # Create file A with older mtime but alphabetically 'higher' filename
+    file_a = sidecar_dir / "20260912_000000.000.json"
+    file_a.write_text(json.dumps({
+        "timestampMs": "1000",
+        "payload": {"newConversation": {"prompt": "Prompt A (Older Mtime)", "taskId": "tsk_older"}}
+    }))
+    os.utime(file_a, (1000, 1000))
+
+    # Create file B with newer mtime but alphabetically 'lower' filename
+    file_b = sidecar_dir / "20260911_120000.000.json"
+    file_b.write_text(json.dumps({
+        "timestampMs": "2000",
+        "payload": {"newConversation": {"prompt": "Prompt B (Newer Mtime)", "taskId": "tsk_newer"}}
+    }))
+    os.utime(file_b, (2000, 2000))
+
+    async with httpx.AsyncClient(base_url=base_url) as client:
+        resp = await client.get("/api/agent-activities/pulses?limit=10")
+        assert resp.status_code == 200
+        data = resp.json()
+        pulses = data["pulses"]
+        assert len(pulses) >= 2
+        # Newer mtime (file_b) must come first despite file_a having a higher filename string
+        pulse_prompts = [p["prompt"] for p in pulses]
+        idx_newer = pulse_prompts.index("Prompt B (Newer Mtime)")
+        idx_older = pulse_prompts.index("Prompt A (Older Mtime)")
+        assert idx_newer < idx_older
+
+
+@pytest.mark.asyncio
+async def test_pulses_search_filtering(agent_activities_app):
+    """Verify that pulses endpoint correctly filters by search query parameter `q`."""
+    base_url = agent_activities_app["base_url"]
+    sidecar_dir = agent_activities_app["sidecar_dir"]
+
+    search_file = sidecar_dir / "20260912_123456.999.json"
+    search_file.write_text(json.dumps({
+        "timestampMs": "3000",
+        "payload": {"newConversation": {"prompt": "UniqueSearchKeywordPulse", "taskId": "tsk_unique_search_99"}}
+    }))
+    os.utime(search_file, (3000, 3000))
+
+    async with httpx.AsyncClient(base_url=base_url) as client:
+        # Match search
+        resp = await client.get("/api/agent-activities/pulses?q=UniqueSearchKeywordPulse")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["pulses"]) >= 1
+        assert any("UniqueSearchKeywordPulse" in p["prompt"] for p in data["pulses"])
+
+        # Mismatch search
+        resp_nomatch = await client.get("/api/agent-activities/pulses?q=NonExistentKeywordXYZ123")
+        assert resp_nomatch.status_code == 200
+        assert len(resp_nomatch.json()["pulses"]) == 0

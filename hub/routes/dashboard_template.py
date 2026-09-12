@@ -2488,24 +2488,44 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     }}
 
     function renderSummary(summary) {{
+      if (!summary) return;
+      state.latestSummary = summary;
       const totalTasks = summary.total_tasks || 0;
       const realTasks = summary.real_tasks !== undefined ? summary.real_tasks : 0;
       const testTasks = summary.test_tasks !== undefined ? summary.test_tasks : Math.max(0, totalTasks - realTasks);
 
-      document.getElementById('statTotalTasks').innerText = totalTasks;
+      let activeByStatus = summary.by_status || {{}};
+      if (state.eventFilterMode === 'real' && summary.real_by_status) {{
+        activeByStatus = summary.real_by_status;
+      }} else if (state.eventFilterMode === 'test' && summary.test_by_status) {{
+        activeByStatus = summary.test_by_status;
+      }}
+
+      document.getElementById('statTotalTasks').innerText = state.eventFilterMode === 'real' ? realTasks : (state.eventFilterMode === 'test' ? testTasks : totalTasks);
       const elRealTasks = document.getElementById('statRealTasks');
       if (elRealTasks) elRealTasks.innerText = realTasks;
       document.getElementById('statTotalEvents').innerText = summary.total_events || 0;
-      const byStatus = summary.by_status || {{}};
-      document.getElementById('statSucceeded').innerText = byStatus.succeeded || 0;
-      document.getElementById('statRunning').innerText = (byStatus.running || 0) + (byStatus.queued || 0);
+      document.getElementById('statSucceeded').innerText = activeByStatus.succeeded || 0;
+      document.getElementById('statRunning').innerText = (activeByStatus.running || 0) + (activeByStatus.queued || 0);
 
-      document.getElementById('countAll').innerText = totalTasks;
+      document.getElementById('countAll').innerText = state.eventFilterMode === 'real' ? realTasks : (state.eventFilterMode === 'test' ? testTasks : totalTasks);
       document.getElementById('countAgent').innerText = (summary.by_action || {{}}).agent_signal || 0;
       document.getElementById('countContact').innerText = (summary.by_source || {{}})['contact-review'] || (summary.by_source || {{}})['contact_review'] || 0;
       document.getElementById('countKuma').innerText = (summary.by_source || {{}})['uptime_kuma'] || (summary.by_source || {{}})['uptime-kuma'] || 0;
       document.getElementById('countCli').innerText = (summary.by_action || {{}}).cli || 0;
-      document.getElementById('countFailed').innerText = (byStatus.failed || 0) + (byStatus.timed_out || 0);
+
+      const failedCount = (activeByStatus.failed || 0) + (activeByStatus.timed_out || 0);
+      const failedEl = document.getElementById('countFailed');
+      if (failedEl) {{
+        failedEl.innerText = failedCount;
+        if (failedCount === 0) {{
+          failedEl.style.background = 'rgba(148, 163, 184, 0.15)';
+          failedEl.style.color = '#94a3b8';
+        }} else {{
+          failedEl.style.background = 'rgba(239, 68, 68, 0.2)';
+          failedEl.style.color = 'var(--status-danger)';
+        }}
+      }}
 
       const pillReal = document.getElementById('pillRealCount');
       const pillAll = document.getElementById('pillAllCount');
@@ -2581,6 +2601,9 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       state.eventFilterMode = mode;
       setStoredFilterMode(mode);
       syncFilterUI();
+      if (state.latestSummary) {{
+        renderSummary(state.latestSummary);
+      }}
       if (mode === 'real') {{
         showToast('Filter: Showing real production activities only', 'info');
       }} else if (mode === 'test') {{
@@ -3268,7 +3291,11 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     async function loadPulses() {{
       const tbody = document.getElementById('pulsesTableBody');
       try {{
-        const resp = await fetch('/api/agent-activities/pulses?limit=50');
+        let url = '/api/agent-activities/pulses?limit=50';
+        if (state.searchQuery && state.searchQuery.trim()) {{
+          url += '&q=' + encodeURIComponent(state.searchQuery.trim());
+        }}
+        const resp = await fetch(url);
         if (!resp.ok) {{
           tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--status-danger);padding:32px;">Failed loading pulse queue: ${{resp.statusText}}</td></tr>`;
           return;
@@ -3285,12 +3312,20 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
     function renderPulses() {{
       const tbody = document.getElementById('pulsesTableBody');
-      if (!state.pulses || state.pulses.length === 0) {{
-        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:32px;">No sidebar pulses queued.</td></tr>`;
+      let pulses = state.pulses || [];
+      if (state.searchQuery && state.searchQuery.trim()) {{
+        const q = state.searchQuery.trim().toLowerCase();
+        pulses = pulses.filter(p => {{
+          const match = `${{p.prompt || ''}} ${{p.task_id || ''}} ${{p.source || ''}} ${{p.action || ''}} ${{p.status || ''}} ${{p.file_name || ''}}`.toLowerCase();
+          return match.includes(q);
+        }});
+      }}
+      if (!pulses || pulses.length === 0) {{
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:32px;">No matching sidebar pulses found.</td></tr>`;
         return;
       }}
 
-      tbody.innerHTML = state.pulses.map(p => {{
+      tbody.innerHTML = pulses.map(p => {{
         const taskLink = p.task_id
           ? `<a href="javascript:void(0)" onclick="openDrawer('${{p.task_id}}')" class="task-id-code">${{escapeHtml(p.task_id)}}</a>`
           : `<span style="color:var(--text-muted);">--</span>`;
@@ -3308,8 +3343,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
             <td>${{statusBadge}}</td>
             <td style="max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); font-size: 11px;" title="${{escapeHtml(p.prompt || '')}}">${{promptSnippet}}</td>
             <td>
-              ${{p.task_id ? `<button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="openDrawer('${{p.task_id}}')">Logs</button>` : ''}}
-              <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px; margin-left: 4px;" onclick="copyText('${{escapeJsString(p.prompt || '')}}')">Copy</button>
+              <div style="display: inline-flex; gap: 4px; align-items: center;">
+                ${{p.task_id ? `<button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="openDrawer('${{p.task_id}}')" title="View execution logs">Logs</button>` : ''}}
+                <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="copyText('${{escapeJsString(p.prompt || '')}}')" title="Copy pulse prompt">Copy</button>
+              </div>
             </td>
           </tr>
         `;

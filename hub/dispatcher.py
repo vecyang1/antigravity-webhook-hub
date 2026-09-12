@@ -167,7 +167,7 @@ class TaskDispatcher:
                 finally:
                     self._enqueued_task_ids.discard(task_id)
                     self.queue.task_done()
-                    gc.collect()
+                    self._apply_pressure_relief()
                     self._apply_pressure_relief()
                     if hasattr(self.db, "shrink_memory"):
                         try:

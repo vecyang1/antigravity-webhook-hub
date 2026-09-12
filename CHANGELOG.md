@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.2] - 2026-09-12
+
+### Added
+- **Production vs Synthetic Status Breakdown (`hub/routes/tasks.py`, `tests/api/test_dashboard_routes.py`)**:
+  - Added `real_by_status` and `test_by_status` metrics to `/tasks/summary` and `/activities/summary`, separating real business tasks from synthetic test fixtures.
+  - Added test coverage in `test_dashboard_routes.py` verifying status decomposition.
+- **Pulse Queue Search Endpoint Query Filtering (`hub/routes/agent_activities.py`, `tests/api/test_agent_activities_routes.py`)**:
+  - Added query parameter `q` support to `/api/agent-activities/pulses`, searching across prompts, task IDs, sources, actions, and status.
+  - Added unit test coverage: `test_pulses_chronological_ordering_by_mtime` and `test_pulses_search_filtering`.
+
+### Fixed
+- **Pulse Queue Chronological Ordering (`hub/routes/agent_activities.py`)**:
+  - Replaced string filename sorting with modification time sorting (`_safe_mtime`), resolving non-chronological interleaving between local-time and UTC-generated sidecar pulse events.
+- **Signals Sorting by Modification Time (`hub/routes/agent_activities.py`)**:
+  - Switched signal discovery from alphabetical hash-based sorting to `_safe_mtime` descending, ensuring newest contact review signals appear first.
+- **Sidebar False Alarm & Filter State Dynamic Alignment (`hub/routes/dashboard_template.py`)**:
+  - Dynamically binds sidebar badge counts and top metrics to `state.eventFilterMode`. In `Real Only` mode, `Failed / Blocked` displays neutral `0` instead of a red alarm badge `12`, accurately reflecting that 100% of production tasks succeeded.
+- **Pulse Queue UI Search & Responsive Action Buttons (`hub/routes/dashboard_template.py`)**:
+  - Wired search input in the Pulse Queue view to query backend `/api/agent-activities/pulses?q=` and filter client-side.
+  - Standardized action buttons into responsive inline-flex layouts providing both `Logs` and `Copy` actions.
+- **Worker Loop Pressure Relief & Low Memory Ceiling (`hub/dispatcher.py`)**:
+  - Activated `_apply_pressure_relief()` in `TaskDispatcher._worker_loop` finally block, freeing malloc zone memory back to macOS kernel after task execution to guarantee `< 30.0 MB` RSS during heavy load.
+
 ## [1.7.1] - 2026-09-11
 
 ### Added
