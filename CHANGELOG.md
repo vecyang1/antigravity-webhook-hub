@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Antigravity Autonomous Session Self-Healing & Quota Fallback (`hub/antigravity/session_manager.py`)**:
   - Implemented auto-recovery for expired or invalid conversation IDs in threaded conversations with transparent session re-anchoring in SSOT database.
   - Added graceful 429 resource exhaustion fallback with automatic downgrade to `flash_lite` model tier.
+  - Added notification gating (`should_notify_slack`) ensuring stress tests and automated load benchmarks do not pollute production channels with milestone comments.
   - Published session recovery and lifecycle events to `EventBroker`.
 - **Unit Testing (`tests/unit/test_antigravity_agent.py`)**:
   - Added unit test cases covering expired session self-healing recovery and quota auto-downgrade.

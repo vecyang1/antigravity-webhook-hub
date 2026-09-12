@@ -75,6 +75,15 @@ async def execute_antigravity_task(
     is_follow_up = bool(thread_ts and thread_ts != ts)
     payload.is_follow_up = is_follow_up
 
+    # Gating: do not post milestone comments to Slack if stress testing or explicitly muted
+    source_str = str(payload.source or task_data.get("source") or "")
+    skip_notify = (
+        source_str.endswith("_stress")
+        or bool(params_dict.get("skip_slack_notify"))
+        or bool(task_data.get("skip_slack_notify"))
+    )
+    should_notify_slack = not skip_notify
+
     # Step 1: Download any image attachments locally
     downloaded_images: list[str] = []
     if payload.files:
@@ -116,7 +125,7 @@ async def execute_antigravity_task(
                         await touch_res
 
                 # Post thread reply
-                if channel and thread_ts:
+                if should_notify_slack and channel and thread_ts:
                     notifier.notify_follow_up(
                         channel=channel,
                         thread_ts=thread_ts,
@@ -130,7 +139,6 @@ async def execute_antigravity_task(
                         "event": "antigravity_followup_synced",
                         "task_id": task_id,
                         "conversation_id": convo_id,
-                        "thread_key": thread_key,
                         "channel": channel,
                         "thread_ts": thread_ts,
                         "elapsed_seconds": elapsed,
@@ -139,7 +147,7 @@ async def execute_antigravity_task(
                         await broker.publish("events", evt_data)
                         await broker.publish(f"task.{task_id}", evt_data)
                     except Exception as e:
-                        logger.debug("Failed to publish followup event to broker: %s", e)
+                        logger.debug("Failed to publish followup sync event to broker: %s", e)
 
                 return {
                     "success": True,
@@ -147,27 +155,16 @@ async def execute_antigravity_task(
                     "conversation_id": convo_id,
                     "thread_key": thread_key,
                     "elapsed_seconds": elapsed,
-                    "message": "Follow-up synced to existing Antigravity session",
                 }
             else:
-                log(f"Failed to send follow-up message to session {convo_id}: {err_msg}")
-                # Check for recoverable session errors: expired session, conversation not found, timed out, 404
-                is_recoverable = False
-                if err_msg:
-                    err_lower = err_msg.lower()
-                    if any(k in err_lower for k in ("not found", "expired", "timed out", "timeout", "invalid conversation", "404", "does not exist")):
-                        is_recoverable = True
-
-                if is_recoverable:
-                    log(f"Session {convo_id} is expired or invalid ({err_msg}). Initiating self-healing recovery by promoting to new conversation...")
-                    # Mark old session as expired in SSOT database
-                    if hasattr(db, "upsert_session_thread"):
-                        expired_rec = dict(existing_session)
-                        expired_rec["status"] = "expired"
-                        up_res = db.upsert_session_thread(expired_rec)
-                        if asyncio.iscoroutine(up_res):
-                            await up_res
-
+                log(f"Failed to deliver follow-up message to session {convo_id}: {err_msg}")
+                # Auto-recovery: if session not found, fall back to creating a new conversation
+                if "not found" in (err_msg or "").lower() or "invalid" in (err_msg or "").lower():
+                    log(f"Session {convo_id} is dead/expired. Initiating auto-recovery into a fresh session...")
+                    if hasattr(db, "update_session_thread_status"):
+                        res = db.update_session_thread_status(thread_key, "expired")
+                        if asyncio.iscoroutine(res):
+                            await res
                     if broker:
                         rec_evt = {
                             "event": "antigravity_session_recovery_triggered",
@@ -185,7 +182,7 @@ async def execute_antigravity_task(
                     # Fall through to Branch B for self-healing
                     session_recovered_from = convo_id
                 else:
-                    if channel and thread_ts:
+                    if should_notify_slack and channel and thread_ts:
                         notifier.notify_failed(channel=channel, thread_ts=thread_ts, task_id=task_id, error_message=err_msg or "发送追问失败")
                     return {
                         "success": False,
@@ -204,7 +201,7 @@ async def execute_antigravity_task(
     all_cmds = list(dict.fromkeys(payload.slash_commands + extracted_cmds))
 
     # Milestone: notify in_progress under thread
-    if channel and root_ts:
+    if should_notify_slack and channel and root_ts:
         notifier.notify_in_progress(
             channel=channel,
             thread_ts=root_ts,
@@ -256,7 +253,7 @@ async def execute_antigravity_task(
 
     if not success:
         log(f"Failed to start Antigravity conversation: {err_msg}")
-        if channel and root_ts:
+        if should_notify_slack and channel and root_ts:
             notifier.notify_failed(
                 channel=channel,
                 thread_ts=root_ts,
@@ -304,7 +301,7 @@ async def execute_antigravity_task(
         log(f"Linked thread {thread_key} -> conversation {convo_id} in SSOT database.")
 
     # Milestone: notify done under thread
-    if channel and root_ts:
+    if should_notify_slack and channel and root_ts:
         summary_text = f"已成功加载并指派执行。挂载技能: {', '.join(all_cmds) or '标准模式'}"
         if session_recovered_from:
             summary_text += f" (已从失效会话 {session_recovered_from[:8]} 自动恢复并迁移)"
