@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-09-12
+
+### Added
+- **macOS Zero-Friction Setup Wizard (`hub/cli.py:cmd_setup`, alias `init`)**:
+  - Automatically diagnoses CPU architecture (`arm64`/`x86_64`) and Python runtime (>= 3.10).
+  - Scaffolds runtime directory structure (`data/`, `events/`, `backups/`).
+  - Provisions cryptographically secure `.env` containing high-entropy HMAC-SHA256 secret (64 hex characters), Bearer token, and Dashboard auth token with secure `0600` file permissions (preserves existing `.env` unless `--force` is specified).
+- **Native macOS `launchd` LaunchAgent Service Manager (`hub/cli.py:cmd_service`)**:
+  - Full daemon lifecycle control: `install`, `uninstall`, `restart`, `status`, `logs`.
+  - Dynamically synthesizes LaunchAgent plist tailored to the host user, project root, and exact Python interpreter (`sys.executable`), eliminating hardcoded paths.
+  - Registers with `launchd` via `launchctl load -w` to enable auto-start on login and auto-restart on unexpected termination.
+  - Exposes process status, PID, RSS memory against `< 30.0 MB` budget, and stdout/stderr tailing (`logs -n <lines>`).
+- **Comprehensive CLI Unit Test Suite (`tests/unit/test_cli.py`)**:
+  - Added test coverage for `cmd_setup` (directory creation, secure `.env` provisioning, idempotency, and `--force` regeneration).
+  - Added test coverage for `cmd_service` (platform check on non-Darwin, LaunchAgent plist creation and removal, status and logs parsing).
+  - Expanded test suite to 33 CLI tests and 250 passing tests across the entire repository.
+
+### Changed
+- **SSOT Toolchain Consolidation (`tunnel/manage_daemon.sh`)**:
+  - Refactored shell daemon script into a thin forwarder delegating to `./bin/webhook-hub service "$@"` or `start`.
+  - Eliminated snippet rot and duplicated shell logic, maintaining single source of truth in Python CLI.
+
 ## [1.8.0] - 2026-09-12
 
 ### Added

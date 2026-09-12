@@ -1,9 +1,9 @@
 ---
 name: webhook-hub
 description: Control, monitor, and query the local Antigravity Webhook Hub daemon and event dispatcher on macOS.
-version: 1.0.0
+version: 1.8.1
 author: V
-date: 2026-09-08
+date: 2026-09-12
 source: local repository
 ---
 
@@ -16,7 +16,16 @@ Lightweight (<30MB RAM, 0% idle CPU) macOS webhook gateway and event dispatcher 
 All commands run via `./bin/webhook-hub <subcommand>` or `python3 -m hub <subcommand>`.
 
 ```bash
-# Daemon management
+# macOS Zero-Friction Setup & LaunchAgent Daemon
+./bin/webhook-hub setup                 # Self-diagnose environment, scaffold data/ dirs, provision secure .env
+./bin/webhook-hub setup --force         # Re-scaffold and regenerate fresh cryptographic tokens
+./bin/webhook-hub service install       # Install & activate native macOS launchd LaunchAgent auto-start daemon
+./bin/webhook-hub service status        # Check LaunchAgent registration, PID, RSS memory (<30MB), logs
+./bin/webhook-hub service logs -n 50    # View last 50 lines of stdout and stderr daemon logs
+./bin/webhook-hub service restart       # Cleanly reload daemon via launchctl unload/load
+./bin/webhook-hub service uninstall     # Unload LaunchAgent and remove plist
+
+# Daemon management (manual foreground / background)
 ./bin/webhook-hub start -d             # Start gateway daemon on default port 9423
 ./bin/webhook-hub status               # Check process liveness & health metrics
 ./bin/webhook-hub status --json        # Machine-readable JSON status for agents

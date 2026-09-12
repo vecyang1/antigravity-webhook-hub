@@ -119,16 +119,27 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-### 3. Configuration
+### 3. Zero-Friction Setup (macOS & Linux)
 
-Copy the example configuration files:
+Bootstrap your environment, directories, and cryptographic `.env` with a single command:
 
 ```bash
-cp .env.example .env
-cp config.yaml.example config.yaml
+# Automatically diagnose architecture (arm64/x86_64), Python runtime,
+# scaffold directories (data/, events/, backups/), and provision secure .env:
+./bin/webhook-hub setup
 ```
 
-Configuration resolution follows strict precedence:
+To run as a permanent background service on macOS with auto-start on login and auto-restart on exit:
+
+```bash
+# Install and activate native macOS launchd LaunchAgent
+./bin/webhook-hub service install
+
+# Check LaunchAgent registration, PID, RSS memory (<30MB), and logs
+./bin/webhook-hub service status
+```
+
+Manual configuration resolution follows strict precedence:
 **CLI Arguments > Environment Variables (.env / shell) > config.yaml > Built-in Defaults**
 
 Key settings in `.env`:
@@ -151,6 +162,8 @@ The CLI is invoked via `./bin/webhook-hub` or `python3 -m hub`.
 
 | Subcommand | Description | Common Flags |
 |---|---|---|
+| `setup` | Zero-friction setup wizard (scaffolding & `.env`) | `--force`, `-p` / `--port`, `--host` |
+| `service` | Native macOS `launchd` LaunchAgent manager | `install`, `status`, `logs`, `restart`, `uninstall` |
 | `start` | Start the gateway server | `-d` / `--daemon`, `-p` / `--port`, `--host`, `--db`, `--pidfile` |
 | `stop` | Gracefully terminate running instance | `-p` / `--pidfile`, `-f` / `--force`, `-t` / `--timeout` |
 | `status` | Query process status and `/healthz` metrics | `--json`, `-p` / `--port`, `--host`, `--pidfile` |
@@ -165,8 +178,10 @@ The CLI is invoked via `./bin/webhook-hub` or `python3 -m hub`.
 ### Examples
 
 ```bash
-# 1. Start gateway in daemon mode
-./bin/webhook-hub start -d
+# 1. Zero-friction setup & macOS LaunchAgent daemon
+./bin/webhook-hub setup
+./bin/webhook-hub service install
+./bin/webhook-hub service status
 
 # 2. Inspect health & memory budget
 ./bin/webhook-hub status

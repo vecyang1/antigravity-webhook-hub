@@ -52,7 +52,7 @@ def test_build_parser_subcommands():
     ]
     assert len(subparsers_action) == 1
     choices = subparsers_action[0].choices
-    expected_subcommands = {"start", "stop", "status", "logs", "test-send", "verify", "dashboard", "tasks", "rerun"}
+    expected_subcommands = {"start", "stop", "status", "logs", "test-send", "verify", "dashboard", "tasks", "rerun", "setup", "service"}
     assert expected_subcommands.issubset(set(choices.keys()))
 
 
@@ -736,6 +736,127 @@ def test_cmd_rerun_batch_failed(tmp_path, capsys):
     test_task = db.get_task("tsk_batch_test_1")
     assert test_task["status"] == "failed"  # Should remain failed
     db.close()
+
+
+# ==============================================================================
+# 9. SETUP & LAUNCHD SERVICE COMMAND TESTS
+# ==============================================================================
+
+def test_cmd_setup_creates_scaffolding_and_env(tmp_path, capsys):
+    """Verify setup command creates directories and provisions secure .env file."""
+    code = main(["setup", "--dir", str(tmp_path), "--port", "9555"])
+    assert code == 0
+
+    # Verify directories
+    assert (tmp_path / "data").is_dir()
+    assert (tmp_path / "events").is_dir()
+    assert (tmp_path / "backups").is_dir()
+
+    # Verify .env
+    env_path = tmp_path / ".env"
+    assert env_path.is_file()
+    content = env_path.read_text(encoding="utf-8")
+    assert "PORT=9555" in content
+    assert "WEBHOOK_SECRET=" in content
+    assert "BEARER_TOKEN=" in content
+    assert "DASHBOARD_AUTH_TOKEN=" in content
+
+    captured = capsys.readouterr().out
+    assert "Environment Setup Wizard" in captured
+    assert "Setup Complete!" in captured
+
+
+def test_cmd_setup_preserves_existing_env_without_force(tmp_path, capsys):
+    """Verify setup preserves existing .env unless --force is passed."""
+    env_path = tmp_path / ".env"
+    env_path.write_text("CUSTOM_TEST_VAR=preserved\n", encoding="utf-8")
+
+    code = main(["setup", "--dir", str(tmp_path)])
+    assert code == 0
+    assert "CUSTOM_TEST_VAR=preserved" in env_path.read_text(encoding="utf-8")
+    captured = capsys.readouterr().out
+    assert "preserving" in captured
+
+    # With --force, should overwrite
+    code_force = main(["setup", "--dir", str(tmp_path), "--force", "--port", "9666"])
+    assert code_force == 0
+    new_content = env_path.read_text(encoding="utf-8")
+    assert "CUSTOM_TEST_VAR=preserved" not in new_content
+    assert "PORT=9666" in new_content
+
+
+def test_cmd_service_non_darwin_rejected(capsys):
+    """Verify service command fails gracefully on non-macOS platforms."""
+    with patch("platform.system", return_value="Linux"):
+        code = main(["service", "status"])
+        assert code == 1
+        captured = capsys.readouterr().err
+        assert "only supported on macOS" in captured
+
+
+def test_cmd_service_status_stopped(tmp_path, capsys):
+    """Verify service status output when daemon is stopped and plist not installed."""
+    code = main(["service", "status", "--dir", str(tmp_path), "--launch-agents-dir", str(tmp_path)])
+    assert code == 1  # Not running
+    out = capsys.readouterr().out
+    assert "macOS LaunchAgent Status" in out
+    assert "Plist Installed: NO" in out
+    assert "Process State:   STOPPED" in out
+
+
+def test_cmd_service_logs(tmp_path, capsys):
+    """Verify service logs output displays contents of out and err logs."""
+    out_log = tmp_path / "webhook-hub.log"
+    err_log = tmp_path / "webhook-hub-err.log"
+    out_log.write_text("line1\nline2\nline3\n", encoding="utf-8")
+    err_log.write_text("err1\nerr2\n", encoding="utf-8")
+
+    code = main(["service", "logs", "--dir", str(tmp_path), "--lines", "2"])
+    assert code == 0
+    captured = capsys.readouterr().out
+    assert "line2" in captured
+    assert "line3" in captured
+    assert "err1" in captured
+    assert "err2" in captured
+
+
+def test_cmd_service_install_and_uninstall_plist(tmp_path, capsys):
+    """Verify service install writes plist file and service uninstall removes it."""
+    plist_path = tmp_path / "com.test.webhook-hub.plist"
+
+    # Mock launchctl calls to prevent modifying actual system services
+    mock_run = MagicMock()
+    mock_run.return_value.returncode = 0
+    mock_run.return_value.stdout = ""
+    mock_run.return_value.stderr = ""
+
+    with patch("subprocess.run", mock_run):
+        code_install = main([
+            "service", "install",
+            "--dir", str(tmp_path),
+            "--launch-agents-dir", str(tmp_path),
+            "--label", "com.test.webhook-hub",
+            "--port", "9876",
+        ])
+        assert code_install == 0
+        assert plist_path.is_file()
+
+        plist_content = plist_path.read_text(encoding="utf-8")
+        assert "<string>com.test.webhook-hub</string>" in plist_content
+        assert "<string>--port</string>" in plist_content
+        assert "<string>9876</string>" in plist_content
+        assert "<key>KeepAlive</key>" in plist_content
+        assert "<key>RunAtLoad</key>" in plist_content
+
+        # Now test uninstall
+        code_uninstall = main([
+            "service", "uninstall",
+            "--dir", str(tmp_path),
+            "--launch-agents-dir", str(tmp_path),
+            "--label", "com.test.webhook-hub",
+        ])
+        assert code_uninstall == 0
+        assert not plist_path.is_file()
 
 
 

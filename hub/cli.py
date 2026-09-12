@@ -1422,6 +1422,343 @@ def cmd_rerun(args: argparse.Namespace) -> int:
     return 0
 
 
+# ==============================================================================
+# MAC SETUP & LAUNCHD SERVICE MANAGEMENT
+# ==============================================================================
+
+def cmd_setup(args: Any) -> int:
+    """Zero-friction setup wizard for macOS & Linux developers and AI agents."""
+    import platform
+    import secrets
+
+    print("=" * 60)
+    print("  Antigravity Webhook Hub — Environment Setup Wizard")
+    print("=" * 60)
+
+    project_dir = Path(getattr(args, "dir", None) or Path(__file__).resolve().parent.parent).resolve()
+    os_name = platform.system()
+    machine = platform.machine()
+    python_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+
+    print(f"\n[1/4] Platform Diagnosis:")
+    print(f"  • Operating System: {os_name} ({machine})")
+    print(f"  • Python Runtime:   {python_ver} ({sys.executable})")
+    print(f"  • Project Root:     {project_dir}")
+
+    if sys.version_info < (3, 10):
+        print(f"\n  [ERROR] Python >= 3.10 is required (found {python_ver}).", file=sys.stderr)
+        return 1
+
+    # [2/4] Directory Scaffolding
+    print(f"\n[2/4] Directory Scaffolding:")
+    for dir_name in ("data", "events", "backups"):
+        d = project_dir / dir_name
+        d.mkdir(parents=True, exist_ok=True)
+        print(f"  • Verified directory: {dir_name}/")
+
+    # [3/4] Cryptographic Configuration Provisioning
+    print(f"\n[3/4] Configuration Provisioning:")
+    env_file = project_dir / ".env"
+    if env_file.is_file() and not getattr(args, "force", False):
+        print(f"  • Found existing '.env' configuration (preserving).")
+        print(f"    (Run with --force to regenerate fresh cryptographic keys)")
+    else:
+        hmac_secret = secrets.token_hex(32)
+        bearer_token = secrets.token_hex(32)
+        dash_token = secrets.token_hex(16)
+        port = getattr(args, "port", 9423) or 9423
+        host = getattr(args, "host", "127.0.0.1") or "127.0.0.1"
+
+        content = f"""# Antigravity Webhook Hub Configuration
+# Generated automatically by 'webhook-hub setup'
+PORT={port}
+HOST={host}
+WEBHOOK_SECRET={hmac_secret}
+BEARER_TOKEN={bearer_token}
+DATABASE_PATH=data/webhook_hub.db
+DATABASE_BUSY_TIMEOUT_MS=5000
+DASHBOARD_AUTH_TOKEN={dash_token}
+"""
+        env_file.write_text(content, encoding="utf-8")
+        try:
+            env_file.chmod(0o600)
+        except OSError:
+            pass
+
+        print(f"  • Generated secure '.env' file with permissions 0600")
+        print(f"    - HMAC Secret:   {hmac_secret[:8]}...{hmac_secret[-8:]} (64 hex chars)")
+        print(f"    - Bearer Token:  {bearer_token[:8]}...{bearer_token[-8:]} (64 hex chars)")
+        print(f"    - Ingress Port:  {port}")
+        print(f"    - Database:      data/webhook_hub.db")
+
+    # [4/4] Next Steps Guide
+    print(f"\n[4/4] Setup Complete! Ready for use:")
+    print(f"  1. Start Foreground:       ./bin/webhook-hub start")
+    if os_name == "Darwin":
+        print(f"  2. Install macOS Daemon:   ./bin/webhook-hub service install")
+        print(f"  3. Check Daemon Status:    ./bin/webhook-hub service status")
+    else:
+        print(f"  2. Start Background:       ./bin/webhook-hub start --daemon")
+        print(f"  3. Check Server Status:    ./bin/webhook-hub status")
+    print(f"  4. Send Test Ingress:      ./bin/webhook-hub test-send")
+    print(f"  5. Open Web Dashboard:     ./bin/webhook-hub dashboard --open")
+    print(f"  6. Run Full Verification:  ./bin/webhook-hub verify")
+    print("=" * 60)
+    return 0
+
+
+def _add_setup_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--force", "-f", action="store_true", help="Overwrite existing .env configuration with fresh keys")
+    parser.add_argument("--port", "-p", type=int, default=9423, help="Port to configure (default: 9423)")
+    parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
+    parser.add_argument("--dir", default=None, help="Target project root directory (default: auto-detected)")
+
+
+def cmd_service(args: Any) -> int:
+    """Manage native macOS launchd LaunchAgent background daemon service."""
+    import subprocess
+    import platform
+
+    action = getattr(args, "action", "status") or "status"
+    label = getattr(args, "label", "com.antigravity.webhook-hub") or "com.antigravity.webhook-hub"
+
+    if platform.system() != "Darwin":
+        print("Error: 'service' commands manage macOS launchd LaunchAgents and are only supported on macOS.", file=sys.stderr)
+        print("On Linux systems, consider using systemd or running with './bin/webhook-hub start --daemon'.", file=sys.stderr)
+        return 1
+
+    project_dir = Path(getattr(args, "dir", None) or Path(__file__).resolve().parent.parent).resolve()
+    bin_path = project_dir / "bin" / "webhook-hub"
+    python_bin = sys.executable
+    launch_agents_dir = Path(getattr(args, "launch_agents_dir", None) or (Path.home() / "Library" / "LaunchAgents")).resolve()
+    plist_path = launch_agents_dir / f"{label}.plist"
+    out_log = project_dir / "webhook-hub.log"
+    err_log = project_dir / "webhook-hub-err.log"
+    pid_file = project_dir / DEFAULT_PID_FILE
+
+    def _is_service_loaded() -> tuple[bool, Optional[int]]:
+        try:
+            res = subprocess.run(["launchctl", "list"], capture_output=True, text=True, check=False)
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 3 and parts[2] == label:
+                        pid_str = parts[0]
+                        pid = int(pid_str) if pid_str.isdigit() else None
+                        return True, pid
+        except Exception:
+            pass
+        return False, None
+
+    if action in ("install", "enable"):
+        print(f"Installing macOS LaunchAgent '{label}'...")
+        launch_agents_dir.mkdir(parents=True, exist_ok=True)
+
+        port_arg = getattr(args, "port", None)
+        port_flags = f"        <string>--port</string>\n        <string>{port_arg}</string>\n" if port_arg else ""
+
+        plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{python_bin}</string>
+        <string>-B</string>
+        <string>{bin_path}</string>
+        <string>start</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+{port_flags}        <string>--db</string>
+        <string>data/webhook_hub.db</string>
+        <string>--pidfile</string>
+        <string>.webhook-hub.pid</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{project_dir}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{out_log}</string>
+    <key>StandardErrorPath</key>
+    <string>{err_log}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+    <key>ProcessType</key>
+    <string>Standard</string>
+</dict>
+</plist>
+"""
+        is_loaded, _ = _is_service_loaded()
+        if is_loaded:
+            subprocess.run(["launchctl", "unload", "-w", str(plist_path)], capture_output=True)
+
+        if pid_file.is_file():
+            old_pid = _read_pid_file(pid_file)
+            if old_pid and _is_pid_running(old_pid):
+                try:
+                    os.kill(old_pid, signal.SIGTERM)
+                    time.sleep(0.5)
+                except OSError:
+                    pass
+
+        plist_path.write_text(plist_content, encoding="utf-8")
+
+        load_res = subprocess.run(["launchctl", "load", "-w", str(plist_path)], capture_output=True, text=True)
+        if load_res.returncode != 0:
+            print(f"Error loading launchd plist: {load_res.stderr.strip()}", file=sys.stderr)
+            return load_res.returncode
+
+        time.sleep(1.2)
+        is_running, running_pid = _is_service_loaded()
+        if not running_pid and pid_file.is_file():
+            running_pid = _read_pid_file(pid_file)
+
+        print("=" * 60)
+        print(f"  macOS LaunchAgent '{label}' Installed Successfully!")
+        print("=" * 60)
+        print(f"  • Plist Location:     {plist_path}")
+        print(f"  • Python Interpreter: {python_bin}")
+        print(f"  • Project Directory:  {project_dir}")
+        print(f"  • Daemon Status:      {'RUNNING (PID: ' + str(running_pid) + ')' if running_pid else 'LOADED'}")
+        print(f"  • Log File:           {out_log}")
+        print(f"  • Error Log:          {err_log}")
+        print(f"  • Auto-Start:         Enabled on user login with automatic restart on exit")
+        print("=" * 60)
+        return 0
+
+    elif action in ("uninstall", "disable"):
+        print(f"Uninstalling macOS LaunchAgent '{label}'...")
+        if plist_path.is_file():
+            subprocess.run(["launchctl", "unload", "-w", str(plist_path)], capture_output=True)
+            try:
+                plist_path.unlink()
+                print(f"  • Removed plist file: {plist_path}")
+            except OSError as e:
+                print(f"  • Warning: failed to delete plist: {e}")
+        else:
+            subprocess.run(["launchctl", "unload", "-w", str(plist_path)], capture_output=True)
+
+        if pid_file.is_file():
+            old_pid = _read_pid_file(pid_file)
+            if old_pid and _is_pid_running(old_pid):
+                try:
+                    os.kill(old_pid, signal.SIGTERM)
+                except OSError:
+                    pass
+                try:
+                    pid_file.unlink()
+                except OSError:
+                    pass
+
+        print(f"  • Service '{label}' successfully uninstalled and disabled.")
+        return 0
+
+    elif action == "restart":
+        print(f"Restarting macOS LaunchAgent '{label}'...")
+        if not plist_path.is_file():
+            print(f"Error: Plist {plist_path} not found. Run './bin/webhook-hub service install' first.", file=sys.stderr)
+            return 1
+        subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+        time.sleep(1.0)
+        res = subprocess.run(["launchctl", "load", "-w", str(plist_path)], capture_output=True, text=True)
+        if res.returncode != 0:
+            print(f"Error reloading service: {res.stderr.strip()}", file=sys.stderr)
+            return res.returncode
+        time.sleep(1.0)
+        is_running, running_pid = _is_service_loaded()
+        print(f"Service restarted. Status: {'RUNNING (PID: ' + str(running_pid) + ')' if running_pid else 'LOADED'}")
+        return 0
+
+    elif action == "status":
+        is_loaded, running_pid = _is_service_loaded()
+        if not running_pid and pid_file.is_file():
+            p = _read_pid_file(pid_file)
+            if p and _is_pid_running(p):
+                running_pid = p
+
+        print("=" * 60)
+        print(f"  macOS LaunchAgent Status: {label}")
+        print("=" * 60)
+        print(f"  • Plist Installed: {'YES (' + str(plist_path) + ')' if plist_path.is_file() else 'NO'}")
+        print(f"  • launchd Loaded:  {'YES' if is_loaded else 'NO'}")
+        print(f"  • Process State:   {'RUNNING (PID: ' + str(running_pid) + ')' if running_pid else 'STOPPED'}")
+        if running_pid:
+            rss = _get_process_rss_mb(running_pid)
+            print(f"  • Process RSS:     {rss:.2f} MB (Budget: < 30.0 MB)")
+        print(f"  • Log File:        {out_log}")
+        print(f"  • Error Log:       {err_log}")
+        print("=" * 60)
+        return 0 if running_pid else 1
+
+    elif action == "logs":
+        lines = getattr(args, "lines", 30) or 30
+        print(f"--- Last {lines} lines of stdout ({out_log}) ---")
+        if out_log.is_file():
+            content = out_log.read_text(encoding="utf-8", errors="replace").splitlines()
+            for line in content[-lines:]:
+                print(line)
+        else:
+            print("(No stdout log file found)")
+
+        print(f"\n--- Last {lines} lines of stderr ({err_log}) ---")
+        if err_log.is_file():
+            content = err_log.read_text(encoding="utf-8", errors="replace").splitlines()
+            for line in content[-lines:]:
+                print(line)
+        else:
+            print("(No stderr log file found)")
+        return 0
+
+    return 0
+
+
+def _add_service_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "action",
+        choices=["install", "enable", "uninstall", "disable", "restart", "status", "logs"],
+        help="Service action to perform (install, uninstall, restart, status, logs)",
+    )
+    parser.add_argument(
+        "--label",
+        default="com.antigravity.webhook-hub",
+        help="LaunchAgent label (default: com.antigravity.webhook-hub)",
+    )
+    parser.add_argument(
+        "--port",
+        "-p",
+        type=int,
+        default=None,
+        help="Override HTTP port for the daemon",
+    )
+    parser.add_argument(
+        "--lines",
+        "-n",
+        type=int,
+        default=30,
+        help="Number of log lines to show with 'logs' action",
+    )
+    parser.add_argument(
+        "--dir",
+        default=None,
+        help="Target project root directory (default: auto-detected)",
+    )
+    parser.add_argument(
+        "--launch-agents-dir",
+        default=None,
+        help="Directory where LaunchAgent plists are stored (default: ~/Library/LaunchAgents)",
+    )
+
+
 def _add_rerun_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("task_id", nargs="?", default=None, help="Task ID to re-enqueue and rerun")
     parser.add_argument("--failed", action="store_true", help="Re-enqueue all failed and timed-out tasks")
@@ -1639,6 +1976,12 @@ def build_parser() -> Any:
     p_rerun = subparsers.add_parser("rerun", help="Re-enqueue an existing task for re-execution")
     _add_rerun_args(p_rerun)
 
+    p_setup = subparsers.add_parser("setup", aliases=["init"], help="Bootstrap environment, directories, and cryptographic .env for Mac users")
+    _add_setup_args(p_setup)
+
+    p_service = subparsers.add_parser("service", help="Manage native macOS launchd LaunchAgent background daemon")
+    _add_service_args(p_service)
+
     return parser
 
 
@@ -1651,7 +1994,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     known_commands = {
         "start", "stop", "status", "logs", "test-send", "verify",
         "review-contact", "contact-review", "sweep", "pick-unprocessed", "recover",
-        "dashboard", "ui", "tasks", "rerun",
+        "dashboard", "ui", "tasks", "rerun", "setup", "init", "service",
         "-h", "--help"
     }
     if argv and argv[0] not in known_commands and argv[0].startswith("-"):
@@ -1767,6 +2110,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         del p
         gc.collect()
         return cmd_rerun(args)
+
+    elif subcommand in ("setup", "init"):
+        p = argparse.ArgumentParser(prog="webhook-hub setup")
+        _add_setup_args(p)
+        args = p.parse_args(sub_args)
+        args.subcommand = "setup"
+        del p
+        gc.collect()
+        return cmd_setup(args)
+
+    elif subcommand == "service":
+        p = argparse.ArgumentParser(prog="webhook-hub service")
+        _add_service_args(p)
+        args = p.parse_args(sub_args)
+        args.subcommand = "service"
+        del p
+        gc.collect()
+        return cmd_service(args)
 
     else:
         parser = build_parser()
