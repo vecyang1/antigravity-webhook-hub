@@ -8,11 +8,60 @@ and Bearer token fallback.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
+import sys
 import time
 from typing import Any, Optional
+
+# Zero-overhead Darwin CommonCrypto SHA-256 and HMAC provider
+# Avoids loading OpenSSL / LibreSSL dynamic libraries into process memory (<30MB budget).
+_darwin_cc_sha256 = None
+_darwin_cchmac = None
+
+if sys.platform == "darwin":
+    try:
+        import ctypes
+        _libc = ctypes.CDLL(None)
+        if hasattr(_libc, "CC_SHA256") and hasattr(_libc, "CCHmac"):
+            _cc_fn = _libc.CC_SHA256
+            _cc_fn.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_char_p]
+            _cc_fn.restype = ctypes.c_void_p
+
+            _hmac_fn = _libc.CCHmac
+            _hmac_fn.argtypes = [ctypes.c_uint32, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p]
+            _hmac_fn.restype = None
+
+            _darwin_cc_sha256 = _cc_fn
+            _darwin_cchmac = _hmac_fn
+    except Exception:
+        pass
+
+def _sha256_hex(data: bytes) -> str:
+    if _darwin_cc_sha256 is not None:
+        import ctypes
+        buf = ctypes.create_string_buffer(32)
+        _darwin_cc_sha256(data, len(data), buf)
+        return buf.raw.hex()
+    import hashlib
+    return hashlib.sha256(data).hexdigest()
+
+def _hmac_sha256_hex(key: bytes, message: bytes) -> str:
+    if _darwin_cchmac is not None:
+        import ctypes
+        buf = ctypes.create_string_buffer(32)
+        _darwin_cchmac(2, key, len(key), message, len(message), buf)
+        return buf.raw.hex()
+    import hashlib
+    import hmac
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
+
+try:
+    import _operator
+    _compare_digest = _operator._compare_digest
+except Exception:
+    import hmac
+    _compare_digest = hmac.compare_digest
+
 
 from hub.config import AppConfig, SecurityConfig
 from hub.models import HTTPRequest, ValidationResult
@@ -20,7 +69,7 @@ from hub.models import HTTPRequest, ValidationResult
 
 def compute_payload_hash(raw_body: bytes) -> str:
     """Compute SHA-256 hash of the raw request payload."""
-    return hashlib.sha256(raw_body).hexdigest()
+    return _sha256_hex(raw_body)
 
 
 def compute_dedup_hash(signature: str, timestamp: int, raw_body: bytes) -> str:
@@ -32,7 +81,7 @@ def compute_dedup_hash(signature: str, timestamp: int, raw_body: bytes) -> str:
     if cleaned_sig.startswith("sha256="):
         cleaned_sig = cleaned_sig[7:]
     content = f"{cleaned_sig}:{timestamp}:".encode("utf-8") + raw_body
-    return hashlib.sha256(content).hexdigest()
+    return _sha256_hex(content)
 
 
 def generate_hmac_signature(
@@ -47,7 +96,7 @@ def generate_hmac_signature(
     """
     secret_bytes = secret.encode("utf-8") if isinstance(secret, str) else secret
     message = f"{timestamp}.".encode("utf-8") + raw_body
-    digest = hmac.new(secret_bytes, message, hashlib.sha256).hexdigest()
+    digest = _hmac_sha256_hex(secret_bytes, message)
     return f"sha256={digest}" if include_prefix else digest
 
 
@@ -126,10 +175,10 @@ def verify_hmac_signature(
     # 5. Compute expected HMAC
     secret_bytes = secret.encode("utf-8") if isinstance(secret, str) else secret
     message = f"{req_timestamp}.".encode("utf-8") + raw_body
-    expected_sig = hmac.new(secret_bytes, message, hashlib.sha256).hexdigest()
+    expected_sig = _hmac_sha256_hex(secret_bytes, message)
 
     # 6. Constant-time comparison
-    if not hmac.compare_digest(expected_sig.lower(), received_sig.lower()):
+    if not _compare_digest(expected_sig.lower(), received_sig.lower()):
         return ValidationResult(
             is_valid=False,
             reason="signature_mismatch",
@@ -188,7 +237,7 @@ def verify_bearer_token(
         )
 
     # Constant-time comparison
-    if not hmac.compare_digest(expected_token.encode("utf-8"), received_token.encode("utf-8")):
+    if not _compare_digest(expected_token.encode("utf-8"), received_token.encode("utf-8")):
         return ValidationResult(
             is_valid=False,
             reason="invalid_bearer_token",
@@ -436,8 +485,8 @@ def verify_dashboard_auth(
                 exp_pwd = getattr(dash_cfg, "basic_auth_pass", "") if dash_cfg else ""
 
                 if exp_user and exp_pwd:
-                    user_ok = hmac.compare_digest(user.encode("utf-8"), exp_user.encode("utf-8"))
-                    pwd_ok = hmac.compare_digest(pwd.encode("utf-8"), exp_pwd.encode("utf-8"))
+                    user_ok = _compare_digest(user.encode("utf-8"), exp_user.encode("utf-8"))
+                    pwd_ok = _compare_digest(pwd.encode("utf-8"), exp_pwd.encode("utf-8"))
                     if user_ok and pwd_ok:
                         return ValidationResult(
                             is_valid=True,
@@ -488,7 +537,7 @@ def verify_dashboard_auth(
             provided_token = qs["auth_token"][0].strip()
 
     if provided_token and exp_token:
-        if hmac.compare_digest(provided_token.encode("utf-8"), exp_token.encode("utf-8")):
+        if _compare_digest(provided_token.encode("utf-8"), exp_token.encode("utf-8")):
             return ValidationResult(
                 is_valid=True,
                 reason="verified_token",

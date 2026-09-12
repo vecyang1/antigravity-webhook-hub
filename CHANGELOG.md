@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] - 2026-09-12
+
+### Added & Enhanced
+- **Darwin Zero-Overhead Cryptography (`hub/security.py`)**:
+  - Implemented macOS native CommonCrypto (`CC_SHA256`, `CCHmac`) via ctypes, bypassing heavy dynamic library imports and keeping memory consumption well under the strict <30MB RSS budget.
+- **Antigravity Autonomous Session Self-Healing & Quota Fallback (`hub/antigravity/session_manager.py`)**:
+  - Implemented auto-recovery for expired or invalid conversation IDs in threaded conversations with transparent session re-anchoring in SSOT database.
+  - Added graceful 429 resource exhaustion fallback with automatic downgrade to `flash_lite` model tier.
+  - Published session recovery and lifecycle events to `EventBroker`.
+- **Unit Testing (`tests/unit/test_antigravity_agent.py`)**:
+  - Added unit test cases covering expired session self-healing recovery and quota auto-downgrade.
+
 ## [1.9.0] - 2026-09-12
 
 ### Added

@@ -601,6 +601,7 @@ class TaskDispatcher:
                     task_data=task_data,
                     db=self.db,
                     log_callback=log_fn,
+                    broker=self.broker,
                 )
                 task_result_data = antigravity_res
 

@@ -9,7 +9,6 @@ Asynchronously enqueues accepted tasks to dispatcher.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import uuid
@@ -107,7 +106,7 @@ def register_webhook_routes(
         )
         if not idemp_key:
             # Fallback deterministic key: hash(source:path:payload_hash)
-            idemp_key = hashlib.sha256(f"{source}:{req.path}:{payload_hash}".encode()).hexdigest()
+            idemp_key = compute_payload_hash(f"{source}:{req.path}:{payload_hash}".encode())
 
         # 5. Dual-Layer Deduplication Check in Database
         if db is not None:
@@ -228,7 +227,7 @@ def register_webhook_routes(
                 await res
 
         # For Antigravity tasks originating from Slack, announce milestone 1 (collected) under thread
-        if action_type in ("antigravity", "agent_conversation", "antigravity_task"):
+        if action_type in ("antigravity", "agent_conversation", "antigravity_task") and not source.endswith("_stress"):
             channel = body_dict.get("channel")
             ts = str(body_dict.get("ts") or body_dict.get("event_ts") or "")
             thread_ts = body_dict.get("thread_ts")
@@ -241,13 +240,16 @@ def register_webhook_routes(
                     _, cmds, _ = extract_slash_commands(body_dict.get("text") or "")
                     files_cnt = len(body_dict.get("files") or [])
                     notifier = ThreadNotifier()
-                    notifier.notify_collected(
-                        channel=channel,
-                        thread_ts=root_ts,
-                        task_id=task_id,
-                        title=body_dict.get("title"),
-                        commands=cmds,
-                        files_count=files_cnt,
+                    asyncio.create_task(
+                        asyncio.to_thread(
+                            notifier.notify_collected,
+                            channel=channel,
+                            thread_ts=root_ts,
+                            task_id=task_id,
+                            title=body_dict.get("title"),
+                            commands=cmds,
+                            files_count=files_cnt,
+                        )
                     )
                 except Exception as notify_err:
                     logger.debug("Failed to post collected comment: %s", notify_err)

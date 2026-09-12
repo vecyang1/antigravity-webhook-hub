@@ -31,10 +31,12 @@ async def execute_antigravity_task(
     log_callback: Optional[Callable[[str], None]] = None,
     agentapi_client: Optional[AgentAPIClient] = None,
     thread_notifier: Optional[ThreadNotifier] = None,
+    broker: Optional[Any] = None,
 ) -> dict[str, Any]:
     """
     Execute an Antigravity task with complete lifecycle transparency,
-    SSOT database persistence, and thread-linked follow-up routing.
+    SSOT database persistence, self-healing expired session recovery,
+    429 quota exhaustion resilience, and thread-linked follow-up routing.
     """
     start_time = time.time()
 
@@ -81,6 +83,8 @@ async def execute_antigravity_task(
         payload.downloaded_images = downloaded_images
         log(f"Downloaded {len(downloaded_images)} valid image(s) to local disk.")
 
+    session_recovered_from: Optional[str] = None
+
     # =========================================================================
     # BRANCH A: Follow-up Inquiry (追问) under an existing Thread
     # =========================================================================
@@ -121,6 +125,22 @@ async def execute_antigravity_task(
                         files_count=len(downloaded_images),
                     )
 
+                if broker:
+                    evt_data = {
+                        "event": "antigravity_followup_synced",
+                        "task_id": task_id,
+                        "conversation_id": convo_id,
+                        "thread_key": thread_key,
+                        "channel": channel,
+                        "thread_ts": thread_ts,
+                        "elapsed_seconds": elapsed,
+                    }
+                    try:
+                        await broker.publish("events", evt_data)
+                        await broker.publish(f"task.{task_id}", evt_data)
+                    except Exception as e:
+                        logger.debug("Failed to publish followup event to broker: %s", e)
+
                 return {
                     "success": True,
                     "is_follow_up": True,
@@ -131,20 +151,54 @@ async def execute_antigravity_task(
                 }
             else:
                 log(f"Failed to send follow-up message to session {convo_id}: {err_msg}")
-                if channel and thread_ts:
-                    notifier.notify_failed(channel=channel, thread_ts=thread_ts, task_id=task_id, error_message=err_msg or "发送追问失败")
-                return {
-                    "success": False,
-                    "is_follow_up": True,
-                    "error": err_msg,
-                    "conversation_id": convo_id,
-                    "thread_key": thread_key,
-                }
+                # Check for recoverable session errors: expired session, conversation not found, timed out, 404
+                is_recoverable = False
+                if err_msg:
+                    err_lower = err_msg.lower()
+                    if any(k in err_lower for k in ("not found", "expired", "timed out", "timeout", "invalid conversation", "404", "does not exist")):
+                        is_recoverable = True
+
+                if is_recoverable:
+                    log(f"Session {convo_id} is expired or invalid ({err_msg}). Initiating self-healing recovery by promoting to new conversation...")
+                    # Mark old session as expired in SSOT database
+                    if hasattr(db, "upsert_session_thread"):
+                        expired_rec = dict(existing_session)
+                        expired_rec["status"] = "expired"
+                        up_res = db.upsert_session_thread(expired_rec)
+                        if asyncio.iscoroutine(up_res):
+                            await up_res
+
+                    if broker:
+                        rec_evt = {
+                            "event": "antigravity_session_recovery_triggered",
+                            "task_id": task_id,
+                            "old_conversation_id": convo_id,
+                            "thread_key": thread_key,
+                            "reason": err_msg,
+                        }
+                        try:
+                            await broker.publish("events", rec_evt)
+                            await broker.publish(f"task.{task_id}", rec_evt)
+                        except Exception as e:
+                            logger.debug("Failed to publish recovery event to broker: %s", e)
+
+                    # Fall through to Branch B for self-healing
+                    session_recovered_from = convo_id
+                else:
+                    if channel and thread_ts:
+                        notifier.notify_failed(channel=channel, thread_ts=thread_ts, task_id=task_id, error_message=err_msg or "发送追问失败")
+                    return {
+                        "success": False,
+                        "is_follow_up": True,
+                        "error": err_msg,
+                        "conversation_id": convo_id,
+                        "thread_key": thread_key,
+                    }
         else:
             log(f"No existing session found for thread {thread_key}. Promoting follow-up to new conversation...")
 
     # =========================================================================
-    # BRANCH B: New Antigravity Task Creation
+    # BRANCH B: New Antigravity Task Creation (or Recovered Session Migration)
     # =========================================================================
     _, extracted_cmds, _ = extract_slash_commands(payload.text)
     all_cmds = list(dict.fromkeys(payload.slash_commands + extracted_cmds))
@@ -163,12 +217,40 @@ async def execute_antigravity_task(
     prompt = build_antigravity_prompt(payload, downloaded_images=downloaded_images)
     task_title = payload.title or (payload.text[:40].replace("\n", " ") if payload.text else f"Task {task_id[:8]}")
 
+    orig_model = payload.model_tier
     log(f"Launching Antigravity conversation (model: {payload.model_tier}, commands: {all_cmds})...")
     success, convo_id, err_msg = await client.new_conversation(
         prompt=prompt,
         model=payload.model_tier,
         title=task_title,
     )
+
+    # Quota exhaustion & 429 self-healing auto-downgrade to flash_lite
+    if not success and err_msg:
+        err_lower = err_msg.lower()
+        if any(k in err_lower for k in ("429", "quota", "rate limit", "resource exhausted")):
+            if payload.model_tier != "flash_lite":
+                log(f"Quota exhaustion / rate limit detected on {orig_model} ({err_msg}). Auto-downgrading to flash_lite...")
+                payload.model_tier = "flash_lite"
+                if broker:
+                    downgrade_evt = {
+                        "event": "antigravity_model_downgraded",
+                        "task_id": task_id,
+                        "original_model": orig_model,
+                        "downgraded_model": "flash_lite",
+                        "reason": err_msg,
+                    }
+                    try:
+                        await broker.publish("events", downgrade_evt)
+                        await broker.publish(f"task.{task_id}", downgrade_evt)
+                    except Exception as e:
+                        logger.debug("Failed to publish downgrade event to broker: %s", e)
+
+                success, convo_id, err_msg = await client.new_conversation(
+                    prompt=prompt,
+                    model="flash_lite",
+                    title=task_title,
+                )
 
     elapsed = time.time() - start_time
 
@@ -181,6 +263,19 @@ async def execute_antigravity_task(
                 task_id=task_id,
                 error_message=err_msg or "无法创建 Antigravity 会话",
             )
+        if broker:
+            fail_evt = {
+                "event": "antigravity_session_failed",
+                "task_id": task_id,
+                "thread_key": thread_key,
+                "error": err_msg,
+                "elapsed_seconds": elapsed,
+            }
+            try:
+                await broker.publish("events", fail_evt)
+                await broker.publish(f"task.{task_id}", fail_evt)
+            except Exception as e:
+                logger.debug("Failed to publish fail event to broker: %s", e)
         return {
             "success": False,
             "error": err_msg,
@@ -210,16 +305,38 @@ async def execute_antigravity_task(
 
     # Milestone: notify done under thread
     if channel and root_ts:
+        summary_text = f"已成功加载并指派执行。挂载技能: {', '.join(all_cmds) or '标准模式'}"
+        if session_recovered_from:
+            summary_text += f" (已从失效会话 {session_recovered_from[:8]} 自动恢复并迁移)"
         notifier.notify_done(
             channel=channel,
             thread_ts=root_ts,
             task_id=task_id,
             conversation_id=convo_id,
             elapsed_seconds=elapsed,
-            summary=f"已成功加载并指派执行。挂载技能: {', '.join(all_cmds) or '标准模式'}",
+            summary=summary_text,
         )
 
-    return {
+    if broker:
+        created_evt = {
+            "event": "antigravity_session_created",
+            "task_id": task_id,
+            "conversation_id": convo_id,
+            "thread_key": thread_key,
+            "channel": channel,
+            "root_ts": root_ts,
+            "model_tier": payload.model_tier,
+            "elapsed_seconds": elapsed,
+        }
+        if session_recovered_from:
+            created_evt["recovered_from"] = session_recovered_from
+        try:
+            await broker.publish("events", created_evt)
+            await broker.publish(f"task.{task_id}", created_evt)
+        except Exception as e:
+            logger.debug("Failed to publish created event to broker: %s", e)
+
+    res_dict = {
         "success": True,
         "conversation_id": convo_id,
         "thread_key": thread_key,
@@ -229,3 +346,6 @@ async def execute_antigravity_task(
         "slash_commands": all_cmds,
         "downloaded_images": downloaded_images,
     }
+    if session_recovered_from:
+        res_dict["recovered_from"] = session_recovered_from
+    return res_dict

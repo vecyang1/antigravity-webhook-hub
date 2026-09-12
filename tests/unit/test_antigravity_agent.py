@@ -306,6 +306,121 @@ class TestSessionManagerAndDatabase(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_execute_antigravity_task_expired_session_self_healing_recovery(self):
+        self._seed_task("tsk_parent_expired")
+        self._seed_task("tsk_followup_recover")
+
+        async def _run():
+            # Seed existing session in DB
+            self.db.upsert_session_thread({
+                "thread_key": "C0C1B86AMCN:1789200000.200",
+                "channel_id": "C0C1B86AMCN",
+                "root_ts": "1789200000.200",
+                "task_id": "tsk_parent_expired",
+                "conversation_id": "conv-expired-9999",
+                "status": "active",
+            })
+
+            mock_client = MagicMock(spec=AgentAPIClient)
+            # send_message fails with expired session
+            mock_client.send_message = AsyncMock(return_value=(False, "", "conversation not found or expired"))
+            # new_conversation succeeds for recovered session
+            mock_client.new_conversation = AsyncMock(return_value=(True, "conv-recovered-1111", None))
+
+            mock_notifier = MagicMock(spec=ThreadNotifier)
+            mock_notifier.notify_in_progress = MagicMock(return_value=True)
+            mock_notifier.notify_done = MagicMock(return_value=True)
+
+            mock_broker = MagicMock()
+            mock_broker.publish = AsyncMock(return_value=1)
+
+            follow_up_task = {
+                "task_id": "tsk_followup_recover",
+                "action_type": "antigravity",
+                "action_params": {
+                    "text": "继续优化排版 /boost",
+                    "channel": "C0C1B86AMCN",
+                    "ts": "1789200600.300",
+                    "thread_ts": "1789200000.200",
+                },
+            }
+
+            res = await execute_antigravity_task(
+                task_data=follow_up_task,
+                db=self.db,
+                agentapi_client=mock_client,
+                thread_notifier=mock_notifier,
+                broker=mock_broker,
+            )
+
+            self.assertTrue(res["success"])
+            self.assertEqual(res["conversation_id"], "conv-recovered-1111")
+            self.assertEqual(res.get("recovered_from"), "conv-expired-9999")
+
+            # Check SSOT database mapping has been updated to recovered conversation
+            updated_sess = self.db.get_session_thread("C0C1B86AMCN:1789200000.200")
+            self.assertIsNotNone(updated_sess)
+            self.assertEqual(updated_sess["conversation_id"], "conv-recovered-1111")
+            self.assertEqual(updated_sess["status"], "active")
+
+            # Verify broker events
+            published_events = [call[0][1].get("event") for call in mock_broker.publish.call_args_list]
+            self.assertIn("antigravity_session_recovery_triggered", published_events)
+            self.assertIn("antigravity_session_created", published_events)
+
+        asyncio.run(_run())
+
+    def test_execute_antigravity_task_quota_exhaustion_auto_downgrade(self):
+        self._seed_task("tsk_quota_429")
+
+        async def _run():
+            mock_client = MagicMock(spec=AgentAPIClient)
+            # First attempt with pro model fails with 429 quota exhaustion
+            # Second attempt with flash_lite succeeds
+            mock_client.new_conversation = AsyncMock(side_effect=[
+                (False, "", "HTTP 429 Resource exhausted: quota limit exceeded for pro"),
+                (True, "conv-downgraded-2222", None),
+            ])
+
+            mock_notifier = MagicMock(spec=ThreadNotifier)
+            mock_notifier.notify_in_progress = MagicMock(return_value=True)
+            mock_notifier.notify_done = MagicMock(return_value=True)
+
+            mock_broker = MagicMock()
+            mock_broker.publish = AsyncMock(return_value=1)
+
+            task_data = {
+                "task_id": "tsk_quota_429",
+                "action_type": "antigravity",
+                "action_params": {
+                    "text": "高并发测试任务",
+                    "channel": "C0C1B86AMCN",
+                    "ts": "1789200800.400",
+                    "thread_ts": "1789200800.400",
+                    "model_tier": "pro",
+                },
+            }
+
+            res = await execute_antigravity_task(
+                task_data=task_data,
+                db=self.db,
+                agentapi_client=mock_client,
+                thread_notifier=mock_notifier,
+                broker=mock_broker,
+            )
+
+            self.assertTrue(res["success"])
+            self.assertEqual(res["conversation_id"], "conv-downgraded-2222")
+            self.assertEqual(res["model_tier"], "flash_lite")
+            self.assertEqual(mock_client.new_conversation.call_count, 2)
+
+            # Check broker published downgrade event
+            published_events = [call[0][1].get("event") for call in mock_broker.publish.call_args_list]
+            self.assertIn("antigravity_model_downgraded", published_events)
+            self.assertIn("antigravity_session_created", published_events)
+
+        asyncio.run(_run())
+
 
 if __name__ == "__main__":
     unittest.main()
