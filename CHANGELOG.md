@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-09-12
+
+### Added
+- **Slack Mobile Intake & Antigravity Agent Triggering Pipeline (`hub/antigravity/`)**:
+  - `agentapi_client.py`: Robust programmatic bridge wrapping Google Antigravity's native `agentapi` CLI (`new-conversation`, `send-message`, `get-conversation-metadata`).
+  - `thread_notifier.py`: Real-time milestone notification engine posting directly under Slack originating threads:
+    - 📥 `[已采集 · Task Collected]` (immediate on webhook intake)
+    - ⚡ `[处理中 · In Progress]` (with model tier & loaded skill directives)
+    - 🎉 `[已完成 · Done]` (with active `conversation_id`, response time, and follow-up guidance)
+    - 🔄 `[追问已送达 · Follow-up Synced]` (on follow-up replies)
+    - ❌ `[执行异常 · Task Failed]` (graceful error reporting)
+  - `session_manager.py`: Two-way session manager linking Slack threads (`channel:root_ts`) to active Antigravity conversations, enabling seamless follow-up (`追问`) routing.
+  - `prompt_builder.py`: Domain directive extraction for `/psychological-copywriter` (premium value anchoring & mental accounting reframing), `/strategic-compact` (token economy & high signal-to-noise ratio), `/boost`, `/goal`, and `/teamwork-preview`.
+  - `image_downloader.py`: Multi-image local attachment downloader storing visual inputs at `data/attachments/{task_id}/...` for multi-modal agent consumption.
+- **SSOT Database Persistence (`hub/db.py`)**:
+  - Created `session_threads` table with indexing on `conversation_id` and `(channel_id, root_ts)`.
+  - Added atomic CRUD methods: `upsert_session_thread`, `get_session_thread`, `touch_session_thread`, and `list_session_threads`.
+- **Dispatcher & Ingress Invariants (`hub/dispatcher.py`, `hub/routes/webhook.py`)**:
+  - Ingress route `/webhook/antigravity` automatically maps payload to action type `antigravity`.
+  - Dispatcher routes execution to `session_manager.execute_antigravity_task`.
+- **Test Coverage (`tests/unit/test_antigravity_agent.py`)**:
+  - 11 unit tests covering payload normalization, prompt generation, image downloading, notifier fail-open resilience, database persistence, and follow-up routing (148/148 unit tests passing).
+
 ## [1.8.4] - 2026-09-12
 
 ### Fixed & Enhanced

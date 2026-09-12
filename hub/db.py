@@ -254,6 +254,38 @@ class DatabaseManager:
                 """
             )
 
+            # 5. Session Threads Table (Antigravity Agent Thread Linking SSOT)
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_threads (
+                    thread_key TEXT PRIMARY KEY,
+                    channel_id TEXT NOT NULL,
+                    root_ts TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'slack',
+                    model_tier TEXT NOT NULL DEFAULT 'pro',
+                    title TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    last_active_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
+                );
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_session_threads_convo
+                    ON session_threads (conversation_id);
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_session_threads_channel_ts
+                    ON session_threads (channel_id, root_ts);
+                """
+            )
+
             self._conn.commit()
             try:
                 self._conn.execute("PRAGMA shrink_memory;")
@@ -1235,3 +1267,99 @@ class DatabaseManager:
                     self._conn.execute("PRAGMA shrink_memory;")
                 except Exception:
                     pass
+
+    # --- Antigravity Session Thread Operations ---
+
+    def get_session_thread(self, thread_key: str) -> Optional[dict[str, Any]]:
+        """Retrieve linked Antigravity session record by thread key."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute("SELECT * FROM session_threads WHERE thread_key = ?", (thread_key,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+            finally:
+                cur.close()
+
+    def upsert_session_thread(self, record: dict[str, Any]) -> bool:
+        """Insert or replace session thread mapping."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO session_threads (
+                        thread_key, channel_id, root_ts, task_id, conversation_id,
+                        source, model_tier, title, status, last_active_at, created_at
+                    ) VALUES (
+                        :thread_key, :channel_id, :root_ts, :task_id, :conversation_id,
+                        :source, :model_tier, :title, :status,
+                        COALESCE(:last_active_at, CURRENT_TIMESTAMP),
+                        COALESCE(:created_at, CURRENT_TIMESTAMP)
+                    )
+                    ON CONFLICT(thread_key) DO UPDATE SET
+                        conversation_id = excluded.conversation_id,
+                        task_id = excluded.task_id,
+                        model_tier = excluded.model_tier,
+                        title = COALESCE(excluded.title, session_threads.title),
+                        status = excluded.status,
+                        last_active_at = CURRENT_TIMESTAMP;
+                    """,
+                    {
+                        "thread_key": record["thread_key"],
+                        "channel_id": record.get("channel_id", ""),
+                        "root_ts": record.get("root_ts", ""),
+                        "task_id": record["task_id"],
+                        "conversation_id": record["conversation_id"],
+                        "source": record.get("source", "slack"),
+                        "model_tier": record.get("model_tier", "pro"),
+                        "title": record.get("title"),
+                        "status": record.get("status", "active"),
+                        "last_active_at": record.get("last_active_at"),
+                        "created_at": record.get("created_at"),
+                    },
+                )
+                self._commit_and_shrink()
+                return True
+            except Exception as e:
+                logger.error("Failed to upsert session thread: %s", e)
+                return False
+            finally:
+                cur.close()
+
+    def touch_session_thread(self, thread_key: str) -> bool:
+        """Update last_active_at timestamp for a session thread."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    "UPDATE session_threads SET last_active_at = CURRENT_TIMESTAMP WHERE thread_key = ?",
+                    (thread_key,),
+                )
+                self._commit_and_shrink()
+                return cur.rowcount > 0
+            except Exception as e:
+                logger.error("Failed to touch session thread: %s", e)
+                return False
+            finally:
+                cur.close()
+
+    def list_session_threads(self, limit: int = 50, status: Optional[str] = None) -> list[dict[str, Any]]:
+        """List recent session threads ordered by last active time."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                if status:
+                    cur.execute(
+                        "SELECT * FROM session_threads WHERE status = ? ORDER BY last_active_at DESC LIMIT ?",
+                        (status, limit),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT * FROM session_threads ORDER BY last_active_at DESC LIMIT ?",
+                        (limit,),
+                    )
+                return [dict(row) for row in cur.fetchall()]
+            finally:
+                cur.close()
+

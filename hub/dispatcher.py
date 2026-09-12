@@ -584,6 +584,41 @@ class TaskDispatcher:
                     final_status = "succeeded"
                     exit_code = 0
 
+            elif action_type in ("antigravity", "agent_conversation", "antigravity_task"):
+                # Google Antigravity Agent native dispatch with thread linking and Slack milestone notifications
+                from hub.antigravity.session_manager import execute_antigravity_task
+
+                def log_fn(msg: str):
+                    stdout_lines.append(msg)
+                    self._record_log(task_id, "stdout", msg, execution_id=execution_id)
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(self._broadcast_log(task_id, "stdout", msg))
+                    except Exception:
+                        pass
+
+                antigravity_res = await execute_antigravity_task(
+                    task_data=task_data,
+                    db=self.db,
+                    log_callback=log_fn,
+                )
+                task_result_data = antigravity_res
+
+                if not antigravity_res.get("success"):
+                    err_txt = antigravity_res.get("error") or "Antigravity task execution failed"
+                    stderr_lines.append(err_txt)
+                    self._record_log(task_id, "stderr", err_txt, execution_id=execution_id)
+                    final_status = "failed"
+                    exit_code = 1
+                    error_message = err_txt
+                else:
+                    final_status = "succeeded"
+                    exit_code = 0
+                    convo_id = antigravity_res.get("conversation_id", "")
+                    summary_msg = f"Antigravity conversation active: {convo_id}"
+                    stdout_lines.append(summary_msg)
+                    self._record_log(task_id, "stdout", summary_msg, execution_id=execution_id)
+
             else:
                 # Subprocess execution: cli, cli_command, launchd_job, cron_job
                 if action_type in ("launchd", "launchd_job"):

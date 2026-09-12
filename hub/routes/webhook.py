@@ -58,11 +58,15 @@ def register_webhook_routes(
         if not action_type:
             if source in ("contact-review", "contact_review") or req.path.endswith("/contact-review"):
                 action_type = "contact_review"
+            elif source in ("antigravity", "slack_task", "slack-task") or req.path.endswith("/antigravity"):
+                action_type = "antigravity"
             else:
                 action_type = "cli"
         command = body_dict.get("command") or body_dict.get("target_action")
         if not command and action_type in ("contact_review", "review_contact", "contact-review"):
             command = "bin/webhook-hub review-contact"
+        elif not command and action_type in ("antigravity", "agent_conversation", "antigravity_task"):
+            command = "agentapi new-conversation"
 
         raw_priority = body_dict.get("priority", 0)
         try:
@@ -222,6 +226,31 @@ def register_webhook_routes(
             res = db.insert_task(task_record)
             if asyncio.iscoroutine(res):
                 await res
+
+        # For Antigravity tasks originating from Slack, announce milestone 1 (collected) under thread
+        if action_type in ("antigravity", "agent_conversation", "antigravity_task"):
+            channel = body_dict.get("channel")
+            ts = str(body_dict.get("ts") or body_dict.get("event_ts") or "")
+            thread_ts = body_dict.get("thread_ts")
+            root_ts = str(thread_ts or ts or "")
+            is_follow_up = bool(thread_ts and str(thread_ts) != ts)
+            if channel and root_ts and not is_follow_up:
+                try:
+                    from hub.antigravity.prompt_builder import extract_slash_commands
+                    from hub.antigravity.thread_notifier import ThreadNotifier
+                    _, cmds, _ = extract_slash_commands(body_dict.get("text") or "")
+                    files_cnt = len(body_dict.get("files") or [])
+                    notifier = ThreadNotifier()
+                    notifier.notify_collected(
+                        channel=channel,
+                        thread_ts=root_ts,
+                        task_id=task_id,
+                        title=body_dict.get("title"),
+                        commands=cmds,
+                        files_count=files_cnt,
+                    )
+                except Exception as notify_err:
+                    logger.debug("Failed to post collected comment: %s", notify_err)
 
         # 7. Asynchronously or Synchronously Execute Task
         is_sync = (
