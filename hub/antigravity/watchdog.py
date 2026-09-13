@@ -751,7 +751,15 @@ class AntigravityWatchdog:
                         is_subagent = bool(parent_convo_id)
                         if not is_subagent and parsed_steps:
                             first_content = str(parsed_steps[0].get("content") or "")
-                            if "<subagent_reminder>" in first_content or "You are running as a subagent" in first_content or "invoked by a caller agent" in first_content:
+                            if (
+                                "<subagent_reminder>" in first_content
+                                or "You are running as a subagent" in first_content
+                                or "invoked by a caller agent" in first_content
+                                or "<original_task>" in first_content
+                                or "invoke_subagent" in first_content
+                                or "DeepInvestigator" in first_content
+                                or "DeepCoder" in first_content
+                            ):
                                 is_subagent = True
                     return parent_convo_id, is_subagent
 

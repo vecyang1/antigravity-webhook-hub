@@ -147,8 +147,15 @@ class TestAntigravityWatchdog:
     def test_detect_terminated_subagent_from_screenshot_pattern(self, db, mock_agentapi, temp_dir):
         """Verify that subagent termination ('Agent execution terminated due to error') is detected."""
         subagent_id = "dfbc889e-dc9c-44da-a8c4-32d6507d3858"
+        parent_id = "e073afd7-2ae8-4c32-9dd9-4ba7b851d3e3"
         steps = [
-            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "<original_task>\nTask: /boost DeepInvestigator\n</original_task>"},
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": f'<subagent_reminder>\ninvoked by a caller agent (name: "parent", id: "{parent_id}")\n</subagent_reminder>\n<original_task>\nTask: /boost DeepInvestigator\n</original_task>',
+            },
             {"step_index": 100, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": "curl output"},
             {"step_index": 101, "source": "SYSTEM", "type": "ERROR_MESSAGE", "status": "ERROR", "content": "Error Unknown: Agent execution terminated due to error. Error ID: 3444af61-7f2c"},
         ]
