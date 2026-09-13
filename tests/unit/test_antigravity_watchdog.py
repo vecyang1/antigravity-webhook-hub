@@ -26,6 +26,7 @@ from hub.antigravity.watchdog import (
     MCP_ERROR_RESUSCITATION_PROMPT,
     QUOTA_RESUSCITATION_PROMPT,
     SCHEDULE_REMOUNT_PROMPT,
+    TOOL_RESULT_RESUSCITATION_PROMPT,
     AntigravityWatchdog,
     StalledSessionInfo,
     check_session_has_boost_or_goal,
@@ -1117,6 +1118,108 @@ class TestAntigravityWatchdog:
         assert item.is_stop_hook_hang is True
         assert item.last_error == "stop_hook_hang"
         assert item.can_resuscitate is True
+
+    def test_scan_detects_completed_tool_result_hang(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that when a tool call completes successfully (MODEL GENERIC DONE),
+        but the model never initiates or completes the subsequent planner turn,
+        Watchdog identifies it as tool_result_hang (or tool_result_boost_goal_hang)
+        and resuscitates with the appropriate prompt.
+        """
+        convo_id = "test-tool-result-hang-008"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Search mail for xinchaovi"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "Searching mail now",
+                "tool_calls": [{"name": "run_command", "args": {"CommandLine": "python3 check_mail.py"}}],
+            },
+            {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "GENERIC",
+                "status": "DONE",
+                "content": "Clean HTML Body: Welcome Dear Vector Yang... exit code 0",
+                "tool_calls": None,
+            },
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=30.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=15)
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        item = stalled[0]
+        assert item.conversation_id == convo_id
+        assert item.last_error == "tool_result_hang"
+        assert item.can_resuscitate is True
+
+        res = asyncio.run(watchdog.resuscitate_session(item))
+        assert res["success"] is True
+        mock_agentapi.send_message.assert_awaited_once()
+        sent_content = mock_agentapi.send_message.await_args.kwargs["content"]
+        assert sent_content == TOOL_RESULT_RESUSCITATION_PROMPT
+        assert "工具已执行完成并返回结果" in sent_content
+
+    def test_schedule_remount_updates_ls_pid_and_prevents_looping(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that once an agent mounts a schedule or is remounted on the current language_server,
+        the ls_pid in SQLite is updated so that subsequent ticks do not get caught in a false
+        lost_due_to_pid loop.
+        """
+        convo_id = "test-schedule-pid-remount-loop-009"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Monitor inbox"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "Mounted cron",
+                "tool_calls": [{"name": "schedule", "args": {"CronExpression": "*/30 * * * *", "Prompt": "Check email"}}],
+            },
+            {"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Schedule active", "tool_calls": []},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=30.0)
+
+        # Pre-seed DB with old PID 6936
+        db.set_metadata("last_known_ls_pid", "6936")
+        db.save_conversation_schedule(
+            conversation_id=convo_id,
+            cron_expression="*/30 * * * *",
+            prompt="Check email",
+            expected_interval_seconds=1800,
+            last_trigger_at=time.time() - 30.0,
+            ls_pid=6936,
+        )
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
+        mock_agentapi.get_language_server_pid.return_value = 26788
+        mock_agentapi.send_message.return_value = (True, "OK", "")
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        # First scan: should detect schedule lost due to PID restart (6936 -> 26788)
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        assert stalled[0].has_active_schedule is True
+        assert "lost_schedule_after_restart" in stalled[0].last_error
+
+        # Resuscitate session: remounts schedule and updates ls_pid to 26788 in DB
+        res = asyncio.run(watchdog.resuscitate_session(stalled[0]))
+        assert res["success"] is True
+
+        # Verify DB was updated to current PID 26788
+        sched = db.get_conversation_schedule(convo_id)
+        assert sched["ls_pid"] == 26788
+
+        # Second scan: should NOT treat it as lost again (prevents infinite loop!)
+        stalled_after = watchdog.scan_stalled_conversations()
+        assert len(stalled_after) == 0
+
 
 
 

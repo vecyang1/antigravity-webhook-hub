@@ -932,6 +932,13 @@ class AntigravityWatchdog:
                             baseline_time = file_mtime
 
                         sched_ls_pid = existing_s.get("ls_pid", 0)
+                        interval = sched_info["interval_seconds"]
+
+                        # If transcript itself contains a recent schedule call (within 300s),
+                        # it was mounted on the current language_server process!
+                        if current_ls_pid and sched_info.get("last_schedule_time", 0.0) > 0 and (now - file_mtime <= 300):
+                            sched_ls_pid = current_ls_pid
+
                         if self.db:
                             self.db.save_conversation_schedule(
                                 conversation_id=convo_id,
@@ -939,10 +946,12 @@ class AntigravityWatchdog:
                                 prompt=sched_info["prompt"],
                                 expected_interval_seconds=sched_info["interval_seconds"],
                                 last_trigger_at=baseline_time,
-                                ls_pid=sched_ls_pid or (current_ls_pid or 0),
+                                ls_pid=sched_ls_pid,
                             )
-                        interval = sched_info["interval_seconds"]
-                        lost_due_to_pid = pid_changed or (bool(current_ls_pid and sched_ls_pid and current_ls_pid != sched_ls_pid))
+
+                        lost_due_to_pid = (pid_changed and sched_ls_pid != current_ls_pid) or (
+                            bool(current_ls_pid and sched_ls_pid and current_ls_pid != sched_ls_pid)
+                        )
                         lost_due_to_timeout = baseline_time > 0 and (now - baseline_time > interval * 1.25) and (now - file_mtime > 300)
 
                         if lost_due_to_pid or lost_due_to_timeout:
@@ -1017,7 +1026,20 @@ class AntigravityWatchdog:
                         else:
                             matched_error = "empty_planner_response_hang"
 
-                # 2. Check if the conversation halted on a Stop Hook block without subsequent agent progress
+                # 2. Check if the conversation halted on a completed tool execution output without subsequent model response
+                elif len(parsed_steps) >= 2 and last_source == "MODEL" and last_type == "GENERIC" and last_status == "DONE":
+                    if now - file_mtime > self.config.stall_grace_seconds:
+                        is_stalled = True
+                        if has_stop_hook:
+                            matched_error = "stop_hook_mcp_hang" if is_mcp else "stop_hook_hang"
+                        elif is_boost_goal:
+                            matched_error = "tool_result_boost_goal_hang"
+                        elif is_mcp:
+                            matched_error = "mcp_error_hang"
+                        else:
+                            matched_error = "tool_result_hang"
+
+                # 3. Check if the conversation halted on a Stop Hook block without subsequent agent progress
                 elif last_source == "SYSTEM" and "stop hook blocked termination" in str(last_content).lower():
                     if now - file_mtime > self.config.stall_grace_seconds:
                         is_stalled = True
@@ -1174,6 +1196,8 @@ class AntigravityWatchdog:
             prompt = custom_prompt or SCHEDULE_REMOUNT_PROMPT.format(cron=cron_str)
         elif session_info.last_error == "empty_planner_response_hang":
             prompt = custom_prompt or EMPTY_RESPONSE_RESUSCITATION_PROMPT
+        elif "tool_result" in str(session_info.last_error).lower():
+            prompt = custom_prompt or TOOL_RESULT_RESUSCITATION_PROMPT
         else:
             prompt = custom_prompt or DEFAULT_RESUSCITATION_PROMPT
 
