@@ -555,17 +555,20 @@ def test_standalone_rss_memory_under_stress_reports_defect(free_port: int):
 
         # Wait for server readiness on /healthz
         ready = False
-        for _ in range(60):
-            time.sleep(0.1)
+        t_start = time.monotonic()
+        while time.monotonic() - t_start < 15.0:
+            if proc.poll() is not None:
+                raise AssertionError(f"Server exited unexpectedly: {proc.poll()}")
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=0.5) as r:
                     if r.status == 200:
                         ready = True
                         break
             except Exception:
-                pass
+                time.sleep(0.1)
 
         if not ready:
+            proc.terminate()
             raise AssertionError(f"Server not ready on port {port}. exitcode: {proc.poll()}")
 
         def get_rss_mb() -> float:
