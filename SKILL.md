@@ -55,6 +55,13 @@ All commands run via `./bin/webhook-hub <subcommand>` or `python3 -m hub <subcom
 ./bin/webhook-hub review-contact --name "Adam Walker" --dry-run
 ./bin/webhook-hub review-contact --name "Jane Doe" --phone "+1 555 0199" --json
 ./bin/webhook-hub review-contact --payload '{"name": "Alice", "company": "Acme"}'
+
+# Antigravity Watchdog & Auto Pull-Up (Network Interruption & Subagent Resuscitation)
+./bin/webhook-hub antigravity doctor       # Diagnose network probe, agentapi, language server, stalled sessions
+./bin/webhook-hub antigravity doctor --json# Machine-readable JSON diagnostic for AI agents
+./bin/webhook-hub antigravity pull-up      # Scan and autonomously revive stalled conversations & subagents
+./bin/webhook-hub antigravity pull-up --dry-run # Preview stalled sessions without sending messages
+./bin/webhook-hub antigravity pull-up -c <convo_id> # Target specific conversation ID for resuscitation
 ```
 
 ## 2. HTTP Ingress & API Contracts
@@ -81,6 +88,8 @@ All commands run via `./bin/webhook-hub <subcommand>` or `python3 -m hub <subcom
 | `POST` | `/tasks/sweep` | Sweep, recover, and re-enqueue unprocessed tasks | `200 OK` | `400 Bad Request` |
 | `GET` | `/events/stream` | Server-Sent Events live event stream | `200 OK` | - |
 | `GET` | `/tasks/{id}/stream` | SSE stream scoped to specific task | `200 OK` | `404 Not Found` |
+| `GET` | `/antigravity/status` | Antigravity watchdog diagnostics, network health, and stalled sessions | `200 OK` | - |
+| `POST` | `/antigravity/pull-up` | Trigger automated resuscitation / pull-up for stalled sessions & subagents | `200 OK` | `404 Not Found`, `500` |
 
 ### Webhook Ingress Payload (`POST /webhook`)
 

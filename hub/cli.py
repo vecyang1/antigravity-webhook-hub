@@ -1812,6 +1812,224 @@ def _add_review_contact_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db", default=None, help="Path to SQLite database file")
 
 
+def _add_antigravity_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "action",
+        nargs="?",
+        default="doctor",
+        choices=["doctor", "status", "health", "pull-up", "resuscitate", "wake"],
+        help="Antigravity command: 'doctor' (diagnose IPC & stalled sessions), 'pull-up' (revive stalled sessions/subagents)",
+    )
+    parser.add_argument(
+        "--conversation", "-c",
+        default=None,
+        help="Target specific conversation ID for resuscitation",
+    )
+    parser.add_argument(
+        "--prompt",
+        default=None,
+        help="Custom pull-up message content to send",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Scan and report stalled sessions without sending messages",
+    )
+    parser.add_argument(
+        "--db",
+        default=None,
+        help="Path to SQLite database",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to config.yaml",
+    )
+    parser.add_argument(
+        "--env-file",
+        default=None,
+        help="Path to .env file",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output results in JSON format",
+    )
+
+
+def _add_catchup_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--channel", default="C0C1B86AMCN", help="Slack channel ID to scan")
+    parser.add_argument("--limit", type=int, default=50, help="Maximum number of recent messages to scan")
+    parser.add_argument("--dry-run", action="store_true", help="Inspect offline tasks without dispatching")
+    parser.add_argument("--execute", action="store_true", help="Execute live catch-up dispatch for unfulfilled tasks")
+
+
+def cmd_catchup(args: Any) -> int:
+    """Reconcile and catch up unfulfilled offline tasks from Slack #input_agent."""
+    import subprocess
+    script_path = "/Users/vecsatfoxmailcom/Documents/Cowork/Antigravity Cowork/26.04.25 slack notion image demo/scripts/slack_agent_ops.py"
+    cmd = [sys.executable, script_path, "reconcile"]
+    if getattr(args, "dry_run", False):
+        cmd.append("--dry-run")
+    elif getattr(args, "execute", False):
+        cmd.append("--execute")
+    else:
+        cmd.append("--execute")
+    if getattr(args, "limit", None):
+        cmd.extend(["--limit", str(args.limit)])
+    if getattr(args, "channel", None):
+        cmd.extend(["--channel", str(args.channel)])
+    return subprocess.run(cmd).returncode
+
+
+def cmd_antigravity(args: Any) -> int:
+    """Execute Antigravity doctor diagnostics or session resuscitation / pull-up."""
+    import json
+    import time
+    from hub.antigravity.watchdog import AntigravityWatchdog, StalledSessionInfo
+    from hub.antigravity.result_delivery import resolve_transcript_path
+    from hub.db import DatabaseManager
+    from hub.config import load_config
+
+    action = getattr(args, "action", "doctor") or "doctor"
+    is_json = getattr(args, "json", False)
+
+    config_path = getattr(args, "config", None)
+    env_file = getattr(args, "env_file", None)
+    cfg = load_config(config_path, env_file)
+
+    db_path = getattr(args, "db", None) or cfg.database.path
+    db = DatabaseManager(db_path)
+
+    watchdog = AntigravityWatchdog(db=db, config=cfg.antigravity_watchdog)
+
+    if action in ("doctor", "status", "health"):
+        status_info = watchdog.get_status()
+        if is_json:
+            print(json.dumps(status_info, indent=2, ensure_ascii=False))
+            return 0
+
+        print("=" * 65)
+        print("🤖 Google Antigravity 运行状况与守护诊断 (Doctor)")
+        print("=" * 65)
+        net_icon = "✅" if status_info["network_online"] else "❌"
+        agentapi_icon = "✅" if status_info["agentapi_available"] else "❌"
+        ls_icon = "✅" if status_info["language_server_connected"] else "⚠️"
+
+        print(f"• 外部互联网连接 (Probe):         {net_icon} {'畅通稳定' if status_info['network_online'] else '离线不可达 (Fail-Closed)'}")
+        print(f"• AgentAPI CLI 可用性:            {agentapi_icon} {'已就绪 (' + (watchdog.agentapi.executable_path or '') + ')' if status_info['agentapi_available'] else '未找到可执行文件'}")
+        print(f"• Language Server gRPC 通道:      {ls_icon} {status_info['language_server_address'] or '未发现活跃通道'}")
+        print(f"• 后台守护轮询状态:               {'✅ 开启' if status_info['watchdog_enabled'] else '⏸️ 禁用'} (周期: {status_info['interval_seconds']}s, 自动拉起: {status_info['auto_resuscitate']})")
+
+        stalled = status_info["stalled_sessions"]
+        print("-" * 65)
+        print(f"🔍 挂起/中断会话检测 (共发现 {len(stalled)} 个):")
+        if not stalled:
+            print("  ✅ 未发现网络中断或卡死挂起的会话（系统运行健康）。")
+        else:
+            for idx, s in enumerate(stalled, 1):
+                type_tag = "子代理 (Subagent)" if s["is_subagent"] else "主会话 (Root)"
+                slug_tag = f" [Sidecar: {s['sidecar_slug']}]" if s["sidecar_slug"] else ""
+                status_tag = "🟢 可自动拉起" if s["can_resuscitate"] else f"⛔ 跳过 ({s['skip_reason']})"
+                print(f"  {idx}. [{type_tag}]{slug_tag} {s['conversation_id']}")
+                print(f"     中断原因: {s['last_error']}")
+                print(f"     状态判断: {status_tag} (历史尝试: {s['attempt_count']} 次)")
+
+        recent = status_info["recent_resuscitations"]
+        print("-" * 65)
+        print(f"📜 最近自愈恢复记录 (最近 {len(recent)} 条):")
+        if not recent:
+            print("  (暂无历史拉起自愈记录)")
+        else:
+            for r in recent:
+                st = r.get("status", "unknown")
+                st_icon = "✅" if st == "resuscitated" else ("⏳" if st == "attempting" else "❌")
+                print(f"  • {r.get('resuscitated_at')} [{st_icon} {st}] 会话: {r.get('conversation_id')} (第 {r.get('attempt_count')} 次)")
+                if r.get("last_error"):
+                    print(f"    错误原因: {r.get('last_error')}")
+        print("=" * 65)
+        return 0
+
+    elif action in ("pull-up", "resuscitate", "wake"):
+        dry_run = getattr(args, "dry_run", False)
+        target_convo = getattr(args, "conversation", None)
+        custom_prompt = getattr(args, "prompt", None)
+
+        if not watchdog.check_network_health():
+            msg = "错误: 外部网络未连通，拒绝执行会话拉起（Fail-Closed 防止无效唤醒造成状态错乱）。"
+            if is_json:
+                print(json.dumps({"success": False, "error": msg}, ensure_ascii=False))
+            else:
+                print(f"❌ {msg}", file=sys.stderr)
+            return 1
+
+        if not watchdog.is_agentapi_ready():
+            msg = "错误: Antigravity AgentAPI / language_server 尚未就绪，无法派发自愈指令。"
+            if is_json:
+                print(json.dumps({"success": False, "error": msg}, ensure_ascii=False))
+            else:
+                print(f"❌ {msg}", file=sys.stderr)
+            return 1
+
+        if target_convo:
+            transcript_path = resolve_transcript_path(target_convo, watchdog._brain_dir)
+            if not transcript_path or not transcript_path.exists():
+                msg = f"未在 {watchdog._brain_dir} 找到会话 {target_convo} 的 transcript.jsonl"
+                if is_json:
+                    print(json.dumps({"success": False, "error": msg}, ensure_ascii=False))
+                else:
+                    print(f"❌ {msg}", file=sys.stderr)
+                return 1
+
+            session_info = StalledSessionInfo(
+                conversation_id=target_convo,
+                transcript_path=transcript_path,
+                last_step_index=0,
+                last_error="manual_targeted_pull_up",
+                last_error_time=time.time(),
+                is_subagent=False,
+                sidecar_slug=watchdog._find_associated_sidecar(target_convo),
+                attempt_count=db.get_resuscitation_attempts(target_convo),
+                can_resuscitate=True,
+            )
+            if dry_run:
+                print(f"[DRY-RUN] 将拉起指定会话: {target_convo}")
+                return 0
+
+            res = asyncio.run(watchdog.resuscitate_session(session_info, custom_prompt=custom_prompt))
+            if is_json:
+                print(json.dumps(res, indent=2, ensure_ascii=False))
+            else:
+                if res.get("success"):
+                    print(f"✅ 成功拉起会话 {target_convo}！(自愈流水号: {res.get('resuscitation_id')})")
+                else:
+                    print(f"❌ 拉起会话失败: {res.get('error')}")
+            return 0 if res.get("success") else 1
+
+        stalled = watchdog.scan_stalled_conversations()
+        if dry_run:
+            if is_json:
+                print(json.dumps([s.__dict__ for s in stalled], default=str, indent=2, ensure_ascii=False))
+            else:
+                print(f"🔍 [DRY-RUN] 扫描到 {len(stalled)} 个挂起/中断会话:")
+                for s in stalled:
+                    type_str = "子代理" if s.is_subagent else "主会话"
+                    print(f"  • [{type_str}] {s.conversation_id}: {s.last_error} (可拉起: {s.can_resuscitate})")
+            return 0
+
+        results = asyncio.run(watchdog.resuscitate_stalled_sessions())
+        if is_json:
+            print(json.dumps(results, indent=2, ensure_ascii=False))
+        else:
+            print(f"🚀 已自动拉起 {len(results)} 个中断会话:")
+            for r in results:
+                st_icon = "✅" if r.get("success") else "❌"
+                print(f"  {st_icon} 会话 {r.get('conversation_id')}: 状态={r.get('status')}")
+        return 0
+
+    return 0
+
+
 # ==============================================================================
 # MAIN CLI ENTRY POINT & PARSER
 # ==============================================================================
@@ -1982,6 +2200,20 @@ def build_parser() -> Any:
     p_service = subparsers.add_parser("service", help="Manage native macOS launchd LaunchAgent background daemon")
     _add_service_args(p_service)
 
+    p_antigravity = subparsers.add_parser(
+        "antigravity",
+        aliases=["ag", "watchdog"],
+        help="Antigravity watchdog diagnostics, network check, and session pull-up",
+    )
+    _add_antigravity_args(p_antigravity)
+
+    p_catchup = subparsers.add_parser(
+        "catchup",
+        aliases=["reconcile"],
+        help="Reconcile and catch up unfulfilled offline tasks from Slack #input_agent",
+    )
+    _add_catchup_args(p_catchup)
+
     return parser
 
 
@@ -1995,6 +2227,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "start", "stop", "status", "logs", "test-send", "verify",
         "review-contact", "contact-review", "sweep", "pick-unprocessed", "recover",
         "dashboard", "ui", "tasks", "rerun", "setup", "init", "service",
+        "antigravity", "ag", "watchdog", "catchup", "reconcile",
         "-h", "--help"
     }
     if argv and argv[0] not in known_commands and argv[0].startswith("-"):
@@ -2128,6 +2361,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         del p
         gc.collect()
         return cmd_service(args)
+
+    elif subcommand in ("antigravity", "ag", "watchdog"):
+        p = argparse.ArgumentParser(prog="webhook-hub antigravity")
+        _add_antigravity_args(p)
+        args = p.parse_args(sub_args)
+        args.subcommand = "antigravity"
+        del p
+        gc.collect()
+        return cmd_antigravity(args)
+
+    elif subcommand in ("catchup", "reconcile"):
+        p = argparse.ArgumentParser(prog="webhook-hub catchup")
+        _add_catchup_args(p)
+        args = p.parse_args(sub_args)
+        args.subcommand = "catchup"
+        del p
+        gc.collect()
+        return cmd_catchup(args)
 
     else:
         parser = build_parser()

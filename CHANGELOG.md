@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-09-13
+
+### Added & Hardened
+- **Antigravity Watchdog & Auto Pull-Up Engine (`hub/antigravity/watchdog.py`)**:
+  - Implemented 24/7 background watchdog engine that continuously monitors Antigravity AI agent sessions and subagents (including `/boost`, `teamwork-preview`, sidecars).
+  - Solves stream interruption failures (`The stream was interrupted`, `Agent execution terminated due to error`, server restarts) causing agents to hang and wait for manual "Retry" clicks in the GUI.
+  - Fail-closed network health probe: fast TCP probe to DNS gateway (`1.1.1.1:53` / `8.8.8.8:53`) prevents blind resuscitation when offline.
+  - Subagent and root conversation parity: seamlessly detects and pulls up subagents (`nestingDepth > 0`, `DeepInvestigator`, `DeepCoder`) as well as root conversations and sidecars.
+  - Circuit breaker: caps resuscitation attempts per session (default 3) to prevent runaway retry loops.
+  - Stall grace period: protects sessions within recent error window (default 15s) against race conditions with in-flight actions.
+- **SQLite SSOT Resuscitation Ledger (`hub/db.py`)**:
+  - Added relational table `antigravity_resuscitations` with indexes on `(conversation_id, resuscitated_at)` and `status`.
+  - Enforced check constraints across valid lifecycle states: `'attempting'`, `'resuscitated'`, `'failed'`, `'exhausted'`, `'resolved'`.
+  - Implemented atomic recording and query methods (`record_resuscitation`, `get_resuscitation_attempts`, `list_resuscitations`, `update_resuscitation_status`).
+- **Unified CLI Toolchain & REST Ingress (`hub/cli.py`, `hub/routes/observability.py`)**:
+  - Exposed `./bin/webhook-hub antigravity doctor` (with `--json` support) for comprehensive diagnostic reporting.
+  - Exposed `./bin/webhook-hub antigravity pull-up` (with `--dry-run` and `--conversation` support) for targeted or batch self-healing.
+  - Added HTTP REST endpoints: `GET /antigravity/status` and `POST /antigravity/pull-up`.
+- **Dispatcher Sweeper & Sleep/Wake Hook (`hub/dispatcher.py`)**:
+  - Hooked watchdog periodic execution and instant wake-up recovery into `TaskDispatcher._sweeper_loop`.
+  - On macOS sleep/wake detection (monotonic leap), immediately recovers both unprocessed tasks and stalled Antigravity sessions.
+- **Cadence Controller Integration (`cadence_ctl.py`)**:
+  - Integrated live watchdog status checking directly into `cadence_ctl doctor`, providing unified diagnostic output across all system cadences.
+- **Unit Test Coverage (`tests/unit/test_antigravity_watchdog.py`)**:
+  - Added 8 comprehensive unit tests covering positive recovery, subagent termination, healthy session protection, network fail-closed, circuit breaker, and diagnostics (184/184 full test suite passing).
+
 ## [1.9.5] - 2026-09-13
 
 ### Added & Enhanced

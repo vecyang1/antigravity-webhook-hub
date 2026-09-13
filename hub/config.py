@@ -93,6 +93,21 @@ class DashboardConfig:
 
 
 @dataclass(slots=True)
+class AntigravityWatchdogConfig:
+    enabled: bool = True
+    interval_seconds: int = 30
+    lookback_minutes: int = 60
+    stall_grace_seconds: int = 15
+    max_retries_per_session: int = 3
+    auto_resuscitate: bool = True
+    probe_host: str = "1.1.1.1"
+    probe_port: int = 53
+    probe_timeout_seconds: float = 1.0
+    brain_dir: Optional[str] = None
+    sidecar_data_dir: Optional[str] = None
+
+
+@dataclass(slots=True)
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
@@ -102,6 +117,7 @@ class AppConfig:
     sweeper: SweeperConfig = field(default_factory=SweeperConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    antigravity_watchdog: AntigravityWatchdogConfig = field(default_factory=AntigravityWatchdogConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -162,6 +178,19 @@ class AppConfig:
                 "cloudflare_access_aud": self.dashboard.cloudflare_access_aud,
                 "cloudflare_access_team": self.dashboard.cloudflare_access_team,
                 "allowed_emails": self.dashboard.allowed_emails,
+            },
+            "antigravity_watchdog": {
+                "enabled": self.antigravity_watchdog.enabled,
+                "interval_seconds": self.antigravity_watchdog.interval_seconds,
+                "lookback_minutes": self.antigravity_watchdog.lookback_minutes,
+                "stall_grace_seconds": self.antigravity_watchdog.stall_grace_seconds,
+                "max_retries_per_session": self.antigravity_watchdog.max_retries_per_session,
+                "auto_resuscitate": self.antigravity_watchdog.auto_resuscitate,
+                "probe_host": self.antigravity_watchdog.probe_host,
+                "probe_port": self.antigravity_watchdog.probe_port,
+                "probe_timeout_seconds": self.antigravity_watchdog.probe_timeout_seconds,
+                "brain_dir": self.antigravity_watchdog.brain_dir,
+                "sidecar_data_dir": self.antigravity_watchdog.sidecar_data_dir,
             },
         }
 
@@ -368,6 +397,42 @@ def load_config(
         if "rehydrate_orphaned_events" in sw:
             cfg.sweeper.rehydrate_orphaned_events = _to_bool(sw["rehydrate_orphaned_events"])
 
+    if "antigravity_watchdog" in yaml_data and isinstance(yaml_data["antigravity_watchdog"], dict):
+        aw = yaml_data["antigravity_watchdog"]
+        if "enabled" in aw:
+            cfg.antigravity_watchdog.enabled = _to_bool(aw["enabled"])
+        if "interval_seconds" in aw:
+            cfg.antigravity_watchdog.interval_seconds = _to_int(
+                aw["interval_seconds"], cfg.antigravity_watchdog.interval_seconds
+            )
+        if "lookback_minutes" in aw:
+            cfg.antigravity_watchdog.lookback_minutes = _to_int(
+                aw["lookback_minutes"], cfg.antigravity_watchdog.lookback_minutes
+            )
+        if "stall_grace_seconds" in aw:
+            cfg.antigravity_watchdog.stall_grace_seconds = _to_int(
+                aw["stall_grace_seconds"], cfg.antigravity_watchdog.stall_grace_seconds
+            )
+        if "max_retries_per_session" in aw:
+            cfg.antigravity_watchdog.max_retries_per_session = _to_int(
+                aw["max_retries_per_session"], cfg.antigravity_watchdog.max_retries_per_session
+            )
+        if "auto_resuscitate" in aw:
+            cfg.antigravity_watchdog.auto_resuscitate = _to_bool(aw["auto_resuscitate"])
+        if "probe_host" in aw:
+            cfg.antigravity_watchdog.probe_host = str(aw["probe_host"])
+        if "probe_port" in aw:
+            cfg.antigravity_watchdog.probe_port = _to_int(aw["probe_port"], cfg.antigravity_watchdog.probe_port)
+        if "probe_timeout_seconds" in aw:
+            try:
+                cfg.antigravity_watchdog.probe_timeout_seconds = float(aw["probe_timeout_seconds"])
+            except (ValueError, TypeError):
+                pass
+        if "brain_dir" in aw:
+            cfg.antigravity_watchdog.brain_dir = str(aw["brain_dir"])
+        if "sidecar_data_dir" in aw:
+            cfg.antigravity_watchdog.sidecar_data_dir = str(aw["sidecar_data_dir"])
+
     # 4. Apply environment variables over YAML
     # Server
     if "HOST" in combined_env:
@@ -491,6 +556,45 @@ def load_config(
             cfg.dashboard.allowed_emails = [e.strip() for e in emails_raw.split(",") if e.strip()]
         elif isinstance(emails_raw, list):
             cfg.dashboard.allowed_emails = emails_raw
+
+    # Antigravity Watchdog
+    if "ANTIGRAVITY_WATCHDOG_ENABLED" in combined_env:
+        cfg.antigravity_watchdog.enabled = _to_bool(combined_env["ANTIGRAVITY_WATCHDOG_ENABLED"])
+    if "ANTIGRAVITY_WATCHDOG_INTERVAL_SECONDS" in combined_env:
+        cfg.antigravity_watchdog.interval_seconds = _to_int(
+            combined_env["ANTIGRAVITY_WATCHDOG_INTERVAL_SECONDS"], cfg.antigravity_watchdog.interval_seconds
+        )
+    if "ANTIGRAVITY_WATCHDOG_LOOKBACK_MINUTES" in combined_env:
+        cfg.antigravity_watchdog.lookback_minutes = _to_int(
+            combined_env["ANTIGRAVITY_WATCHDOG_LOOKBACK_MINUTES"], cfg.antigravity_watchdog.lookback_minutes
+        )
+    if "ANTIGRAVITY_WATCHDOG_STALL_GRACE_SECONDS" in combined_env:
+        cfg.antigravity_watchdog.stall_grace_seconds = _to_int(
+            combined_env["ANTIGRAVITY_WATCHDOG_STALL_GRACE_SECONDS"], cfg.antigravity_watchdog.stall_grace_seconds
+        )
+    if "ANTIGRAVITY_WATCHDOG_MAX_RETRIES" in combined_env:
+        cfg.antigravity_watchdog.max_retries_per_session = _to_int(
+            combined_env["ANTIGRAVITY_WATCHDOG_MAX_RETRIES"], cfg.antigravity_watchdog.max_retries_per_session
+        )
+    if "ANTIGRAVITY_WATCHDOG_AUTO_RESUSCITATE" in combined_env:
+        cfg.antigravity_watchdog.auto_resuscitate = _to_bool(combined_env["ANTIGRAVITY_WATCHDOG_AUTO_RESUSCITATE"])
+    if "ANTIGRAVITY_WATCHDOG_PROBE_HOST" in combined_env:
+        cfg.antigravity_watchdog.probe_host = str(combined_env["ANTIGRAVITY_WATCHDOG_PROBE_HOST"])
+    if "ANTIGRAVITY_WATCHDOG_PROBE_PORT" in combined_env:
+        cfg.antigravity_watchdog.probe_port = _to_int(
+            combined_env["ANTIGRAVITY_WATCHDOG_PROBE_PORT"], cfg.antigravity_watchdog.probe_port
+        )
+    if "ANTIGRAVITY_WATCHDOG_PROBE_TIMEOUT_SECONDS" in combined_env:
+        try:
+            cfg.antigravity_watchdog.probe_timeout_seconds = float(
+                combined_env["ANTIGRAVITY_WATCHDOG_PROBE_TIMEOUT_SECONDS"]
+            )
+        except (ValueError, TypeError):
+            pass
+    if "ANTIGRAVITY_WATCHDOG_BRAIN_DIR" in combined_env:
+        cfg.antigravity_watchdog.brain_dir = str(combined_env["ANTIGRAVITY_WATCHDOG_BRAIN_DIR"])
+    if "ANTIGRAVITY_WATCHDOG_SIDECAR_DATA_DIR" in combined_env:
+        cfg.antigravity_watchdog.sidecar_data_dir = str(combined_env["ANTIGRAVITY_WATCHDOG_SIDECAR_DATA_DIR"])
 
     # 5. Apply CLI / Explicit overrides (highest precedence)
     if cli_overrides:

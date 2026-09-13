@@ -24,11 +24,14 @@ from hub.antigravity.result_delivery import (
 )
 from hub.antigravity.session_manager import execute_antigravity_task
 from hub.antigravity.thread_notifier import ThreadNotifier
+from hub.antigravity.watchdog import AntigravityWatchdog, StalledSessionInfo
 
 __all__ = [
     "AgentAPIClient",
     "AntigravityTaskPayload",
+    "AntigravityWatchdog",
     "SessionThreadRecord",
+    "StalledSessionInfo",
     "ThreadMilestone",
     "ThreadNotifier",
     "build_antigravity_prompt",

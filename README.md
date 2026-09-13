@@ -22,7 +22,8 @@ A lightweight, zero-footprint local webhook gateway and decoupled event dispatch
   - Periodic `cron` schedules.
   - Antigravity AI agent atomic JSON signal files.
 - **Real-Time Observability & Streaming**: Live Server-Sent Events (`SSE`) endpoints (`/events/stream`, `/tasks/{id}/stream`) with automated 15-second heartbeats and Prometheus metrics exposition (`/metrics`).
-- **Unified Toolchain**: Full lifecycle control via executable `./bin/webhook-hub` CLI or `python3 -m hub` (including `sweep` and `pick-unprocessed`).
+- **Autonomous Antigravity Watchdog & Auto Pull-Up**: 24/7 background watchdog engine that continuously monitors Antigravity AI agent sessions and subagents (including `/boost`, `teamwork-preview`, sidecars). When network streams break (`The stream was interrupted`, `Agent execution terminated due to error`, server restarts), the watchdog fail-closes if offline, waits for stable connection, and autonomously revives the session via native `agentapi send-message` with circuit-breaker protection (max 3 retries), completely eliminating manual "Retry" GUI clicks.
+- **Unified Toolchain**: Full lifecycle control via executable `./bin/webhook-hub` CLI or `python3 -m hub` (including `sweep`, `pick-unprocessed`, and `antigravity doctor/pull-up`).
 
 ---
 
@@ -173,6 +174,7 @@ The CLI is invoked via `./bin/webhook-hub` or `python3 -m hub`.
 | `logs` | Inspect SQLite logs or stream live SSE | `-f` / `--follow`, `-t` / `--task`, `-n` / `--lines`, `--db` |
 | `test-send` | Cryptographically sign and send test webhook | `--action`, `--command`, `--secret`, `--token`, `--tamper` |
 | `review-contact` | Review and merge contact into Notion CRM SSOT | `--name`, `--phone`, `--dry-run`, `--json`, `--payload` |
+| `antigravity` | Watchdog diagnostics (`doctor`) and session resuscitation (`pull-up`) | `doctor`, `pull-up`, `--conversation`, `--dry-run`, `--json` |
 | `verify` | Execute standalone E2E verification suite | `--host`, `--port`, `--secret` |
 
 ### Examples

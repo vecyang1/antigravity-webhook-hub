@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from hub.antigravity.watchdog import AntigravityWatchdog
 from hub.memory import apply_memory_pressure_relief
 
 logger = logging.getLogger("hub.dispatcher")
@@ -65,6 +66,11 @@ class TaskDispatcher:
         self._total_sweeps_count: int = 0
         self._last_sleep_detected_at: Optional[str] = None
         self._last_sleep_duration_seconds: float = 0.0
+
+        aw_cfg = getattr(self.config, "antigravity_watchdog", None) if self.config else None
+        self.antigravity_watchdog: Optional[AntigravityWatchdog] = (
+            AntigravityWatchdog(db=self.db, config=aw_cfg) if self.db else None
+        )
 
     async def start(self) -> None:
         """Start background task dispatcher workers, recover orphaned tasks, and launch unprocessed sweeper."""
@@ -294,10 +300,14 @@ class TaskDispatcher:
         drift_threshold = getattr(sweeper_cfg, "sleep_drift_threshold_seconds", 15) if sweeper_cfg else 15
         tick_seconds = min(5.0, max(1.0, float(interval) / 6.0))
         last_periodic_sweep = time.time()
+        last_watchdog_sweep = time.time()
+        watchdog_interval = 30
+        if self.antigravity_watchdog and hasattr(self.antigravity_watchdog, "config"):
+            watchdog_interval = max(5, int(getattr(self.antigravity_watchdog.config, "interval_seconds", 30)))
 
         logger.info(
-            "Unprocessed message sweeper loop active (interval: %ds, sleep_threshold: %ds)",
-            interval, drift_threshold
+            "Unprocessed message sweeper loop active (interval: %ds, sleep_threshold: %ds, watchdog_interval: %ds)",
+            interval, drift_threshold, watchdog_interval
         )
 
         while self._is_running:
@@ -329,12 +339,39 @@ class TaskDispatcher:
                     last_periodic_sweep = time.time()
                 except Exception as e:
                     logger.error("Error during sleep recovery sweep: %s", e)
-            elif (time.time() - last_periodic_sweep) >= interval:
-                try:
-                    await self.sweep_unprocessed_tasks(reason="periodic_sweep")
-                    last_periodic_sweep = time.time()
-                except Exception as e:
-                    logger.error("Error during periodic sweep: %s", e)
+
+                if self.antigravity_watchdog:
+                    try:
+                        resuscitated = await self.antigravity_watchdog.resuscitate_stalled_sessions()
+                        if resuscitated:
+                            logger.info(
+                                "Antigravity Watchdog: Resuscitated %d stalled sessions after sleep/wake",
+                                len(resuscitated),
+                            )
+                        last_watchdog_sweep = time.time()
+                    except Exception as e:
+                        logger.error("Error during sleep recovery Antigravity watchdog sweep: %s", e)
+
+            else:
+                if (time.time() - last_periodic_sweep) >= interval:
+                    try:
+                        await self.sweep_unprocessed_tasks(reason="periodic_sweep")
+                        last_periodic_sweep = time.time()
+                    except Exception as e:
+                        logger.error("Error during periodic sweep: %s", e)
+
+                if self.antigravity_watchdog and (time.time() - last_watchdog_sweep) >= watchdog_interval:
+                    try:
+                        resuscitated = await self.antigravity_watchdog.resuscitate_stalled_sessions()
+                        if resuscitated:
+                            logger.info(
+                                "Antigravity Watchdog: Resuscitated %d stalled sessions in periodic sweep",
+                                len(resuscitated),
+                            )
+                        last_watchdog_sweep = time.time()
+                    except Exception as e:
+                        logger.error("Error during periodic Antigravity watchdog sweep: %s", e)
+
                 await asyncio.sleep(0.1)
 
     def _record_log(self, task_id: str, stream: str, chunk: str, execution_id: Optional[str] = None) -> None:

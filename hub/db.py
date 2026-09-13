@@ -286,6 +286,36 @@ class DatabaseManager:
                 """
             )
 
+            # 6. Antigravity Resuscitations Table (Auto Pull-Up & Network Self-Healing SSOT)
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS antigravity_resuscitations (
+                    resuscitation_id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    sidecar_slug TEXT,
+                    last_error TEXT,
+                    attempt_count INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'resuscitated',
+                    resuscitation_prompt TEXT,
+                    last_step_index INTEGER DEFAULT 0,
+                    resuscitated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT chk_resuscitation_status CHECK(status IN ('attempting', 'resuscitated', 'failed', 'exhausted', 'resolved'))
+                );
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_antigravity_resuscitations_convo
+                    ON antigravity_resuscitations (conversation_id, resuscitated_at DESC);
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_antigravity_resuscitations_status
+                    ON antigravity_resuscitations (status);
+                """
+            )
+
             self._conn.commit()
             try:
                 self._conn.execute("PRAGMA shrink_memory;")
@@ -1362,4 +1392,123 @@ class DatabaseManager:
                 return [dict(row) for row in cur.fetchall()]
             finally:
                 cur.close()
+
+    # --- Antigravity Resuscitation Operations (Auto Pull-Up SSOT) ---
+
+    def record_resuscitation(
+        self,
+        conversation_id: str,
+        sidecar_slug: Optional[str] = None,
+        last_error: Optional[str] = None,
+        resuscitation_prompt: Optional[str] = None,
+        last_step_index: int = 0,
+        status: str = "resuscitated",
+    ) -> dict[str, Any]:
+        """Record an autonomous pull-up resuscitation attempt for an Antigravity conversation."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                # Count prior attempts for this conversation
+                cur.execute(
+                    "SELECT COUNT(*) FROM antigravity_resuscitations WHERE conversation_id = ?",
+                    (conversation_id,),
+                )
+                prior_count = cur.fetchone()[0]
+                attempt_count = prior_count + 1
+
+                resuscitation_id = f"res_{uuid.uuid4().hex[:12]}"
+                cur.execute(
+                    """
+                    INSERT INTO antigravity_resuscitations (
+                        resuscitation_id, conversation_id, sidecar_slug, last_error,
+                        attempt_count, status, resuscitation_prompt, last_step_index, resuscitated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        resuscitation_id,
+                        conversation_id,
+                        sidecar_slug,
+                        last_error,
+                        attempt_count,
+                        status,
+                        resuscitation_prompt,
+                        last_step_index,
+                    ),
+                )
+                self._commit_and_shrink()
+                return {
+                    "resuscitation_id": resuscitation_id,
+                    "conversation_id": conversation_id,
+                    "sidecar_slug": sidecar_slug,
+                    "last_error": last_error,
+                    "attempt_count": attempt_count,
+                    "status": status,
+                    "resuscitation_prompt": resuscitation_prompt,
+                    "last_step_index": last_step_index,
+                }
+            except Exception as e:
+                logger.error("Failed to record resuscitation for %s: %s", conversation_id, e)
+                raise
+            finally:
+                cur.close()
+
+    def get_resuscitation_attempts(self, conversation_id: str) -> int:
+        """Count how many times this conversation has already been resuscitated."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM antigravity_resuscitations WHERE conversation_id = ?",
+                    (conversation_id,),
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row else 0
+            finally:
+                cur.close()
+
+    def list_resuscitations(
+        self,
+        limit: int = 50,
+        conversation_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """List recent resuscitations ordered by resuscitated_at DESC."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                clauses = []
+                params: list[Any] = []
+                if conversation_id:
+                    clauses.append("conversation_id = ?")
+                    params.append(conversation_id)
+                if status:
+                    clauses.append("status = ?")
+                    params.append(status)
+
+                where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+                sql = f"SELECT * FROM antigravity_resuscitations {where_sql} ORDER BY resuscitated_at DESC LIMIT ?"
+                params.append(limit)
+
+                cur.execute(sql, tuple(params))
+                return [dict(row) for row in cur.fetchall()]
+            finally:
+                cur.close()
+
+    def update_resuscitation_status(self, resuscitation_id: str, status: str) -> bool:
+        """Update status of a resuscitation attempt (e.g. resuscitated -> resolved / failed / exhausted)."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    "UPDATE antigravity_resuscitations SET status = ? WHERE resuscitation_id = ?",
+                    (status, resuscitation_id),
+                )
+                self._commit_and_shrink()
+                return cur.rowcount > 0
+            except Exception as e:
+                logger.error("Failed to update resuscitation status for %s: %s", resuscitation_id, e)
+                return False
+            finally:
+                cur.close()
+
 

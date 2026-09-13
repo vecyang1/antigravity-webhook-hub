@@ -253,10 +253,60 @@ def register_observability_routes(
                     "tasks": "/tasks",
                     "tasks_summary": "/tasks/summary",
                     "events": "/events/stream",
+                    "antigravity_status": "/antigravity/status",
+                    "antigravity_pull_up": "/antigravity/pull-up",
                 },
             },
             status_code=200,
         )
+
+    async def handle_antigravity_status(req: HTTPRequest) -> HTTPResponse:
+        """GET /antigravity/status: Diagnostics for Antigravity watchdog and stalled sessions."""
+        watchdog = getattr(dispatcher, "antigravity_watchdog", None)
+        if not watchdog:
+            from hub.antigravity.watchdog import AntigravityWatchdog
+            watchdog = AntigravityWatchdog(db=db, config=getattr(config, "antigravity_watchdog", None))
+        return HTTPResponse.json(watchdog.get_status(), status_code=200)
+
+    async def handle_antigravity_pull_up(req: HTTPRequest) -> HTTPResponse:
+        """POST /antigravity/pull-up: Trigger automated pull-up / resuscitation."""
+        watchdog = getattr(dispatcher, "antigravity_watchdog", None)
+        if not watchdog:
+            from hub.antigravity.watchdog import AntigravityWatchdog
+            watchdog = AntigravityWatchdog(db=db, config=getattr(config, "antigravity_watchdog", None))
+
+        body = req.json() if req.body else {}
+        convo_id = body.get("conversation_id")
+        prompt = body.get("prompt")
+
+        if convo_id:
+            from hub.antigravity.watchdog import StalledSessionInfo
+            from hub.antigravity.result_delivery import resolve_transcript_path
+            transcript_path = resolve_transcript_path(convo_id, watchdog._brain_dir)
+            if not transcript_path or not transcript_path.exists():
+                return HTTPResponse.json(
+                    {"success": False, "error": f"Conversation {convo_id} not found"},
+                    status_code=404,
+                )
+            info = StalledSessionInfo(
+                conversation_id=convo_id,
+                transcript_path=transcript_path,
+                last_step_index=0,
+                last_error="api_pull_up_request",
+                last_error_time=time.time(),
+                is_subagent=False,
+                sidecar_slug=watchdog._find_associated_sidecar(convo_id),
+                attempt_count=db.get_resuscitation_attempts(convo_id) if db else 0,
+                can_resuscitate=True,
+            )
+            res = await watchdog.resuscitate_session(info, custom_prompt=prompt)
+            return HTTPResponse.json(res, status_code=200 if res.get("success") else 500)
+        else:
+            results = await watchdog.resuscitate_stalled_sessions()
+            return HTTPResponse.json(
+                {"success": True, "resuscitated_count": len(results), "results": results},
+                status_code=200,
+            )
 
     async def handle_dashboard(req: HTTPRequest) -> HTTPResponse:
         """GET /dashboard & GET /ui: Render Observable Activities Web Dashboard."""
@@ -301,3 +351,6 @@ def register_observability_routes(
     server.add_route("GET", "/metrics", handle_metrics)
     server.add_route("GET", "/dashboard", handle_dashboard)
     server.add_route("GET", "/ui", handle_dashboard)
+    server.add_route("GET", "/antigravity/status", handle_antigravity_status)
+    server.add_route("GET", "/antigravity/watchdog", handle_antigravity_status)
+    server.add_route("POST", "/antigravity/pull-up", handle_antigravity_pull_up)
