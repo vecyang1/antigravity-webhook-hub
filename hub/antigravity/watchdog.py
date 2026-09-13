@@ -701,8 +701,8 @@ class AntigravityWatchdog:
 
                 try:
                     trans_stat = transcript_path.stat()
-                    # Do not skip sessions with monitored active schedules when PID changed or interval elapsed
-                    if convo_id not in active_sched_map and not pid_changed and (now - trans_stat.st_mtime > lookback_seconds):
+                    # Do not skip sessions with monitored active schedules
+                    if convo_id not in active_sched_map and (now - trans_stat.st_mtime > lookback_seconds):
                         continue
                     file_mtime = trans_stat.st_mtime
                 except Exception:
@@ -751,9 +751,45 @@ class AntigravityWatchdog:
                         is_subagent = bool(parent_convo_id)
                         if not is_subagent and parsed_steps:
                             first_content = str(parsed_steps[0].get("content") or "")
-                            if "<original_task>" in first_content or "invoke_subagent" in first_content or "DeepInvestigator" in first_content or "DeepCoder" in first_content:
+                            if "<subagent_reminder>" in first_content or "You are running as a subagent" in first_content or "invoked by a caller agent" in first_content:
                                 is_subagent = True
                     return parent_convo_id, is_subagent
+
+                def _evaluate_resuscitation_eligibility(
+                    cid: str,
+                    attempts: int,
+                    subagent: bool,
+                    parent_id: Optional[str],
+                ) -> tuple[bool, Optional[str]]:
+                    # 1. Circuit breaker
+                    if attempts >= self.config.max_retries_per_session:
+                        return False, f"max_retries_exhausted ({attempts}/{self.config.max_retries_per_session})"
+
+                    # 2. Orphaned subagent check: prevent split-brain solo mode degradation
+                    if subagent and not parent_id:
+                        return False, "orphaned_subagent_cannot_determine_parent"
+
+                    # 3. Recent resuscitation cooldown and in-progress check
+                    if self.db and hasattr(self.db, "get_last_resuscitation"):
+                        last_res = self.db.get_last_resuscitation(cid)
+                        if last_res:
+                            status = last_res.get("status")
+                            if status == "attempting":
+                                return False, "resuscitation_in_progress"
+                            # Cooldown only applies to active resuscitation prompts, not passive quota_cooldown quarantines
+                            if status in ("resuscitated", "failed", "exhausted", "schedule_remounted"):
+                                res_epoch = float(last_res.get("resuscitated_epoch") or 0.0)
+                                if res_epoch == 0.0 and last_res.get("resuscitated_at"):
+                                    try:
+                                        ts_str = str(last_res["resuscitated_at"]).replace(" ", "T")
+                                        dt = datetime.fromisoformat(ts_str if "+" in ts_str else ts_str + "+00:00")
+                                        res_epoch = dt.timestamp()
+                                    except Exception:
+                                        pass
+                                if res_epoch > 0.0 and (now - res_epoch < self.config.stall_grace_seconds):
+                                    return False, f"recent_resuscitation_cooldown ({int(now - res_epoch)}s ago < {int(self.config.stall_grace_seconds)}s)"
+
+                    return True, None
 
                 # --- 1. Check Active Quota Cooldown in DB ---
                 if active_quota_healthy:
@@ -806,40 +842,23 @@ class AntigravityWatchdog:
                     else:
                         # Cooldown expired or probe allowed! Eligible for immediate automated pull-up
                         _resolve_subagent_and_parent()
-                        if prior_attempts >= self.config.max_retries_per_session:
-                            stalled.append(
-                                StalledSessionInfo(
-                                    conversation_id=convo_id,
-                                    transcript_path=transcript_path,
-                                    last_step_index=last_step_idx,
-                                    last_error="quota_restored_pull_up",
-                                    last_error_time=file_mtime,
-                                    is_subagent=is_subagent,
-                                    parent_conversation_id=parent_convo_id,
-                                    sidecar_slug=sidecar_slug,
-                                    attempt_count=prior_attempts,
-                                    can_resuscitate=False,
-                                    skip_reason=f"max_retries_exhausted ({prior_attempts}/{self.config.max_retries_per_session})",
-                                    is_quota_exhausted=False,
-                                )
+                        can_res, skip_reason = _evaluate_resuscitation_eligibility(convo_id, prior_attempts, is_subagent, parent_convo_id)
+                        stalled.append(
+                            StalledSessionInfo(
+                                conversation_id=convo_id,
+                                transcript_path=transcript_path,
+                                last_step_index=last_step_idx,
+                                last_error="quota_restored_pull_up",
+                                last_error_time=file_mtime,
+                                is_subagent=is_subagent,
+                                parent_conversation_id=parent_convo_id,
+                                sidecar_slug=sidecar_slug,
+                                attempt_count=prior_attempts,
+                                can_resuscitate=can_res,
+                                skip_reason=skip_reason,
+                                is_quota_exhausted=False,
                             )
-                        else:
-                            stalled.append(
-                                StalledSessionInfo(
-                                    conversation_id=convo_id,
-                                    transcript_path=transcript_path,
-                                    last_step_index=last_step_idx,
-                                    last_error="quota_restored_pull_up",
-                                    last_error_time=file_mtime,
-                                    is_subagent=is_subagent,
-                                    parent_conversation_id=parent_convo_id,
-                                    sidecar_slug=sidecar_slug,
-                                    attempt_count=prior_attempts,
-                                    can_resuscitate=True,
-                                    skip_reason=None,
-                                    is_quota_exhausted=False,
-                                )
-                            )
+                        )
                         continue
 
                 # --- 2. Check for Newly Encountered Quota Exhaustion ---
@@ -872,41 +891,24 @@ class AntigravityWatchdog:
                 if quota_detected:
                     _resolve_subagent_and_parent()
                     if active_quota_healthy:
-                        # Active account has healthy quota (>10%), pull up if within max retries
-                        if prior_attempts >= self.config.max_retries_per_session:
-                            stalled.append(
-                                StalledSessionInfo(
-                                    conversation_id=convo_id,
-                                    transcript_path=transcript_path,
-                                    last_step_index=last_step_idx,
-                                    last_error="quota_restored_pull_up",
-                                    last_error_time=file_mtime,
-                                    is_subagent=is_subagent,
-                                    parent_conversation_id=parent_convo_id,
-                                    sidecar_slug=sidecar_slug,
-                                    attempt_count=prior_attempts,
-                                    can_resuscitate=False,
-                                    skip_reason=f"max_retries_exhausted ({prior_attempts}/{self.config.max_retries_per_session})",
-                                    is_quota_exhausted=False,
-                                )
+                        # Active account has healthy quota (>10%), pull up if eligible
+                        can_res, skip_reason = _evaluate_resuscitation_eligibility(convo_id, prior_attempts, is_subagent, parent_convo_id)
+                        stalled.append(
+                            StalledSessionInfo(
+                                conversation_id=convo_id,
+                                transcript_path=transcript_path,
+                                last_step_index=last_step_idx,
+                                last_error="quota_restored_pull_up",
+                                last_error_time=file_mtime,
+                                is_subagent=is_subagent,
+                                parent_conversation_id=parent_convo_id,
+                                sidecar_slug=sidecar_slug,
+                                attempt_count=prior_attempts,
+                                can_resuscitate=can_res,
+                                skip_reason=skip_reason,
+                                is_quota_exhausted=False,
                             )
-                        else:
-                            stalled.append(
-                                StalledSessionInfo(
-                                    conversation_id=convo_id,
-                                    transcript_path=transcript_path,
-                                    last_step_index=last_step_idx,
-                                    last_error="quota_restored_pull_up",
-                                    last_error_time=file_mtime,
-                                    is_subagent=is_subagent,
-                                    parent_conversation_id=parent_convo_id,
-                                    sidecar_slug=sidecar_slug,
-                                    attempt_count=prior_attempts,
-                                    can_resuscitate=True,
-                                    skip_reason=None,
-                                    is_quota_exhausted=False,
-                                )
-                            )
+                        )
                         continue
 
                     wait_sec = quota_sec or 6853.0
@@ -921,40 +923,23 @@ class AntigravityWatchdog:
 
                     # If cooldown has expired OR stalled for > 300s without prior live attempts, allow pull-up probe!
                     if now >= cooldown_until or (now - file_mtime > 300 and prior_attempts == 0):
-                        if prior_attempts >= self.config.max_retries_per_session:
-                            stalled.append(
-                                StalledSessionInfo(
-                                    conversation_id=convo_id,
-                                    transcript_path=transcript_path,
-                                    last_step_index=last_step_idx,
-                                    last_error="quota_restored_pull_up",
-                                    last_error_time=file_mtime,
-                                    is_subagent=is_subagent,
-                                    parent_conversation_id=parent_convo_id,
-                                    sidecar_slug=sidecar_slug,
-                                    attempt_count=prior_attempts,
-                                    can_resuscitate=False,
-                                    skip_reason=f"max_retries_exhausted ({prior_attempts}/{self.config.max_retries_per_session})",
-                                    is_quota_exhausted=False,
-                                )
+                        can_res, skip_reason = _evaluate_resuscitation_eligibility(convo_id, prior_attempts, is_subagent, parent_convo_id)
+                        stalled.append(
+                            StalledSessionInfo(
+                                conversation_id=convo_id,
+                                transcript_path=transcript_path,
+                                last_step_index=last_step_idx,
+                                last_error="quota_restored_pull_up",
+                                last_error_time=file_mtime,
+                                is_subagent=is_subagent,
+                                parent_conversation_id=parent_convo_id,
+                                sidecar_slug=sidecar_slug,
+                                attempt_count=prior_attempts,
+                                can_resuscitate=can_res,
+                                skip_reason=skip_reason,
+                                is_quota_exhausted=False,
                             )
-                        else:
-                            stalled.append(
-                                StalledSessionInfo(
-                                    conversation_id=convo_id,
-                                    transcript_path=transcript_path,
-                                    last_step_index=last_step_idx,
-                                    last_error="quota_restored_pull_up",
-                                    last_error_time=file_mtime,
-                                    is_subagent=is_subagent,
-                                    parent_conversation_id=parent_convo_id,
-                                    sidecar_slug=sidecar_slug,
-                                    attempt_count=prior_attempts,
-                                    can_resuscitate=True,
-                                    skip_reason=None,
-                                    is_quota_exhausted=False,
-                                )
-                            )
+                        )
                         continue
 
                     remaining = max(0, int(cooldown_until - now))
@@ -1014,10 +999,24 @@ class AntigravityWatchdog:
                         sched_ls_pid = existing_s.get("ls_pid", 0)
                         interval = sched_info["interval_seconds"]
 
-                        # If transcript itself contains a recent schedule call (within 300s),
-                        # it was mounted on the current language_server process!
-                        if current_ls_pid and sched_info.get("last_schedule_time", 0.0) > 0 and (now - file_mtime <= 300):
+                        # Genuine evidence check:
+                        # Has the agent executed the schedule tool (or a trigger fired) on the CURRENT language_server process?
+                        has_genuine_mount_evidence = False
+                        sched_call_time = sched_info.get("last_schedule_time", 0.0)
+                        sched_trig_time = sched_info.get("last_trigger_time", 0.0)
+                        if current_ls_pid:
+                            if self.ls_restart_time > 0:
+                                if sched_call_time >= self.ls_restart_time or sched_trig_time >= self.ls_restart_time:
+                                    has_genuine_mount_evidence = True
+                            elif sched_call_time > 0 and (now - sched_call_time <= interval * 1.5):
+                                has_genuine_mount_evidence = True
+
+                        if has_genuine_mount_evidence:
                             sched_ls_pid = current_ls_pid
+                            if self.db and hasattr(self.db, "get_last_resuscitation") and hasattr(self.db, "update_resuscitation_status"):
+                                last_res = self.db.get_last_resuscitation(convo_id)
+                                if last_res and last_res.get("status") in ("attempting", "resuscitated"):
+                                    self.db.update_resuscitation_status(last_res["resuscitation_id"], "schedule_remounted")
 
                         if self.db:
                             self.db.save_conversation_schedule(
@@ -1029,10 +1028,13 @@ class AntigravityWatchdog:
                                 ls_pid=sched_ls_pid,
                             )
 
-                        lost_due_to_pid = (pid_changed and sched_ls_pid != current_ls_pid) or (
-                            bool(current_ls_pid and sched_ls_pid and current_ls_pid != sched_ls_pid)
+                        lost_due_to_pid = bool(current_ls_pid and sched_ls_pid != current_ls_pid)
+                        lost_due_to_timeout = (
+                            bool(current_ls_pid and sched_ls_pid == current_ls_pid)
+                            and baseline_time > 0
+                            and (now - baseline_time > interval * 1.25)
+                            and (now - file_mtime > 300)
                         )
-                        lost_due_to_timeout = baseline_time > 0 and (now - baseline_time > interval * 1.25) and (now - file_mtime > 300)
 
                         if lost_due_to_pid or lost_due_to_timeout:
                             _resolve_subagent_and_parent()
@@ -1041,6 +1043,7 @@ class AntigravityWatchdog:
                                 if lost_due_to_pid
                                 else f"lost_schedule_after_restart (cron: {sched_info['cron']})"
                             )
+                            can_res, skip_reason = _evaluate_resuscitation_eligibility(convo_id, prior_attempts, is_subagent, parent_convo_id)
                             stalled.append(
                                 StalledSessionInfo(
                                     conversation_id=convo_id,
@@ -1052,7 +1055,8 @@ class AntigravityWatchdog:
                                     parent_conversation_id=parent_convo_id,
                                     sidecar_slug=sidecar_slug,
                                     attempt_count=prior_attempts,
-                                    can_resuscitate=True,
+                                    can_resuscitate=can_res,
+                                    skip_reason=skip_reason,
                                     has_active_schedule=True,
                                     active_cron_expression=sched_info["cron"],
                                 )
@@ -1164,28 +1168,6 @@ class AntigravityWatchdog:
 
                 _resolve_subagent_and_parent()
 
-                # Circuit breaker
-                if prior_attempts >= self.config.max_retries_per_session:
-                    stalled.append(
-                        StalledSessionInfo(
-                            conversation_id=convo_id,
-                            transcript_path=transcript_path,
-                            last_step_index=last_step_idx,
-                            last_error=matched_error,
-                            last_error_time=file_mtime,
-                            is_subagent=is_subagent,
-                            parent_conversation_id=parent_convo_id,
-                            sidecar_slug=sidecar_slug,
-                            attempt_count=prior_attempts,
-                            can_resuscitate=False,
-                            skip_reason=f"max_retries_exhausted ({prior_attempts}/{self.config.max_retries_per_session})",
-                            is_mcp_error=is_mcp,
-                            is_boost_goal=is_boost_goal,
-                            is_stop_hook_hang=has_stop_hook,
-                        )
-                    )
-                    continue
-
                 # Stall grace period: recent errors (< stall_grace_seconds) are given time to self-heal
                 if now - file_mtime < self.config.stall_grace_seconds:
                     stalled.append(
@@ -1208,7 +1190,7 @@ class AntigravityWatchdog:
                     )
                     continue
 
-                # Eligible for automated resuscitation
+                can_res, skip_reason = _evaluate_resuscitation_eligibility(convo_id, prior_attempts, is_subagent, parent_convo_id)
                 stalled.append(
                     StalledSessionInfo(
                         conversation_id=convo_id,
@@ -1220,8 +1202,8 @@ class AntigravityWatchdog:
                         parent_conversation_id=parent_convo_id,
                         sidecar_slug=sidecar_slug,
                         attempt_count=prior_attempts,
-                        can_resuscitate=True,
-                        skip_reason=None,
+                        can_resuscitate=can_res,
+                        skip_reason=skip_reason,
                         is_mcp_error=is_mcp,
                         is_boost_goal=is_boost_goal,
                         is_stop_hook_hang=has_stop_hook,
@@ -1471,7 +1453,7 @@ class AntigravityWatchdog:
 
         stalled = self.scan_stalled_conversations()
         results: list[dict[str, Any]] = []
-        awakened_parents: set[str] = set()
+        awakened_targets: set[str] = set()
 
         for item in stalled:
             if not item.can_resuscitate:
@@ -1482,21 +1464,33 @@ class AntigravityWatchdog:
                 )
                 continue
 
-            # Deduplicate parent awakenings per tick if multiple subagents share the same parent
-            if item.is_subagent and item.parent_conversation_id:
-                if item.parent_conversation_id in awakened_parents:
-                    logger.debug(
-                        "Skipping subagent %s because parent %s was already awakened in this tick",
-                        item.conversation_id,
-                        item.parent_conversation_id,
-                    )
-                    continue
+            target_id = item.parent_conversation_id if (item.is_subagent and item.parent_conversation_id) else item.conversation_id
+
+            # Deduplicate awakenings per tick:
+            # If target session, or item conversation itself, or its parent was already contacted in this tick, skip
+            if target_id in awakened_targets or item.conversation_id in awakened_targets:
+                logger.debug(
+                    "Skipping session %s (target=%s) because conversation was already contacted in this tick",
+                    item.conversation_id,
+                    target_id,
+                )
+                continue
+            if item.parent_conversation_id and item.parent_conversation_id in awakened_targets:
+                logger.debug(
+                    "Skipping session %s because parent %s was already contacted in this tick",
+                    item.conversation_id,
+                    item.parent_conversation_id,
+                )
+                continue
 
             if self.config.auto_resuscitate:
                 res = await self.resuscitate_session(item)
                 results.append(res)
-                if item.is_subagent and item.parent_conversation_id and res.get("success"):
-                    awakened_parents.add(item.parent_conversation_id)
+                if res.get("success"):
+                    awakened_targets.add(target_id)
+                    awakened_targets.add(item.conversation_id)
+                    if item.parent_conversation_id:
+                        awakened_targets.add(item.parent_conversation_id)
                 await asyncio.sleep(0.25)
 
         return results

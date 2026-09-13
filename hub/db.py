@@ -1635,7 +1635,8 @@ class DatabaseManager:
             try:
                 cur.execute(
                     """
-                    SELECT * FROM antigravity_resuscitations
+                    SELECT *, strftime('%s', resuscitated_at) AS resuscitated_epoch
+                    FROM antigravity_resuscitations
                     WHERE conversation_id = ?
                     ORDER BY rowid DESC LIMIT 1
                     """,

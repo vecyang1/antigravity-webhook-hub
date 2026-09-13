@@ -1272,6 +1272,251 @@ class TestAntigravityWatchdog:
         assert item.can_resuscitate is False
         assert "max_retries_exhausted (3/3)" in item.skip_reason
 
+    def test_fake_remount_text_hallucination_rejected(self, db, mock_agentapi, temp_dir):
+        """
+        Adversarial Test: Agent replies with text claiming it remounted the schedule,
+        but does NOT execute the schedule tool call after language_server restart.
+        Watchdog MUST NOT promote ls_pid and must keep the schedule flagged as dropped.
+        """
+        from datetime import datetime, timezone
+        convo_id = "test-fake-remount-hallucination"
+        now = time.time()
+        old_sched_time = now - 3600.0  # 1 hour ago
+        old_sched_iso = datetime.fromtimestamp(old_sched_time, tz=timezone.utc).isoformat()
+
+        # Step 1: Initial schedule created 1 hour ago on PID 1000
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Schedule check"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": old_sched_iso,
+                "content": "Mounted cron",
+                "tool_calls": [{"name": "schedule", "args": {"CronExpression": "*/30 * * * *", "Prompt": "Check email"}}],
+            },
+            # Step 2: Agent hallucinates text claim after restart WITHOUT calling schedule tool
+            {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": datetime.fromtimestamp(now - 10.0, tz=timezone.utc).isoformat(),
+                "content": "I have successfully rescheduled the task for every 30 minutes! All set.",
+                "tool_calls": [],
+            },
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=10.0)
+
+        db.set_metadata("last_known_ls_pid", "1000")
+        db.save_conversation_schedule(
+            conversation_id=convo_id,
+            cron_expression="*/30 * * * *",
+            prompt="Check email",
+            expected_interval_seconds=1800,
+            last_trigger_at=old_sched_time,
+            ls_pid=1000,
+        )
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
+        mock_agentapi.get_language_server_pid.return_value = 2000
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.check_language_server_lifecycle()
+
+        # Scan conversations: must detect schedule loss and NOT be fooled by text claim
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        assert stalled[0].has_active_schedule is True
+        assert "lost_schedule_after_restart" in stalled[0].last_error
+
+        # Ensure ls_pid in SQLite was NOT promoted
+        sched = db.get_conversation_schedule(convo_id)
+        assert sched["ls_pid"] == 1000
+
+    def test_genuine_remount_after_restart_promotes_pid(self, db, mock_agentapi, temp_dir):
+        """
+        Verify genuine remount: Agent executes schedule tool call after language_server
+        restart. Watchdog verifies genuine tool evidence and promotes ls_pid to current PID.
+        """
+        from datetime import datetime, timezone
+        convo_id = "test-genuine-remount-promoted"
+        now = time.time()
+        old_sched_time = now - 3600.0
+
+        db.set_metadata("last_known_ls_pid", "1000")
+        db.save_conversation_schedule(
+            conversation_id=convo_id,
+            cron_expression="*/30 * * * *",
+            prompt="Check email",
+            expected_interval_seconds=1800,
+            last_trigger_at=old_sched_time,
+            ls_pid=1000,
+        )
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
+        mock_agentapi.get_language_server_pid.return_value = 2000
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.check_language_server_lifecycle()
+
+        # Agent executes genuine schedule tool call AFTER restart
+        new_sched_iso = datetime.fromtimestamp(now + 5.0, tz=timezone.utc).isoformat()
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Schedule check"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": new_sched_iso,
+                "content": "Mounted cron again",
+                "tool_calls": [{"name": "schedule", "args": {"CronExpression": "*/30 * * * *", "Prompt": "Check email"}}],
+            },
+            {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": new_sched_iso,
+                "content": "Done",
+                "tool_calls": [],
+            },
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=5.0)
+
+        # Scan should recognize genuine mount and promote ls_pid to 2000
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 0
+
+        sched = db.get_conversation_schedule(convo_id)
+        assert sched["ls_pid"] == 2000
+
+    def test_detect_parent_from_parent_references_sqlite_table(self, temp_dir):
+        """
+        Verify detect_parent_conversation_id reads authoritative parent UUID
+        from the parent_references table in Antigravity conversation SQLite databases.
+        """
+        import sqlite3
+        convo_id = "test-subagent-convo-pr"
+        conv_dir = temp_dir / "conversations"
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        db_path = conv_dir / f"{convo_id}.db"
+
+        parent_uuid = "5eaeebfd-5424-4261-b593-0d940cf1ee71"
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE parent_references (idx INTEGER, data BLOB)")
+        # Real Antigravity protobuf structure
+        blob = b"\n$" + parent_uuid.encode("ascii") + b"\x10\xff\xff\xff\xff\xff\xff\xff\xff\xff\x01\x18\x04(\x022$" + convo_id.encode("ascii")
+        cur.execute("INSERT INTO parent_references (idx, data) VALUES (0, ?)", (blob,))
+        conn.commit()
+        conn.close()
+
+        detected = detect_parent_conversation_id(convo_id, conversations_dir=conv_dir)
+        assert detected == parent_uuid
+
+    def test_bidirectional_parent_deduplication(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that when parent is encountered before child or child before parent,
+        the parent is awakened exactly ONCE in that tick and child is skipped.
+        """
+        parent_id = "parent-uuid-dedup-001"
+        sub_id = "child-uuid-dedup-002"
+
+        # Create parent session
+        parent_steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Top-level plan"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "", "tool_calls": []},
+        ]
+        _create_fake_session(temp_dir, parent_id, parent_steps, mtime_offset_seconds=50.0)
+
+        # Create child session
+        child_steps = [
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": f'<subagent_reminder>\ninvoked by a caller agent (name: "parent", id: "{parent_id}")\n</subagent_reminder>',
+            },
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "", "tool_calls": []},
+        ]
+        _create_fake_session(temp_dir, sub_id, child_steps, mtime_offset_seconds=50.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            stall_grace_seconds=10,
+            conversations_dir=str(temp_dir / "conversations"),
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        # Run tick
+        res = asyncio.run(watchdog.resuscitate_stalled_sessions())
+        # Exactly 1 message sent to parent_id
+        assert len(res) == 1
+        assert res[0]["target_conversation_id"] == parent_id
+        mock_agentapi.send_message.assert_awaited_once()
+
+    def test_recent_resuscitation_cooldown_blocks_rapid_spam(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that a session that was resuscitated within stall_grace_seconds (45s)
+        is placed into cooldown to prevent rapid spamming.
+        """
+        convo_id = "test-recent-cooldown-spam-prevent"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Execute task"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "", "tool_calls": []},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=50.0)
+
+        # Record recent resuscitation 10 seconds ago
+        db.record_resuscitation(
+            conversation_id=convo_id,
+            last_error="empty_planner_response_hang",
+            status="resuscitated",
+        )
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=45)
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        assert stalled[0].can_resuscitate is False
+        assert "recent_resuscitation_cooldown" in (stalled[0].skip_reason or "")
+
+    def test_orphaned_subagent_prevented_from_solo_pullup(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that if a session has subagent markers but its parent UUID cannot be found,
+        it is marked can_resuscitate=False with orphaned_subagent_cannot_determine_parent
+        to prevent split-brain Solo mode degradation.
+        """
+        convo_id = "test-orphaned-subagent-001"
+        steps = [
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": "<subagent_reminder>\nYou are running as a subagent.\n</subagent_reminder>",
+            },
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "", "tool_calls": []},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=50.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            stall_grace_seconds=10,
+            conversations_dir=str(temp_dir / "conversations"),
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        assert stalled[0].is_subagent is True
+        assert stalled[0].parent_conversation_id is None
+        assert stalled[0].can_resuscitate is False
+        assert stalled[0].skip_reason == "orphaned_subagent_cannot_determine_parent"
+
 
 
 
