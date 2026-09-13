@@ -329,13 +329,27 @@ class AgentAPIClient:
         self.ensure_credentials(force=False)
 
         async def _run() -> tuple[int, str, str]:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=self._get_env(project_id=project_id),
-            )
+            actual_cmd = list(cmd)
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *actual_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
+                    env=self._get_env(project_id=project_id),
+                )
+            except OSError as oe:
+                if oe.errno == 8:
+                    actual_cmd = ["/bin/sh"] + actual_cmd
+                    proc = await asyncio.create_subprocess_exec(
+                        *actual_cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        cwd=cwd,
+                        env=self._get_env(project_id=project_id),
+                    )
+                else:
+                    raise
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(),
                 timeout=float(timeout_seconds),

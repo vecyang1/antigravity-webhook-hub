@@ -780,22 +780,40 @@ class AntigravityWatchdog:
                     else:
                         # Cooldown expired or probe allowed! Eligible for immediate automated pull-up
                         _resolve_subagent_and_parent()
-                        stalled.append(
-                            StalledSessionInfo(
-                                conversation_id=convo_id,
-                                transcript_path=transcript_path,
-                                last_step_index=last_step_idx,
-                                last_error="quota_restored_pull_up",
-                                last_error_time=file_mtime,
-                                is_subagent=is_subagent,
-                                parent_conversation_id=parent_convo_id,
-                                sidecar_slug=sidecar_slug,
-                                attempt_count=prior_attempts,
-                                can_resuscitate=True,
-                                skip_reason=None,
-                                is_quota_exhausted=False,
+                        if prior_attempts >= self.config.max_retries_per_session:
+                            stalled.append(
+                                StalledSessionInfo(
+                                    conversation_id=convo_id,
+                                    transcript_path=transcript_path,
+                                    last_step_index=last_step_idx,
+                                    last_error="quota_restored_pull_up",
+                                    last_error_time=file_mtime,
+                                    is_subagent=is_subagent,
+                                    parent_conversation_id=parent_convo_id,
+                                    sidecar_slug=sidecar_slug,
+                                    attempt_count=prior_attempts,
+                                    can_resuscitate=False,
+                                    skip_reason=f"max_retries_exhausted ({prior_attempts}/{self.config.max_retries_per_session})",
+                                    is_quota_exhausted=False,
+                                )
                             )
-                        )
+                        else:
+                            stalled.append(
+                                StalledSessionInfo(
+                                    conversation_id=convo_id,
+                                    transcript_path=transcript_path,
+                                    last_step_index=last_step_idx,
+                                    last_error="quota_restored_pull_up",
+                                    last_error_time=file_mtime,
+                                    is_subagent=is_subagent,
+                                    parent_conversation_id=parent_convo_id,
+                                    sidecar_slug=sidecar_slug,
+                                    attempt_count=prior_attempts,
+                                    can_resuscitate=True,
+                                    skip_reason=None,
+                                    is_quota_exhausted=False,
+                                )
+                            )
                         continue
 
                 # --- 2. Check for Newly Encountered Quota Exhaustion ---
@@ -828,23 +846,41 @@ class AntigravityWatchdog:
                 if quota_detected:
                     _resolve_subagent_and_parent()
                     if active_quota_healthy:
-                        # Active account has healthy quota (>10%), immediately pull up without entering cooldown lock
-                        stalled.append(
-                            StalledSessionInfo(
-                                conversation_id=convo_id,
-                                transcript_path=transcript_path,
-                                last_step_index=last_step_idx,
-                                last_error="quota_restored_pull_up",
-                                last_error_time=file_mtime,
-                                is_subagent=is_subagent,
-                                parent_conversation_id=parent_convo_id,
-                                sidecar_slug=sidecar_slug,
-                                attempt_count=prior_attempts,
-                                can_resuscitate=True,
-                                skip_reason=None,
-                                is_quota_exhausted=False,
+                        # Active account has healthy quota (>10%), pull up if within max retries
+                        if prior_attempts >= self.config.max_retries_per_session:
+                            stalled.append(
+                                StalledSessionInfo(
+                                    conversation_id=convo_id,
+                                    transcript_path=transcript_path,
+                                    last_step_index=last_step_idx,
+                                    last_error="quota_restored_pull_up",
+                                    last_error_time=file_mtime,
+                                    is_subagent=is_subagent,
+                                    parent_conversation_id=parent_convo_id,
+                                    sidecar_slug=sidecar_slug,
+                                    attempt_count=prior_attempts,
+                                    can_resuscitate=False,
+                                    skip_reason=f"max_retries_exhausted ({prior_attempts}/{self.config.max_retries_per_session})",
+                                    is_quota_exhausted=False,
+                                )
                             )
-                        )
+                        else:
+                            stalled.append(
+                                StalledSessionInfo(
+                                    conversation_id=convo_id,
+                                    transcript_path=transcript_path,
+                                    last_step_index=last_step_idx,
+                                    last_error="quota_restored_pull_up",
+                                    last_error_time=file_mtime,
+                                    is_subagent=is_subagent,
+                                    parent_conversation_id=parent_convo_id,
+                                    sidecar_slug=sidecar_slug,
+                                    attempt_count=prior_attempts,
+                                    can_resuscitate=True,
+                                    skip_reason=None,
+                                    is_quota_exhausted=False,
+                                )
+                            )
                         continue
 
                     wait_sec = quota_sec or 6853.0
@@ -859,22 +895,40 @@ class AntigravityWatchdog:
 
                     # If cooldown has expired OR stalled for > 300s without prior live attempts, allow pull-up probe!
                     if now >= cooldown_until or (now - file_mtime > 300 and prior_attempts == 0):
-                        stalled.append(
-                            StalledSessionInfo(
-                                conversation_id=convo_id,
-                                transcript_path=transcript_path,
-                                last_step_index=last_step_idx,
-                                last_error="quota_restored_pull_up",
-                                last_error_time=file_mtime,
-                                is_subagent=is_subagent,
-                                parent_conversation_id=parent_convo_id,
-                                sidecar_slug=sidecar_slug,
-                                attempt_count=prior_attempts,
-                                can_resuscitate=True,
-                                skip_reason=None,
-                                is_quota_exhausted=False,
+                        if prior_attempts >= self.config.max_retries_per_session:
+                            stalled.append(
+                                StalledSessionInfo(
+                                    conversation_id=convo_id,
+                                    transcript_path=transcript_path,
+                                    last_step_index=last_step_idx,
+                                    last_error="quota_restored_pull_up",
+                                    last_error_time=file_mtime,
+                                    is_subagent=is_subagent,
+                                    parent_conversation_id=parent_convo_id,
+                                    sidecar_slug=sidecar_slug,
+                                    attempt_count=prior_attempts,
+                                    can_resuscitate=False,
+                                    skip_reason=f"max_retries_exhausted ({prior_attempts}/{self.config.max_retries_per_session})",
+                                    is_quota_exhausted=False,
+                                )
                             )
-                        )
+                        else:
+                            stalled.append(
+                                StalledSessionInfo(
+                                    conversation_id=convo_id,
+                                    transcript_path=transcript_path,
+                                    last_step_index=last_step_idx,
+                                    last_error="quota_restored_pull_up",
+                                    last_error_time=file_mtime,
+                                    is_subagent=is_subagent,
+                                    parent_conversation_id=parent_convo_id,
+                                    sidecar_slug=sidecar_slug,
+                                    attempt_count=prior_attempts,
+                                    can_resuscitate=True,
+                                    skip_reason=None,
+                                    is_quota_exhausted=False,
+                                )
+                            )
                         continue
 
                     remaining = max(0, int(cooldown_until - now))

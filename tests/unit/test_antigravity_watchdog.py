@@ -1220,6 +1220,59 @@ class TestAntigravityWatchdog:
         stalled_after = watchdog.scan_stalled_conversations()
         assert len(stalled_after) == 0
 
+    def test_quota_restored_pull_up_respects_circuit_breaker_max_retries(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that when active account has healthy quota (>10%), sessions that previously
+        hit quota exhaustion do NOT pull up infinitely if attempt_count >= max_retries_per_session.
+        Circuit breaker must mark can_resuscitate = False and skip_reason = max_retries_exhausted.
+        """
+        convo_id = "test-quota-pullup-circuit-breaker"
+        # Create a session that hit quota
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Execute job"},
+            {
+                "step_index": 1,
+                "source": "SYSTEM",
+                "type": "ERROR_MESSAGE",
+                "status": "ERROR",
+                "content": "Individual quota reached. Resets in 3600s",
+            },
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=30.0)
+
+        # Record 3 prior attempts in DB
+        for _ in range(3):
+            db.record_resuscitation(
+                conversation_id=convo_id,
+                status="failed",
+                last_error="quota_restored_pull_up",
+            )
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            stall_grace_seconds=10,
+            conversations_dir=str(temp_dir / "conversations"),
+            max_retries_per_session=3,
+        )
+        mock_sentinel = MagicMock()
+        mock_sentinel.is_active_account_healthy.return_value = (True, "viinam33@gmail.com", {})
+
+        watchdog = AntigravityWatchdog(
+            db=db,
+            config=config,
+            agentapi_client=mock_agentapi,
+            quota_sentinel=mock_sentinel,
+        )
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        item = stalled[0]
+        assert item.conversation_id == convo_id
+        assert item.attempt_count == 3
+        assert item.can_resuscitate is False
+        assert "max_retries_exhausted (3/3)" in item.skip_reason
+
+
 
 
 

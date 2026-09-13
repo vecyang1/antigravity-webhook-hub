@@ -8,10 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2026-09-14] - 2026-09-14
 
 ### Features
+- Add token firewall for synthetic and stress test execution (`f9684a3`)
 - Harden boost/goal hang recovery and MCP error detection (`a51fa0a`)
 
 ### Fixes
 - Harden schedule remount ls_pid lifecycle and prevent infinite remount loops (`34f58f4`)
+- Add circuit breaker for `quota_restored_pull_up` in `AntigravityWatchdog` to cap at `max_retries_per_session` and prevent runaway pull-up loops.
+- Add self-healing fallback for `OSError: [Errno 8] Exec format error` when invoking `agentapi` shell script on macOS in `AgentAPIClient`.
+- Upgrade `CAD-20260911-webhook-hub-sentinel` sidecar with comprehensive `AntigravityQuotaSentinel` and Uptime Kuma Monitor #94 verification.
 
 ## [1.15.0] - 2026-09-14
 
