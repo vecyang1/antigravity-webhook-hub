@@ -527,6 +527,7 @@ def test_standalone_rss_memory_under_stress_reports_defect(free_port: int):
     import urllib.request
     with tempfile.TemporaryDirectory() as tmp_dir:
         db_path = str(Path(tmp_dir) / "rss_test.db")
+        secret = "verify_secret_32bytes_12345678"
         pid_file = str(Path(tmp_dir) / "test.pid")
         port = free_port
         env = dict(os.environ)
@@ -542,23 +543,30 @@ def test_standalone_rss_memory_under_stress_reports_defect(free_port: int):
                 db_path,
                 "--pidfile",
                 pid_file,
+                "--secret",
+                secret,
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             env=env,
             cwd=str(Path(__file__).resolve().parent.parent.parent),
         )
         pid = proc.pid
 
         # Wait for server readiness on /healthz
-        for _ in range(50):
+        ready = False
+        for _ in range(60):
             time.sleep(0.1)
             try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=0.2) as r:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=0.5) as r:
                     if r.status == 200:
+                        ready = True
                         break
             except Exception:
                 pass
+
+        if not ready:
+            raise AssertionError(f"Server not ready on port {port}. exitcode: {proc.poll()}")
 
         def get_rss_mb() -> float:
             out = subprocess.check_output(["ps", "-o", "rss=", "-p", str(pid)]).decode().strip()

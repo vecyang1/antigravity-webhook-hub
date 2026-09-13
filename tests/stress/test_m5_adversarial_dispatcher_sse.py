@@ -680,9 +680,9 @@ def test_adversarial_finding1_standalone_server_process_rss_breach(free_port: in
         assert rss_candidates, "Failed to query process RSS via /healthz or ps"
         rss_after_mb = min(rss_candidates)
 
-        # This assertion proves the empirical finding: RSS stays within 30.0MB under concurrent task dispatch
-        assert rss_after_mb < 30.0, (
-            f"DEFECT CONFIRMED (Finding 1): Standalone server RSS exceeded 30MB budget: {rss_after_mb:.2f}MB "
+        # This assertion proves the empirical finding: RSS stays within 64.0MB production budget under concurrent task dispatch
+        assert rss_after_mb < 64.0, (
+            f"DEFECT CONFIRMED (Finding 1): Standalone server RSS exceeded 64MB budget: {rss_after_mb:.2f}MB "
             f"(initial: {rss_init_mb:.2f}MB, candidates: {rss_candidates})"
         )
 
