@@ -319,20 +319,8 @@ async def execute_antigravity_task(
             await res
         log(f"Linked thread {thread_key} -> conversation {convo_id} in SSOT database.")
 
-    # Milestone: notify done under thread
+    # Launch background watcher for live execution progress and true result delivery
     if should_notify_slack and channel and root_ts:
-        summary_text = f"已成功加载并指派执行。挂载技能: {', '.join(all_cmds) or '标准模式'}"
-        if session_recovered_from:
-            summary_text += f" (已从失效会话 {session_recovered_from[:8]} 自动恢复并迁移)"
-        notifier.notify_done(
-            channel=channel,
-            thread_ts=root_ts,
-            task_id=task_id,
-            conversation_id=convo_id,
-            elapsed_seconds=elapsed,
-            summary=summary_text,
-        )
-        # Launch background watcher for execution progress and result delivery
         asyncio.create_task(
             watch_and_deliver_result(
                 notifier=notifier,

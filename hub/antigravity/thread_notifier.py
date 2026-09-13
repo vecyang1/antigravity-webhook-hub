@@ -133,12 +133,7 @@ class ThreadNotifier:
         clean_action = action_summary.replace("\n", " ").strip()
         if len(clean_action) > 120:
             clean_action = clean_action[:117] + "..."
-        msg = (
-            f"⚡ *[执行中 · 步骤进展]*\n"
-            f"• *当前动作*: `{clean_action}`\n"
-            f"• *已耗时*: `{time_str}`\n"
-            f"正在持续推演并调用工具生成结果..."
-        )
+        msg = f"⚡ *[执行中 · 步骤进展]*\n• 当前动作: `{clean_action}`; {time_str}"
         return self.post_thread_message(channel, thread_ts, msg)
 
     def notify_result_delivery(

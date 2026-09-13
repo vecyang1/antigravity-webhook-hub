@@ -251,9 +251,9 @@ class TestSessionManagerAndDatabase(unittest.TestCase):
             self.assertIsNotNone(db_rec)
             self.assertEqual(db_rec["conversation_id"], "conv-new-12345")
 
-            # Verify notifier calls
+            # Verify notifier calls: in_progress is called, premature notify_done is NOT called
             mock_notifier.notify_in_progress.assert_called_once()
-            mock_notifier.notify_done.assert_called_once()
+            mock_notifier.notify_done.assert_not_called()
 
         asyncio.run(_run())
 

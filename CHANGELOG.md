@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.4] - 2026-09-13
+
+### Changed & Fixed
+- **Premature Done Notification Elimination (`hub/antigravity/session_manager.py`)**:
+  - Eliminated premature `notify_done` dispatch (`🎉 [已完成 · Done]`) on session initialization.
+  - Aligns lifecycle state strictly with actual customer delivery: tasks are reported as completed only when `watch_and_deliver_result` finishes generating and delivering the actual response (`🎉 [已完成 · 结果交付]`).
+  - Eliminates the cognitive misunderstanding where users were told the task was "Done" before any analysis or answer was generated.
+- **Clean Single-Bullet Progress Formatting (`hub/antigravity/thread_notifier.py`)**:
+  - Restructured `notify_progress` into a high-density, single-bullet format:
+    `⚡ *[执行中 · 步骤进展]*\n• 当前动作: `{clean_action}`; {time_str}`
+  - Completely stripped conversational boilerplate ("正在持续推演并调用工具生成结果...").
+- **Test Harness Synchronization (`tests/unit/test_antigravity_agent.py`)**:
+  - Updated unit test assertions to verify `notify_done` is not prematurely called during new conversation creation (31/31 passing, 282/282 full suite passing).
+
 ## [1.9.3] - 2026-09-13
 
 ### Added & Enhanced
