@@ -51,14 +51,19 @@ def register_webhook_routes(
         if not isinstance(body_dict, dict):
             return HTTPResponse.error("Payload must be a JSON object", status_code=400, reason="invalid_json_type")
 
-        # 3. Pre-DB Task Schema Validation (Defect 4 remediation)
-        # Validate task parameters BEFORE calling any database insert.
+        # 3. Determine Source and Pre-DB Task Schema Validation (Defect 4 remediation)
+        # Priority: URL path param > payload "source" > "default"
+        if not source or source == "default":
+            source = body_dict.get("source") or "default"
+
         action_type = body_dict.get("action_type") or body_dict.get("action")
         if not action_type:
             if source in ("contact-review", "contact_review") or req.path.endswith("/contact-review"):
                 action_type = "contact_review"
             elif source in ("antigravity", "slack_task", "slack-task") or req.path.endswith("/antigravity"):
                 action_type = "antigravity"
+            elif source in ("surecart", "surecart-acs", "surecart_acs", "stripe-acs", "stripe_acs") or "/surecart" in req.path:
+                action_type = "cli"
             else:
                 action_type = "cli"
         command = body_dict.get("command") or body_dict.get("target_action")
@@ -66,6 +71,8 @@ def register_webhook_routes(
             command = "bin/webhook-hub review-contact"
         elif not command and action_type in ("antigravity", "agent_conversation", "antigravity_task"):
             command = "agentapi new-conversation"
+        elif not command and (source in ("surecart", "surecart-acs", "surecart_acs", "stripe-acs", "stripe_acs") or "/surecart" in req.path):
+            command = "python3 /Users/vecsatfoxmailcom/.agents/skills/stripe-agentic-commerce/scripts/stripe_acs_cli.py surecart sync"
 
         raw_priority = body_dict.get("priority", 0)
         try:
@@ -88,11 +95,6 @@ def register_webhook_routes(
             max_retries_val = int(raw_max_retries)
         except (ValueError, TypeError):
             return HTTPResponse.error("Invalid 'max_retries' field: must be an integer", status_code=400, reason="invalid_task_schema")
-
-        # 4. Determine Source and Idempotency Key
-        # Priority: URL path param > payload "source" > "default"
-        if not source or source == "default":
-            source = body_dict.get("source") or "default"
 
         payload_hash = compute_payload_hash(req.body)
 

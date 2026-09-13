@@ -1628,6 +1628,24 @@ class DatabaseManager:
             finally:
                 cur.close()
 
+    def get_last_resuscitation(self, conversation_id: str) -> Optional[dict[str, Any]]:
+        """Get the latest resuscitation record for a conversation."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT * FROM antigravity_resuscitations
+                    WHERE conversation_id = ?
+                    ORDER BY rowid DESC LIMIT 1
+                    """,
+                    (conversation_id,),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else None
+            finally:
+                cur.close()
+
     def get_active_quota_cooldown(self, conversation_id: str) -> Optional[dict[str, Any]]:
         """Check if a conversation currently has an active quota cooldown."""
         with self._lock:

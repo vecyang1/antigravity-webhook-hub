@@ -325,9 +325,10 @@ def detect_parent_conversation_id(
 ) -> Optional[str]:
     """
     Detect parentConversationId for a given session.
-    1. Check SQLite db ~/.gemini/antigravity/conversations/<convo_id>.db (fast local check, ~1ms)
-       Checks trajectory_metadata_blob for field 5 protobuf tag (b'\\*\\$([0-9a-fA-F-]{36})').
-    2. Fallback to transcript header scanning for caller agent ID.
+    1. Check SQLite db ~/.gemini/antigravity/conversations/<convo_id>.db:
+       a. Check parent_references table (authoritative SSOT for Antigravity subagents).
+       b. Fallback to trajectory_metadata_blob for field 5 protobuf tag (b'\\*\\$([0-9a-fA-F-]{36})').
+    2. Fallback to transcript header scanning (up to 128KB) for caller agent ID.
     """
     # 1. SQLite DB check
     c_dir = conversations_dir or Path(os.path.expanduser("~/.gemini/antigravity/conversations"))
@@ -336,6 +337,19 @@ def detect_parent_conversation_id(
         try:
             conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True, timeout=1.0)
             cur = conn.cursor()
+            # 1a. Authoritative Antigravity parent_references table
+            try:
+                cur.execute("SELECT data FROM parent_references ORDER BY idx DESC LIMIT 1")
+                row_pr = cur.fetchone()
+                if row_pr and row_pr[0]:
+                    m_pr = re.search(rb"\n\$([0-9a-fA-F-]{36})", row_pr[0])
+                    if m_pr:
+                        conn.close()
+                        return m_pr.group(1).decode("ascii")
+            except Exception as e_pr:
+                logger.debug("Error querying parent_references in db: %s", e_pr)
+
+            # 1b. Trajectory metadata blob fallback
             cur.execute("SELECT data FROM trajectory_metadata_blob WHERE id = 'main'")
             row = cur.fetchone()
             conn.close()
@@ -350,10 +364,13 @@ def detect_parent_conversation_id(
     if transcript_path and transcript_path.exists():
         try:
             with open(transcript_path, "r", encoding="utf-8", errors="ignore") as f:
-                head = f.read(32768)
+                head = f.read(131072)
                 m = re.search(r'caller agent\s*\([^)]*id:\s*\\?["\']?([0-9a-fA-F-]{36})', head, re.IGNORECASE)
                 if m:
                     return m.group(1)
+                m_sub = re.search(r'invoked by a caller agent \(name: [^,]+,\s*id:\s*\\?["\']?([0-9a-fA-F-]{36})', head, re.IGNORECASE)
+                if m_sub:
+                    return m_sub.group(1)
                 m_convo = re.search(r'parentConversationId\\?["\s:]+([0-9a-fA-F-]{36})', head)
                 if m_convo:
                     return m_convo.group(1)
@@ -408,7 +425,7 @@ def extract_active_schedule_from_transcript(transcript_path: Path) -> Optional[d
                 except Exception:
                     pass
 
-            if "Cron trigger #" in line_clean or "巡检汇报" in line_clean:
+            if any(k in line_clean for k in ("Cron trigger #", "巡检汇报", "(iteration ", "/task-", "CRON_TRIGGER")) or (last_schedule and last_schedule.get("prompt") and last_schedule["prompt"][:25] in line_clean):
                 try:
                     obj = json.loads(line_clean)
                     ts_str = obj.get("created_at")
@@ -470,10 +487,17 @@ class AntigravityWatchdog:
             or os.path.expanduser("~/.gemini/antigravity/conversations")
         )
         self.last_known_ls_pid: Optional[int] = None
+        self.ls_restart_time: float = 0.0
         if self.db and hasattr(self.db, "get_metadata"):
             saved_pid = self.db.get_metadata("last_known_ls_pid")
             if saved_pid and saved_pid.isdigit():
                 self.last_known_ls_pid = int(saved_pid)
+            saved_rt = self.db.get_metadata("ls_restart_time")
+            if saved_rt:
+                try:
+                    self.ls_restart_time = float(saved_rt)
+                except ValueError:
+                    pass
 
     @property
     def quota_sentinel(self):
@@ -513,8 +537,10 @@ class AntigravityWatchdog:
                 old_pid, current_pid,
             )
             self.last_known_ls_pid = current_pid
+            self.ls_restart_time = time.time()
             if self.db and hasattr(self.db, "set_metadata"):
                 self.db.set_metadata("last_known_ls_pid", str(current_pid))
+                self.db.set_metadata("ls_restart_time", str(self.ls_restart_time))
             return True, current_pid, old_pid
 
         if old_pid is None:

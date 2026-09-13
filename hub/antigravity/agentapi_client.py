@@ -285,9 +285,14 @@ class AgentAPIClient:
                 row = cur.fetchone()
                 conn.close()
                 if row and row[0]:
-                    m = re.search(rb"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", row[0][-250:])
+                    # Protobuf field 18 wire type 2: 0x92 0x01 0x24 (length 36)
+                    m = re.search(rb"\x92\x01\$([0-9a-fA-F-]{36})", row[0])
                     if m:
                         return m.group(1).decode("ascii")
+                    # Fallback to general UUID regex in last 250 bytes
+                    m_fb = re.search(rb"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", row[0][-250:])
+                    if m_fb:
+                        return m_fb.group(1).decode("ascii")
             except Exception as e:
                 logger.debug("Failed extracting project_id from db for %s: %s", conversation_id, e)
         return None

@@ -745,6 +745,8 @@ class TaskDispatcher:
                     cmd = f"launchctl kickstart -k gui/{uid}/{service}"
                 else:
                     cmd = task_data.get("command") or task_data.get("target_action") or ""
+                    if not cmd and (str(task_data.get("source")) in ("surecart", "surecart-acs", "surecart_acs", "stripe_acs", "stripe-acs") or action_type == "surecart_acs"):
+                        cmd = "python3 /Users/vecsatfoxmailcom/.agents/skills/stripe-agentic-commerce/scripts/stripe_acs_cli.py surecart sync"
 
                 if not cmd:
                     raise ValueError(f"No executable command found for task {task_id}")
