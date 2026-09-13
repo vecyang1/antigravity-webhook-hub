@@ -365,9 +365,33 @@ def register_observability_routes(
                 db=db,
                 broker=active_broker,
             )
+
+        should_refresh = req.query_params.get("refresh") in ("true", "1", "yes")
+        if should_refresh:
+            try:
+                profiles = await asyncio.to_thread(sentinel.scan_accounts, True)
+                await asyncio.to_thread(sentinel.sync_quotas_to_db, profiles)
+            except Exception as ref_err:
+                logger.debug("On-demand quota refresh encountered error: %s", ref_err)
+
         email_filter = req.query_params.get("account") or req.query_params.get("email")
         overview = sentinel.get_quota_overview(account_email=email_filter)
         return HTTPResponse.json(overview, status_code=200)
+
+    async def handle_antigravity_quota_health(req: HTTPRequest) -> HTTPResponse:
+        """GET /antigravity/quota/health: High-signal Uptime Kuma monitoring probe for Antigravity Quota Sentinel."""
+        active_broker = broker or getattr(dispatcher, "broker", None)
+        sentinel = getattr(dispatcher, "antigravity_quota", None)
+        if not sentinel:
+            from hub.antigravity.quota_sentinel import AntigravityQuotaSentinel
+            sentinel = AntigravityQuotaSentinel(
+                config=config,
+                db=db,
+                broker=active_broker,
+            )
+        health_data = sentinel.get_quota_health()
+        code = 200 if health_data.get("status") == "ok" else 503
+        return HTTPResponse.json(health_data, status_code=code)
 
     async def handle_antigravity_warmup(req: HTTPRequest) -> HTTPResponse:
         """POST /antigravity/warmup: Trigger on-demand token ping warmup for 5h/weekly quotas."""
@@ -391,6 +415,7 @@ def register_observability_routes(
             account_email=email,
             bucket_id=bucket,
             force=force,
+            live=True,
         )
         return HTTPResponse.json(res, status_code=200)
 
@@ -441,4 +466,5 @@ def register_observability_routes(
     server.add_route("GET", "/antigravity/watchdog", handle_antigravity_status)
     server.add_route("POST", "/antigravity/pull-up", handle_antigravity_pull_up)
     server.add_route("GET", "/antigravity/quota", handle_antigravity_quota)
+    server.add_route("GET", "/antigravity/quota/health", handle_antigravity_quota_health)
     server.add_route("POST", "/antigravity/warmup", handle_antigravity_warmup)

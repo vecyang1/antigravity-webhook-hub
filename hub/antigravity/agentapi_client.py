@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import urllib.request
 from pathlib import Path
@@ -205,6 +206,30 @@ def is_connection_error(err_msg: Optional[str]) -> bool:
     )
 
 
+def find_active_language_server_pid() -> Optional[int]:
+    """Find live PID of running language_server --standalone process on macOS."""
+    try:
+        try:
+            ps_out = subprocess.check_output(["ps", "auxww"], text=True, stderr=subprocess.DEVNULL)
+        except Exception:
+            ps_out = subprocess.check_output(["ps", "aux"], text=True, stderr=subprocess.DEVNULL)
+
+        for line in ps_out.splitlines():
+            line_clean = line.strip()
+            if not line_clean or "language_server" not in line_clean or "--standalone" not in line_clean:
+                continue
+            if re.search(r'\b(python\d*|pytest|grep|sh|bash|zsh)\b', line_clean) and "/bin/language_server" not in line_clean:
+                continue
+            if not re.search(r'(?:^|\s)(?:/\S*/)?language_server\s+--standalone', line_clean):
+                continue
+
+            parts = line_clean.split()
+            if len(parts) > 1 and parts[1].isdigit():
+                return int(parts[1])
+    except Exception as e:
+        logger.debug("Failed checking language_server PID: %s", e)
+    return None
+
 
 class AgentAPIClient:
     """Client for interacting with the Google Antigravity AgentAPI CLI."""
@@ -237,8 +262,38 @@ class AgentAPIClient:
                 self.csrf_token = token
         return addr, token
 
-    def _get_env(self) -> dict[str, str]:
-        """Build execution environment injecting active credentials."""
+    def get_language_server_pid(self) -> Optional[int]:
+        """Return live PID of the running language_server process."""
+        return find_active_language_server_pid()
+
+    def resolve_conversation_project_id(
+        self,
+        conversation_id: str,
+        conversations_dir: Optional[Path] = None,
+    ) -> Optional[str]:
+        """
+        Extract the target session's project ID from its local conversation SQLite DB.
+        Falls back to None if not found or unreadable.
+        """
+        c_dir = conversations_dir or Path(os.path.expanduser("~/.gemini/antigravity/conversations"))
+        db_path = c_dir / f"{conversation_id}.db"
+        if db_path.exists():
+            try:
+                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+                cur = conn.cursor()
+                cur.execute("SELECT data FROM trajectory_metadata_blob WHERE id = 'main'")
+                row = cur.fetchone()
+                conn.close()
+                if row and row[0]:
+                    m = re.search(rb"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", row[0][-250:])
+                    if m:
+                        return m.group(1).decode("ascii")
+            except Exception as e:
+                logger.debug("Failed extracting project_id from db for %s: %s", conversation_id, e)
+        return None
+
+    def _get_env(self, project_id: Optional[str] = None) -> dict[str, str]:
+        """Build execution environment injecting active credentials and target session project ID."""
         env = dict(os.environ)
         # Strip host-session environment variables that cause cross-conversation collisions
         for key in (
@@ -248,9 +303,9 @@ class AgentAPIClient:
         ):
             env.pop(key, None)
 
-        # Ensure valid ANTIGRAVITY_PROJECT_ID is present (required by Antigravity language_server RPC)
-        if not env.get("ANTIGRAVITY_PROJECT_ID"):
-            env["ANTIGRAVITY_PROJECT_ID"] = os.environ.get("ANTIGRAVITY_PROJECT_ID") or "bb66eaa1-71f2-46f3-8deb-c00846bdd779"
+        # Prioritize target session's project ID over global environment override
+        target_pid = project_id or os.environ.get("ANTIGRAVITY_PROJECT_ID") or "bb66eaa1-71f2-46f3-8deb-c00846bdd779"
+        env["ANTIGRAVITY_PROJECT_ID"] = target_pid
 
         if self.ls_address:
             env["ANTIGRAVITY_LS_ADDRESS"] = self.ls_address
@@ -263,6 +318,7 @@ class AgentAPIClient:
         cmd: list[str],
         cwd: Optional[str] = None,
         timeout_seconds: float = 60.0,
+        project_id: Optional[str] = None,
     ) -> tuple[int, str, str]:
         """
         Execute an agentapi CLI command with automatic credential discovery,
@@ -278,7 +334,7 @@ class AgentAPIClient:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
-                env=self._get_env(),
+                env=self._get_env(project_id=project_id),
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(),
@@ -384,6 +440,7 @@ class AgentAPIClient:
         content: str,
         title: Optional[str] = None,
         timeout_seconds: int = 60,
+        project_id: Optional[str] = None,
     ) -> tuple[bool, str, Optional[str]]:
         """
         Send a follow-up inquiry (追问) or message into an existing Antigravity conversation.
@@ -391,6 +448,8 @@ class AgentAPIClient:
         """
         if not self.is_available():
             return False, "", f"agentapi executable not available at '{self.executable_path}'"
+
+        target_pid = project_id or self.resolve_conversation_project_id(conversation_id)
 
         cmd = [self.executable_path, "send-message"]
         if title:
@@ -402,6 +461,7 @@ class AgentAPIClient:
             returncode, stdout_str, stderr_str = await self._execute_with_retry(
                 cmd,
                 timeout_seconds=float(timeout_seconds),
+                project_id=target_pid,
             )
 
             if returncode != 0:

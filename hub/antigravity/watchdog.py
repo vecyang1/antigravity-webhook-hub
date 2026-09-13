@@ -85,6 +85,16 @@ EMPTY_RESPONSE_RESUSCITATION_PROMPT = (
     "请根据上一轮工具执行结果与当前任务计划，直接继续推进下一步（请全中文汇报进展）。"
 )
 
+BOOST_DELEGATION_RESUSCITATION_PROMPT = (
+    "【系统自动 Boost/Delegation 委派协同拉起提醒】\n"
+    "检测到当前任务处于 Boost/Delegation 多 Agent 委派协同状态。\n"
+    "此前委派的子 Agent（会话 ID: {subagent_id}）曾因配额用尽或服务重启中断。\n"
+    "【关键环境状态更新】：\n"
+    "1. 当前账户已切换/恢复至健康可用状态（当前活跃账户: {active_account}，配额充足已解除限制）。\n"
+    "2. 请切勿降级为 Solo 模式自行执行子任务，请保持 Boost 架构与分工！\n"
+    "3. 请直接通过 send_message 向子 Agent（{subagent_id}）发送指令唤醒并继续委派，或重新调用 invoke_subagent 继续推进原定协同任务（请全中文汇报进展）。"
+)
+
 
 @dataclass(slots=True)
 class StalledSessionInfo:
@@ -96,6 +106,7 @@ class StalledSessionInfo:
     last_error: str
     last_error_time: float
     is_subagent: bool
+    parent_conversation_id: Optional[str] = None
     sidecar_slug: Optional[str] = None
     attempt_count: int = 0
     can_resuscitate: bool = True
@@ -184,6 +195,121 @@ def inspect_conversation_db_for_quota(
     return None
 
 
+def parse_cron_interval_seconds(cron_expr: str, default_interval: int = 1800) -> int:
+    """
+    Parse a standard 5-part cron expression into approximate recurrence interval in seconds.
+    Supports standard intervals:
+      - '* * * * *' -> 60s (every minute)
+      - '*/5 * * * *' -> 300s (every 5 min)
+      - '*/15 * * * *' -> 900s (every 15 min)
+      - '*/30 * * * *' -> 1800s (every 30 min)
+      - '0 * * * *' or '15 * * * *' -> 3600s (hourly)
+      - '0 */2 * * *' -> 7200s (every 2 hours)
+      - '0 */4 * * *' -> 14400s (every 4 hours)
+      - '0 0 * * *' or '0 9 * * *' -> 86400s (daily)
+      - '0,30 * * * *' -> 1800s (twice an hour)
+    """
+    if not cron_expr:
+        return default_interval
+
+    clean = cron_expr.strip()
+
+    parts = clean.split()
+    if len(parts) >= 5:
+        minute_part, hour_part, dom, month, dow = parts[:5]
+
+        # 1. Every minute
+        if minute_part == "*" and hour_part == "*":
+            return 60
+
+        # 2. Every N minutes: */N * * * *
+        m_step = re.match(r'^\*/(\d+)$', minute_part)
+        if m_step and hour_part == "*":
+            return max(60, int(m_step.group(1)) * 60)
+
+        # 3. List of minutes, e.g. 0,30 * * * *
+        if "," in minute_part and hour_part == "*":
+            try:
+                mins = sorted([int(x) for x in minute_part.split(",") if x.strip().isdigit()])
+                if len(mins) > 1:
+                    diffs = [mins[i + 1] - mins[i] for i in range(len(mins) - 1)]
+                    diffs.append(60 - mins[-1] + mins[0])
+                    avg_gap = sum(diffs) / len(diffs)
+                    return max(60, int(avg_gap * 60))
+            except Exception:
+                pass
+
+        # 4. Hourly: N * * * * (e.g. 0 * * * * or 30 * * * *)
+        if minute_part.isdigit() and hour_part == "*":
+            return 3600
+
+        # 5. Every N hours: 0 */N * * *
+        h_step = re.match(r'^\*/(\d+)$', hour_part)
+        if h_step and minute_part.isdigit():
+            return max(3600, int(h_step.group(1)) * 3600)
+
+        # 6. Weekly: N N * * N (e.g. 0 0 * * 1)
+        if minute_part.isdigit() and hour_part.isdigit() and dow != "*":
+            return 86400 * 7
+
+        # 7. Daily: N N * * * (e.g. 0 0 * * * or 0 9 * * *)
+        if minute_part.isdigit() and hour_part.isdigit() and dom == "*" and month == "*" and dow == "*":
+            return 86400
+
+    # Fallback to regex search for */N if not standard 5-part
+    m = re.search(r'\*/(\d+)', clean)
+    if m:
+        return max(60, int(m.group(1)) * 60)
+
+    return default_interval
+
+
+def detect_parent_conversation_id(
+    convo_id: str,
+    conversations_dir: Optional[Path] = None,
+    agentapi: Optional[Any] = None,
+    transcript_path: Optional[Path] = None,
+) -> Optional[str]:
+    """
+    Detect parentConversationId for a given session.
+    1. Check SQLite db ~/.gemini/antigravity/conversations/<convo_id>.db (fast local check, ~1ms)
+       Checks trajectory_metadata_blob for field 5 protobuf tag (b'\\*\\$([0-9a-fA-F-]{36})').
+    2. Fallback to transcript header scanning for caller agent ID.
+    """
+    # 1. SQLite DB check
+    c_dir = conversations_dir or Path(os.path.expanduser("~/.gemini/antigravity/conversations"))
+    db_file = c_dir / f"{convo_id}.db"
+    if db_file.exists():
+        try:
+            conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True, timeout=1.0)
+            cur = conn.cursor()
+            cur.execute("SELECT data FROM trajectory_metadata_blob WHERE id = 'main'")
+            row = cur.fetchone()
+            conn.close()
+            if row and row[0]:
+                m = re.search(rb"\*\$([0-9a-fA-F-]{36})", row[0])
+                if m:
+                    return m.group(1).decode("ascii")
+        except Exception as e:
+            logger.debug("Error checking conversation db for parent id: %s", e)
+
+    # 2. Transcript check
+    if transcript_path and transcript_path.exists():
+        try:
+            with open(transcript_path, "r", encoding="utf-8", errors="ignore") as f:
+                head = f.read(32768)
+                m = re.search(r'caller agent\s*\([^)]*id:\s*\\?["\']?([0-9a-fA-F-]{36})', head, re.IGNORECASE)
+                if m:
+                    return m.group(1)
+                m_convo = re.search(r'parentConversationId\\?["\s:]+([0-9a-fA-F-]{36})', head)
+                if m_convo:
+                    return m_convo.group(1)
+        except Exception:
+            pass
+
+    return None
+
+
 def extract_active_schedule_from_transcript(transcript_path: Path) -> Optional[dict[str, Any]]:
     """Scan transcript for the last schedule tool call with CronExpression and last trigger time."""
     try:
@@ -196,6 +322,7 @@ def extract_active_schedule_from_transcript(transcript_path: Path) -> Optional[d
 
         lines = block.splitlines()
         last_schedule = None
+        last_schedule_time = 0.0
         last_trigger_time = 0.0
 
         for line in reversed(lines):
@@ -217,6 +344,13 @@ def extract_active_schedule_from_transcript(transcript_path: Path) -> Optional[d
                                     "cron": str(cron).strip(' "'),
                                     "prompt": str(prompt or "").strip(' "'),
                                 }
+                                ts_str = obj.get("created_at")
+                                if ts_str:
+                                    try:
+                                        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                                        last_schedule_time = dt.timestamp()
+                                    except Exception:
+                                        pass
                                 break
                 except Exception:
                     pass
@@ -235,15 +369,13 @@ def extract_active_schedule_from_transcript(transcript_path: Path) -> Optional[d
 
         if last_schedule:
             cron_expr = last_schedule["cron"]
-            interval = 1800
-            m = re.search(r'\*/(\d+)', cron_expr)
-            if m:
-                interval = int(m.group(1)) * 60
+            interval = parse_cron_interval_seconds(cron_expr)
             return {
                 "cron": cron_expr,
                 "prompt": last_schedule["prompt"],
                 "interval_seconds": interval,
                 "last_trigger_time": last_trigger_time,
+                "last_schedule_time": last_schedule_time,
             }
     except Exception as e:
         logger.debug("Failed extracting schedule from %s: %s", transcript_path, e)
@@ -262,11 +394,13 @@ class AntigravityWatchdog:
         config: Optional[AntigravityWatchdogConfig] = None,
         agentapi_client: Optional[Any] = None,
         broker: Optional[Any] = None,
+        quota_sentinel: Optional[Any] = None,
     ):
         self.db = db
         self.config = config or AntigravityWatchdogConfig()
         self._agentapi_client = agentapi_client
         self.broker = broker
+        self._quota_sentinel = quota_sentinel
         self._brain_dir = Path(
             self.config.brain_dir
             or os.environ.get("ANTIGRAVITY_BRAIN_DIR")
@@ -277,6 +411,82 @@ class AntigravityWatchdog:
             or os.environ.get("ANTIGRAVITY_SIDECAR_DATA_DIR")
             or os.path.expanduser("~/.gemini/antigravity/sidecar_data")
         )
+        self._conversations_dir = Path(
+            getattr(self.config, "conversations_dir", None)
+            or os.environ.get("ANTIGRAVITY_CONVERSATIONS_DIR")
+            or os.path.expanduser("~/.gemini/antigravity/conversations")
+        )
+        self.last_known_ls_pid: Optional[int] = None
+        if self.db and hasattr(self.db, "get_metadata"):
+            saved_pid = self.db.get_metadata("last_known_ls_pid")
+            if saved_pid and saved_pid.isdigit():
+                self.last_known_ls_pid = int(saved_pid)
+
+    @property
+    def quota_sentinel(self):
+        if self._quota_sentinel is None:
+            try:
+                from hub.antigravity.quota_sentinel import AntigravityQuotaSentinel
+                self._quota_sentinel = AntigravityQuotaSentinel(db=self.db, broker=self.broker)
+            except Exception as e:
+                logger.debug("Auto-initializing default AntigravityQuotaSentinel skipped: %s", e)
+        return self._quota_sentinel
+
+    @quota_sentinel.setter
+    def quota_sentinel(self, value):
+        self._quota_sentinel = value
+
+    def check_language_server_lifecycle(self) -> tuple[bool, Optional[int], Optional[int]]:
+        """
+        Monitor language_server standalone process PID.
+        When PID changes, in-memory Node.js timers and schedules are wiped.
+        Returns (pid_changed, current_pid, old_pid).
+        """
+        current_pid = self.agentapi.get_language_server_pid() if hasattr(self.agentapi, "get_language_server_pid") else None
+        if not current_pid:
+            return False, None, self.last_known_ls_pid
+
+        old_pid = self.last_known_ls_pid
+        if old_pid is not None and current_pid != old_pid:
+            logger.warning(
+                "Antigravity language_server restarted! PID changed from %d to %d. In-memory timers wiped.",
+                old_pid, current_pid,
+            )
+            self.last_known_ls_pid = current_pid
+            if self.db and hasattr(self.db, "set_metadata"):
+                self.db.set_metadata("last_known_ls_pid", str(current_pid))
+            return True, current_pid, old_pid
+
+        if old_pid is None:
+            self.last_known_ls_pid = current_pid
+            if self.db and hasattr(self.db, "set_metadata"):
+                self.db.set_metadata("last_known_ls_pid", str(current_pid))
+
+        return False, current_pid, old_pid
+
+    def check_and_clear_quota_cooldowns(self) -> tuple[bool, Optional[str], int]:
+        """
+        Check if the active account has healthy quota (>10%).
+        If so, automatically clear active quota_cooldown locks in SQLite SSOT.
+        Returns (is_healthy, active_email, cleared_count).
+        """
+        if not self.quota_sentinel:
+            return False, None, 0
+
+        try:
+            is_healthy, active_email, details = self.quota_sentinel.is_active_account_healthy(threshold=0.10)
+            if is_healthy and self.db and hasattr(self.db, "clear_quota_cooldown"):
+                cleared = self.db.clear_quota_cooldown()
+                if cleared > 0:
+                    logger.info(
+                        "Antigravity Quota Sentinel verified healthy active account (%s). Automatically cleared %d quota_cooldown lock(s).",
+                        active_email, cleared,
+                    )
+                return True, active_email, cleared
+            return is_healthy, active_email, 0
+        except Exception as e:
+            logger.debug("Failed checking active account quota health: %s", e)
+            return False, None, 0
 
     @property
     def agentapi(self):
@@ -376,6 +586,21 @@ class AntigravityWatchdog:
         lookback_seconds = self.config.lookback_minutes * 60
         stalled: list[StalledSessionInfo] = []
 
+        # 1. Proactively verify and clear quota cooldowns if active account has healthy quota (>10%)
+        active_quota_healthy, active_account_email, _ = self.check_and_clear_quota_cooldowns()
+
+        # 2. Monitor language_server standalone process PID lifecycle
+        pid_changed, current_ls_pid, old_ls_pid = self.check_language_server_lifecycle()
+
+        # Gather monitored in-memory schedules to check across full brain directory
+        active_sched_map: dict[str, dict[str, Any]] = {}
+        if self.db and hasattr(self.db, "list_active_conversation_schedules"):
+            try:
+                for s in self.db.list_active_conversation_schedules():
+                    active_sched_map[s["conversation_id"]] = s
+            except Exception as e:
+                logger.debug("Error loading active conversation schedules: %s", e)
+
         try:
             for convo_dir in self._brain_dir.iterdir():
                 if not convo_dir.is_dir():
@@ -390,7 +615,8 @@ class AntigravityWatchdog:
 
                 try:
                     trans_stat = transcript_path.stat()
-                    if now - trans_stat.st_mtime > lookback_seconds:
+                    # Do not skip sessions with monitored active schedules when PID changed or interval elapsed
+                    if convo_id not in active_sched_map and not pid_changed and (now - trans_stat.st_mtime > lookback_seconds):
                         continue
                     file_mtime = trans_stat.st_mtime
                 except Exception:
@@ -423,13 +649,32 @@ class AntigravityWatchdog:
                 prior_attempts = self.db.get_resuscitation_attempts(convo_id) if self.db else 0
                 sidecar_slug = self._find_associated_sidecar(convo_id)
 
+                parent_convo_id = None
                 is_subagent = False
-                first_content = str(parsed_steps[0].get("content") or "")
-                if "<original_task>" in first_content or "invoke_subagent" in first_content or "DeepInvestigator" in first_content or "DeepCoder" in first_content:
-                    is_subagent = True
+                _parent_resolved = False
+
+                def _resolve_subagent_and_parent():
+                    nonlocal parent_convo_id, is_subagent, _parent_resolved
+                    if not _parent_resolved:
+                        _parent_resolved = True
+                        parent_convo_id = detect_parent_conversation_id(
+                            convo_id,
+                            conversations_dir=self._conversations_dir,
+                            transcript_path=transcript_path,
+                        )
+                        is_subagent = bool(parent_convo_id)
+                        if not is_subagent and parsed_steps:
+                            first_content = str(parsed_steps[0].get("content") or "")
+                            if "<original_task>" in first_content or "invoke_subagent" in first_content or "DeepInvestigator" in first_content or "DeepCoder" in first_content:
+                                is_subagent = True
+                    return parent_convo_id, is_subagent
 
                 # --- 1. Check Active Quota Cooldown in DB ---
-                active_cd = self.db.get_active_quota_cooldown(convo_id) if self.db else None
+                if active_quota_healthy:
+                    active_cd = None
+                else:
+                    active_cd = self.db.get_active_quota_cooldown(convo_id) if self.db else None
+
                 if active_cd:
                     cd_step = active_cd.get("last_step_index")
                     if cd_step is not None and last_step_idx > cd_step:
@@ -452,6 +697,7 @@ class AntigravityWatchdog:
                 if active_cd:
                     cooldown_until = float(active_cd.get("cooldown_until") or 0.0)
                     if now < cooldown_until and not (now - file_mtime > 300 and prior_attempts == 0):
+                        _resolve_subagent_and_parent()
                         remaining = int(cooldown_until - now)
                         stalled.append(
                             StalledSessionInfo(
@@ -461,6 +707,7 @@ class AntigravityWatchdog:
                                 last_error=active_cd.get("last_error") or "Individual quota reached",
                                 last_error_time=file_mtime,
                                 is_subagent=is_subagent,
+                                parent_conversation_id=parent_convo_id,
                                 sidecar_slug=sidecar_slug,
                                 attempt_count=prior_attempts,
                                 can_resuscitate=False,
@@ -472,6 +719,7 @@ class AntigravityWatchdog:
                         continue
                     else:
                         # Cooldown expired or probe allowed! Eligible for immediate automated pull-up
+                        _resolve_subagent_and_parent()
                         stalled.append(
                             StalledSessionInfo(
                                 conversation_id=convo_id,
@@ -480,6 +728,7 @@ class AntigravityWatchdog:
                                 last_error="quota_restored_pull_up",
                                 last_error_time=file_mtime,
                                 is_subagent=is_subagent,
+                                parent_conversation_id=parent_convo_id,
                                 sidecar_slug=sidecar_slug,
                                 attempt_count=prior_attempts,
                                 can_resuscitate=True,
@@ -517,6 +766,27 @@ class AntigravityWatchdog:
                         quota_ts = db_quota.get("reset_timestamp")
 
                 if quota_detected:
+                    _resolve_subagent_and_parent()
+                    if active_quota_healthy:
+                        # Active account has healthy quota (>10%), immediately pull up without entering cooldown lock
+                        stalled.append(
+                            StalledSessionInfo(
+                                conversation_id=convo_id,
+                                transcript_path=transcript_path,
+                                last_step_index=last_step_idx,
+                                last_error="quota_restored_pull_up",
+                                last_error_time=file_mtime,
+                                is_subagent=is_subagent,
+                                parent_conversation_id=parent_convo_id,
+                                sidecar_slug=sidecar_slug,
+                                attempt_count=prior_attempts,
+                                can_resuscitate=True,
+                                skip_reason=None,
+                                is_quota_exhausted=False,
+                            )
+                        )
+                        continue
+
                     wait_sec = quota_sec or 6853.0
                     if quota_ts:
                         try:
@@ -537,6 +807,7 @@ class AntigravityWatchdog:
                                 last_error="quota_restored_pull_up",
                                 last_error_time=file_mtime,
                                 is_subagent=is_subagent,
+                                parent_conversation_id=parent_convo_id,
                                 sidecar_slug=sidecar_slug,
                                 attempt_count=prior_attempts,
                                 can_resuscitate=True,
@@ -565,6 +836,7 @@ class AntigravityWatchdog:
                             last_error="Individual quota reached",
                             last_error_time=file_mtime,
                             is_subagent=is_subagent,
+                            parent_conversation_id=parent_convo_id,
                             sidecar_slug=sidecar_slug,
                             attempt_count=prior_attempts,
                             can_resuscitate=False,
@@ -580,6 +852,16 @@ class AntigravityWatchdog:
                 if last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and last_status == "DONE" and last_content and not last_step.get("tool_calls"):
                     # Check if this session has an in-memory schedule dropped after restart
                     sched_info = extract_active_schedule_from_transcript(transcript_path)
+                    if not sched_info and convo_id in active_sched_map:
+                        db_s = active_sched_map[convo_id]
+                        sched_info = {
+                            "cron": db_s["cron_expression"],
+                            "prompt": db_s["prompt"],
+                            "interval_seconds": db_s["expected_interval_seconds"],
+                            "last_trigger_time": db_s["last_trigger_at"],
+                            "last_schedule_time": 0.0,
+                        }
+
                     if sched_info:
                         if self.db:
                             self.db.save_conversation_schedule(
@@ -591,15 +873,25 @@ class AntigravityWatchdog:
                             )
                         interval = sched_info["interval_seconds"]
                         last_trig = sched_info["last_trigger_time"]
-                        if last_trig > 0 and (now - last_trig > interval * 1.25) and (now - file_mtime > 300):
+                        lost_due_to_pid = pid_changed
+                        lost_due_to_timeout = last_trig > 0 and (now - last_trig > interval * 1.25) and (now - file_mtime > 300)
+
+                        if lost_due_to_pid or lost_due_to_timeout:
+                            _resolve_subagent_and_parent()
+                            error_reason = (
+                                f"lost_schedule_after_restart (language_server restarted: PID {old_ls_pid} -> {current_ls_pid}, cron: {sched_info['cron']})"
+                                if lost_due_to_pid
+                                else f"lost_schedule_after_restart (cron: {sched_info['cron']})"
+                            )
                             stalled.append(
                                 StalledSessionInfo(
                                     conversation_id=convo_id,
                                     transcript_path=transcript_path,
                                     last_step_index=last_step_idx,
-                                    last_error=f"lost_schedule_after_restart (cron: {sched_info['cron']})",
+                                    last_error=error_reason,
                                     last_error_time=file_mtime,
                                     is_subagent=is_subagent,
+                                    parent_conversation_id=parent_convo_id,
                                     sidecar_slug=sidecar_slug,
                                     attempt_count=prior_attempts,
                                     can_resuscitate=True,
@@ -660,6 +952,8 @@ class AntigravityWatchdog:
                 if not is_stalled:
                     continue
 
+                _resolve_subagent_and_parent()
+
                 # Circuit breaker
                 if prior_attempts >= self.config.max_retries_per_session:
                     stalled.append(
@@ -670,6 +964,7 @@ class AntigravityWatchdog:
                             last_error=matched_error,
                             last_error_time=file_mtime,
                             is_subagent=is_subagent,
+                            parent_conversation_id=parent_convo_id,
                             sidecar_slug=sidecar_slug,
                             attempt_count=prior_attempts,
                             can_resuscitate=False,
@@ -689,6 +984,7 @@ class AntigravityWatchdog:
                             last_error=matched_error,
                             last_error_time=file_mtime,
                             is_subagent=is_subagent,
+                            parent_conversation_id=parent_convo_id,
                             sidecar_slug=sidecar_slug,
                             attempt_count=prior_attempts,
                             can_resuscitate=False,
@@ -707,6 +1003,7 @@ class AntigravityWatchdog:
                         last_error=matched_error,
                         last_error_time=file_mtime,
                         is_subagent=is_subagent,
+                        parent_conversation_id=parent_convo_id,
                         sidecar_slug=sidecar_slug,
                         attempt_count=prior_attempts,
                         can_resuscitate=True,
@@ -734,8 +1031,25 @@ class AntigravityWatchdog:
         sidecar_slug = session_info.sidecar_slug
         last_error = session_info.last_error
 
+        is_delegated_boost = bool(session_info.is_subagent and session_info.parent_conversation_id)
+        target_convo_id = session_info.parent_conversation_id if is_delegated_boost else convo_id
+
         # Determine tailored prompt based on scenario
-        if session_info.is_quota_exhausted or session_info.last_error == "quota_restored_pull_up":
+        if is_delegated_boost:
+            # Active account info from QuotaSentinel
+            active_account_email = "已恢复活跃账户"
+            if self.quota_sentinel and hasattr(self.quota_sentinel, "is_active_account_healthy"):
+                try:
+                    _, email, _ = self.quota_sentinel.is_active_account_healthy()
+                    if email:
+                        active_account_email = email
+                except Exception:
+                    pass
+            prompt = custom_prompt or BOOST_DELEGATION_RESUSCITATION_PROMPT.format(
+                subagent_id=convo_id,
+                active_account=active_account_email,
+            )
+        elif session_info.is_quota_exhausted or session_info.last_error == "quota_restored_pull_up":
             prompt = custom_prompt or QUOTA_RESUSCITATION_PROMPT
         elif session_info.is_mcp_error or "mcp" in str(session_info.last_error).lower():
             prompt = custom_prompt or MCP_ERROR_RESUSCITATION_PROMPT
@@ -754,13 +1068,16 @@ class AntigravityWatchdog:
             status="attempting",
             resuscitation_prompt=prompt,
             last_step_index=session_info.last_step_index,
+            error_details=f"delegated_to_parent:{target_convo_id}" if is_delegated_boost else None,
         )
         res_id = record["resuscitation_id"]
 
         logger.info(
-            "Resuscitating Antigravity session %s (subagent=%s, attempt=%d/%d, error=%s)",
+            "Resuscitating Antigravity session %s (target=%s, subagent=%s, parent=%s, attempt=%d/%d, error=%s)",
             convo_id,
+            target_convo_id,
             session_info.is_subagent,
+            session_info.parent_conversation_id,
             record["attempt_count"],
             self.config.max_retries_per_session,
             last_error,
@@ -774,6 +1091,8 @@ class AntigravityWatchdog:
                     "action": "attempting",
                     "resuscitation_id": res_id,
                     "conversation_id": convo_id,
+                    "target_conversation_id": target_convo_id,
+                    "is_delegated_boost": is_delegated_boost,
                     "attempt_count": record["attempt_count"],
                     "status": "attempting",
                     "timestamp": time.time(),
@@ -783,7 +1102,7 @@ class AntigravityWatchdog:
 
         try:
             success, stdout, err = await self.agentapi.send_message(
-                conversation_id=convo_id,
+                conversation_id=target_convo_id,
                 content=prompt,
                 timeout_seconds=30,
             )
@@ -793,7 +1112,7 @@ class AntigravityWatchdog:
                 self.db.update_resuscitation_status(res_id, new_st)
                 if session_info.has_active_schedule and self.db:
                     self.db.update_conversation_schedule_trigger(convo_id, time.time())
-                logger.info("Successfully resuscitated session %s (res_id=%s, status=%s)", convo_id, res_id, new_st)
+                logger.info("Successfully resuscitated session %s via target %s (res_id=%s, status=%s)", convo_id, target_convo_id, res_id, new_st)
                 if self.broker:
                     try:
                         await self.broker.publish("events", {
@@ -802,6 +1121,8 @@ class AntigravityWatchdog:
                             "action": new_st,
                             "resuscitation_id": res_id,
                             "conversation_id": convo_id,
+                            "target_conversation_id": target_convo_id,
+                            "is_delegated_boost": is_delegated_boost,
                             "status": new_st,
                             "success": True,
                             "timestamp": time.time(),
@@ -812,6 +1133,8 @@ class AntigravityWatchdog:
                     "success": True,
                     "resuscitation_id": res_id,
                     "conversation_id": convo_id,
+                    "target_conversation_id": target_convo_id,
+                    "is_delegated_boost": is_delegated_boost,
                     "status": new_st,
                     "output": stdout,
                 }
@@ -835,6 +1158,8 @@ class AntigravityWatchdog:
                         "success": False,
                         "resuscitation_id": res_id,
                         "conversation_id": convo_id,
+                        "target_conversation_id": target_convo_id,
+                        "is_delegated_boost": is_delegated_boost,
                         "status": "quota_cooldown",
                         "error": err,
                         "cooldown_until": cooldown_until,
@@ -843,8 +1168,9 @@ class AntigravityWatchdog:
                 new_status = "exhausted" if record["attempt_count"] >= self.config.max_retries_per_session else "failed"
                 self.db.update_resuscitation_status(res_id, new_status)
                 logger.warning(
-                    "Failed to resuscitate session %s: %s (status marked as %s)",
+                    "Failed to resuscitate session %s via target %s: %s (status marked as %s)",
                     convo_id,
+                    target_convo_id,
                     err,
                     new_status,
                 )
@@ -856,6 +1182,8 @@ class AntigravityWatchdog:
                             "action": new_status,
                             "resuscitation_id": res_id,
                             "conversation_id": convo_id,
+                            "target_conversation_id": target_convo_id,
+                            "is_delegated_boost": is_delegated_boost,
                             "status": new_status,
                             "success": False,
                             "error": err,
@@ -867,12 +1195,14 @@ class AntigravityWatchdog:
                     "success": False,
                     "resuscitation_id": res_id,
                     "conversation_id": convo_id,
+                    "target_conversation_id": target_convo_id,
+                    "is_delegated_boost": is_delegated_boost,
                     "status": new_status,
                     "error": err,
                 }
 
         except Exception as e:
-            logger.exception("Unexpected exception resuscitating session %s: %s", convo_id, e)
+            logger.exception("Unexpected exception resuscitating session %s via target %s: %s", convo_id, target_convo_id, e)
             self.db.update_resuscitation_status(res_id, "failed")
             if self.broker:
                 try:
@@ -882,6 +1212,8 @@ class AntigravityWatchdog:
                         "action": "failed",
                         "resuscitation_id": res_id,
                         "conversation_id": convo_id,
+                        "target_conversation_id": target_convo_id,
+                        "is_delegated_boost": is_delegated_boost,
                         "status": "failed",
                         "success": False,
                         "error": str(e),
@@ -893,6 +1225,8 @@ class AntigravityWatchdog:
                 "success": False,
                 "resuscitation_id": res_id,
                 "conversation_id": convo_id,
+                "target_conversation_id": target_convo_id,
+                "is_delegated_boost": is_delegated_boost,
                 "status": "failed",
                 "error": str(e),
             }
@@ -917,6 +1251,7 @@ class AntigravityWatchdog:
 
         stalled = self.scan_stalled_conversations()
         results: list[dict[str, Any]] = []
+        awakened_parents: set[str] = set()
 
         for item in stalled:
             if not item.can_resuscitate:
@@ -927,9 +1262,21 @@ class AntigravityWatchdog:
                 )
                 continue
 
+            # Deduplicate parent awakenings per tick if multiple subagents share the same parent
+            if item.is_subagent and item.parent_conversation_id:
+                if item.parent_conversation_id in awakened_parents:
+                    logger.debug(
+                        "Skipping subagent %s because parent %s was already awakened in this tick",
+                        item.conversation_id,
+                        item.parent_conversation_id,
+                    )
+                    continue
+
             if self.config.auto_resuscitate:
                 res = await self.resuscitate_session(item)
                 results.append(res)
+                if item.is_subagent and item.parent_conversation_id and res.get("success"):
+                    awakened_parents.add(item.parent_conversation_id)
 
         return results
 
@@ -970,12 +1317,14 @@ class AntigravityWatchdog:
             "agentapi_available": agentapi_avail,
             "language_server_connected": ls_ok,
             "language_server_address": addr,
+            "last_known_ls_pid": self.last_known_ls_pid,
             "stalled_sessions_detected": len(stalled),
             "stalled_sessions": [
                 {
                     "conversation_id": s.conversation_id,
                     "last_error": s.last_error,
                     "is_subagent": s.is_subagent,
+                    "parent_conversation_id": s.parent_conversation_id,
                     "sidecar_slug": s.sidecar_slug,
                     "attempt_count": s.attempt_count,
                     "can_resuscitate": s.can_resuscitate,

@@ -404,6 +404,17 @@ class DatabaseManager:
                 """
             )
 
+            # 10. Hub Metadata Table (PID Tracking & System State SSOT)
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hub_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+
             self._migrate_schema()
 
             self._conn.commit()
@@ -1650,6 +1661,65 @@ class DatabaseManager:
                     """
                 )
                 return [dict(row) for row in cur.fetchall()]
+            finally:
+                cur.close()
+
+    def clear_quota_cooldown(self, conversation_id: Optional[str] = None) -> int:
+        """Clear active quota_cooldown lock(s) in antigravity_resuscitations table."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                if conversation_id:
+                    cur.execute(
+                        """
+                        UPDATE antigravity_resuscitations
+                        SET status = 'resolved'
+                        WHERE conversation_id = ? AND status = 'quota_cooldown'
+                        """,
+                        (conversation_id,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        UPDATE antigravity_resuscitations
+                        SET status = 'resolved'
+                        WHERE status = 'quota_cooldown'
+                        """
+                    )
+                self._commit_and_shrink()
+                return cur.rowcount
+            finally:
+                cur.close()
+
+    def get_metadata(self, key: str) -> Optional[str]:
+        """Get a metadata value by key."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute("SELECT value FROM hub_metadata WHERE key = ?", (key,))
+                row = cur.fetchone()
+                return str(row[0]) if row else None
+            except sqlite3.OperationalError:
+                return None
+            finally:
+                cur.close()
+
+    def set_metadata(self, key: str, value: str) -> None:
+        """Set a metadata key-value pair."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO hub_metadata (key, value, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (key, str(value)),
+                )
+                self._commit_and_shrink()
             finally:
                 cur.close()
 

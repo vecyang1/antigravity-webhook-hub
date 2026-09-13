@@ -19,13 +19,16 @@ import pytest
 
 from hub.antigravity.agentapi_client import AgentAPIClient
 from hub.antigravity.watchdog import (
+    BOOST_DELEGATION_RESUSCITATION_PROMPT,
     DEFAULT_RESUSCITATION_PROMPT,
     MCP_ERROR_RESUSCITATION_PROMPT,
     QUOTA_RESUSCITATION_PROMPT,
     SCHEDULE_REMOUNT_PROMPT,
     AntigravityWatchdog,
     StalledSessionInfo,
+    detect_parent_conversation_id,
     extract_active_schedule_from_transcript,
+    parse_cron_interval_seconds,
     parse_quota_reset_seconds,
 )
 from hub.config import AntigravityWatchdogConfig
@@ -316,7 +319,9 @@ class TestAntigravityWatchdog:
         _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=30.0)
 
         config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
-        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        mock_quota = MagicMock()
+        mock_quota.is_active_account_healthy.return_value = (False, None, {})
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi, quota_sentinel=mock_quota)
 
         # 1. Initial scan detects quota exhaustion -> registers quota_cooldown
         stalled = watchdog.scan_stalled_conversations()
@@ -526,6 +531,239 @@ class TestAntigravityWatchdog:
         stalled = watchdog.scan_stalled_conversations()
         assert len(stalled) == 0
         assert db.list_quota_cooldowns() == []
+
+    def test_subagent_delegation_resuscitates_parent_with_boost_prompt(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that subagents with parent_conversation_id are resuscitated by awaking
+        their PARENT session with BOOST_DELEGATION_RESUSCITATION_PROMPT instead of running in solo mode.
+        """
+        parent_id = "e6910083-d922-44df-9118-4a572a1e8e60"
+        subagent_id = "22222222-2222-3333-4444-555555555559"
+
+        # Create subagent session with caller agent ID in transcript
+        steps = [
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": f'<system_reminder>\ncaller agent (name: "parent", id: "{parent_id}")\n</system_reminder>\n<original_task>\nDo research\n</original_task>',
+            },
+            {
+                "step_index": 1,
+                "source": "SYSTEM",
+                "type": "ERROR_MESSAGE",
+                "status": "ERROR",
+                "content": "The stream was interrupted. Please continue the task.",
+            },
+        ]
+        _create_fake_session(temp_dir, subagent_id, steps, mtime_offset_seconds=30.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            stall_grace_seconds=10,
+            conversations_dir=str(temp_dir / "conversations"),
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        item = stalled[0]
+        assert item.conversation_id == subagent_id
+        assert item.is_subagent is True
+        assert item.parent_conversation_id == parent_id
+        assert item.can_resuscitate is True
+
+        res = asyncio.run(watchdog.resuscitate_session(item))
+        assert res["success"] is True
+        assert res["conversation_id"] == subagent_id
+        assert res["target_conversation_id"] == parent_id
+        assert res["is_delegated_boost"] is True
+
+        # Verify send_message was called on PARENT, not subagent!
+        mock_agentapi.send_message.assert_awaited_once()
+        call_kwargs = mock_agentapi.send_message.await_args.kwargs
+        assert call_kwargs["conversation_id"] == parent_id
+        assert subagent_id in call_kwargs["content"]
+        assert "Boost/Delegation" in call_kwargs["content"]
+
+        # Verify DB records
+        records = db.list_resuscitations(conversation_id=subagent_id)
+        assert len(records) == 1
+        assert f"delegated_to_parent:{parent_id}" in (records[0]["error_details"] or "")
+
+    def test_resuscitate_stalled_sessions_deduplicates_parent_awakenings(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that multiple subagents belonging to the same parent do not spam the parent
+        multiple times in a single tick.
+        """
+        parent_id = "e6910083-d922-44df-9118-4a572a1e8e60"
+        subagent1 = "11111111-2222-3333-4444-555555555551"
+        subagent2 = "11111111-2222-3333-4444-555555555552"
+
+        for s_id in (subagent1, subagent2):
+            steps = [
+                {
+                    "step_index": 0,
+                    "source": "USER_EXPLICIT",
+                    "type": "USER_INPUT",
+                    "status": "DONE",
+                    "content": f'<system_reminder>\ncaller agent (name: "parent", id: "{parent_id}")\n</system_reminder>\n<original_task>\nTask\n</original_task>',
+                },
+                {
+                    "step_index": 1,
+                    "source": "SYSTEM",
+                    "type": "ERROR_MESSAGE",
+                    "status": "ERROR",
+                    "content": "The stream was interrupted.",
+                },
+            ]
+            _create_fake_session(temp_dir, s_id, steps, mtime_offset_seconds=30.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            stall_grace_seconds=10,
+            conversations_dir=str(temp_dir / "conversations"),
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 2
+
+        results = asyncio.run(watchdog.resuscitate_stalled_sessions())
+        # Only 1 parent resuscitation was dispatched in this tick
+        assert len(results) == 1
+        assert results[0]["target_conversation_id"] == parent_id
+        assert mock_agentapi.send_message.await_count == 1
+
+    def test_quota_sentinel_clears_cooldown_when_account_healthy(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that if QuotaSentinel reports active account is healthy (>10%),
+        active quota cooldowns in SQLite SSOT are automatically cleared.
+        """
+        convo_id = "test-quota-cooldown-cleared-001"
+        # Seed an active cooldown
+        db.record_resuscitation(
+            conversation_id=convo_id,
+            status="quota_cooldown",
+            last_error="Individual quota reached",
+            cooldown_until=time.time() + 3600.0,
+        )
+        assert len(db.list_quota_cooldowns()) == 1
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
+        mock_sentinel = MagicMock()
+        mock_sentinel.is_active_account_healthy.return_value = (True, "viinam33@gmail.com", {})
+
+        watchdog = AntigravityWatchdog(
+            db=db,
+            config=config,
+            agentapi_client=mock_agentapi,
+            quota_sentinel=mock_sentinel,
+        )
+
+        is_healthy, email, cleared = watchdog.check_and_clear_quota_cooldowns()
+        assert is_healthy is True
+        assert email == "viinam33@gmail.com"
+        assert cleared == 1
+
+        # Verify DB cooldown was unlocked
+        assert len(db.list_quota_cooldowns()) == 0
+
+    def test_language_server_pid_change_triggers_immediate_schedule_recovery(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that when language_server restarts (PID change), in-memory conversation
+        schedules are immediately detected as lost without waiting for standard timeout.
+        """
+        convo_id = "test-pid-change-schedule-recovery"
+        now = time.time()
+        # Active schedule in DB, trigger was recent (only 2 minutes ago, normal timeout is > 37.5m)
+        db.save_conversation_schedule(
+            conversation_id=convo_id,
+            cron_expression="*/30 * * * *",
+            prompt="Run sync",
+            expected_interval_seconds=1800,
+            last_trigger_at=now - 120.0,
+        )
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Schedule sync"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Sync complete", "tool_calls": []},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=120.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        # Set prior PID in DB and watchdog
+        watchdog.last_known_ls_pid = 1234
+        db.set_metadata("last_known_ls_pid", "1234")
+
+        # Mock agentapi reporting new PID
+        mock_agentapi.get_language_server_pid.return_value = 5678
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        item = stalled[0]
+        assert item.conversation_id == convo_id
+        assert item.has_active_schedule is True
+        assert "language_server restarted: PID 1234 -> 5678" in item.last_error
+        assert item.can_resuscitate is True
+
+    def test_parse_cron_interval_seconds_various_expressions(self):
+        """Verify cron interval parsing for standard cron formats."""
+        assert parse_cron_interval_seconds("*/10 * * * *") == 600
+        assert parse_cron_interval_seconds("0 * * * *") == 3600
+        assert parse_cron_interval_seconds("0 */2 * * *") == 7200
+        assert parse_cron_interval_seconds("0 9 * * *") == 86400
+        assert parse_cron_interval_seconds("0 0 * * 1") == 604800
+        assert parse_cron_interval_seconds("invalid_cron", default_interval=1800) == 1800
+
+    def test_agentapi_resolves_project_id_and_uses_in_env(self, temp_dir):
+        """Verify AgentAPIClient respects target conversation's project_id."""
+        import sqlite3
+        convo_id = "test-project-id-convo"
+        conv_dir = temp_dir / "conversations"
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        db_path = conv_dir / f"{convo_id}.db"
+
+        # Create dummy conversation sqlite db with project_id in workspace metadata
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB)")
+        # Protobuf data containing project id
+        conn.execute("INSERT INTO trajectory_metadata_blob VALUES ('main', ?)", (b"\x12\x07my-proj-12345678-1234-1234-1234-123456789abc",))
+        conn.commit()
+        conn.close()
+
+        client = AgentAPIClient()
+        resolved_pid = client.resolve_conversation_project_id(convo_id, conversations_dir=conv_dir)
+        assert resolved_pid == "12345678-1234-1234-1234-123456789abc"
+
+        env = client._get_env(project_id="explicit-custom-project")
+        assert env.get("ANTIGRAVITY_PROJECT_ID") == "explicit-custom-project"
+
+    def test_hallucinated_schedule_text_without_tool_call_is_not_registered(self, temp_dir):
+        """
+        Verify adversarial case: Agent output claims in text '已调用 schedule 挂载定时任务 task-1212',
+        but tool_calls list is empty. extract_active_schedule_from_transcript must return None
+        so that false claims are not trusted as genuine schedule mount receipts.
+        """
+        convo_id = "test-hallucinated-schedule-text"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Set a schedule for every 30 minutes"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "好的，我已经通过 schedule 工具为您挂载了 task-1212 定时任务，每 30 分钟触发一次。",
+                "tool_calls": [],  # EMPTY! Hallucination / lie!
+            },
+        ]
+        t_path = _create_fake_session(temp_dir, convo_id, steps)
+        sched = extract_active_schedule_from_transcript(t_path)
+        assert sched is None
+
 
 
 

@@ -87,6 +87,9 @@ class TaskDispatcher:
             except Exception as aq_err:
                 logger.debug("AntigravityQuotaSentinel init skipped: %s", aq_err)
 
+        if self.antigravity_watchdog and self.antigravity_quota:
+            self.antigravity_watchdog.quota_sentinel = self.antigravity_quota
+
     async def start(self) -> None:
         """Start background task dispatcher workers, recover orphaned tasks, and launch unprocessed sweeper."""
         if hasattr(self.db, "recover_orphaned_tasks"):

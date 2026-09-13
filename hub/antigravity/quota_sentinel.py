@@ -48,6 +48,8 @@ class QuotaBucketInfo:
     reset_time: Optional[str] = None
     reset_timestamp: Optional[float] = None
     display_name: Optional[str] = None
+    server_description: Optional[str] = None
+    is_gemini_primary: bool = False
 
 
 @dataclass(slots=True)
@@ -63,6 +65,7 @@ class AccountQuotaProfile:
     access_token: Optional[str] = None
     token_expiry: Optional[float] = None
     buckets: list[QuotaBucketInfo] = field(default_factory=list)
+    live_fetched: bool = False
 
 
 def parse_iso_timestamp(ts_str: Optional[str]) -> Optional[float]:
@@ -141,10 +144,80 @@ class AntigravityQuotaSentinel:
                     logger.debug("Failed reading %s for active id: %s", p, e)
         return None
 
-    def scan_accounts(self) -> list[AccountQuotaProfile]:
+    def fetch_live_quota(
+        self,
+        access_token: Optional[str],
+        timeout: float = 3.5,
+    ) -> Optional[list[QuotaBucketInfo]]:
+        """
+        Query upstream Google Cloud Code PA endpoint (v1internal:retrieveUserQuotaSummary)
+        to fetch authoritative dynamic live quota buckets.
+        Returns None on network error, timeout, or unauthorized response.
+        """
+        if not access_token:
+            return None
+
+        url = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "antigravity-tools/1.0",
+        }
+        try:
+            req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status != 200:
+                    return None
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            logger.debug("Live quota fetch from cloudcode-pa returned error: %s", e)
+            return None
+
+        groups = data.get("groups") or []
+        if not groups:
+            return None
+
+        live_buckets: list[QuotaBucketInfo] = []
+        for g in groups:
+            group_name = g.get("displayName") or "Unknown Group"
+            is_gemini_group = "gemini" in group_name.lower()
+
+            for b in g.get("buckets") or []:
+                b_id = str(b.get("bucketId") or "")
+                if not b_id:
+                    continue
+                window = str(b.get("window") or "5h").lower()
+                rem_frac = float(b.get("remainingFraction", 1.0))
+                reset_time_str = b.get("resetTime")
+                reset_ts = parse_iso_timestamp(reset_time_str)
+                d_name = b.get("displayName")
+                desc = b.get("description")
+
+                b_is_gemini = is_gemini_group or ("gemini" in b_id.lower())
+
+                live_buckets.append(
+                    QuotaBucketInfo(
+                        bucket_id=b_id,
+                        model_group=group_name,
+                        window_type=window,
+                        remaining_fraction=rem_frac,
+                        reset_time=reset_time_str,
+                        reset_timestamp=reset_ts,
+                        display_name=d_name,
+                        server_description=desc,
+                        is_gemini_primary=b_is_gemini,
+                    )
+                )
+
+        # Ensure Gemini models are sorted FIRST, then 5h window ahead of weekly
+        live_buckets.sort(key=lambda b: (not b.is_gemini_primary, b.window_type != "5h", b.bucket_id))
+        return live_buckets
+
+    def scan_accounts(self, live: bool = True) -> list[AccountQuotaProfile]:
         """
         Synchronously scan all account JSON files from ~/.antigravity_tools/accounts/.
         Extracts token credentials and quota group buckets.
+        When live=True, dynamically queries Google Cloud Code PA endpoint for active account.
         """
         accounts_dir = self._resolve_accounts_dir()
         if not accounts_dir.is_dir():
@@ -189,18 +262,22 @@ class AntigravityQuotaSentinel:
                     if not bucket_id:
                         continue
                     window = str(b.get("window") or "5h").lower()
-                    rem_frac = float(b.get("remaining_fraction", 1.0))
-                    reset_time_str = b.get("reset_time")
+                    rem_frac = float(b.get("remainingFraction", b.get("remaining_fraction", 1.0)))
+                    reset_time_str = b.get("resetTime") or b.get("reset_time")
                     reset_ts = parse_iso_timestamp(reset_time_str)
-                    display_name = b.get("display_name")
+                    display_name = b.get("displayName") or b.get("display_name")
+                    desc = b.get("description")
 
                     # Deduce model group
                     if "gemini" in bucket_id.lower():
                         model_group = "Gemini Models"
+                        is_gemini = True
                     elif "3p" in bucket_id.lower() or "claude" in bucket_id.lower() or "gpt" in bucket_id.lower():
                         model_group = "Claude and GPT models"
+                        is_gemini = False
                     else:
                         model_group = "Other Models"
+                        is_gemini = False
 
                     buckets.append(
                         QuotaBucketInfo(
@@ -211,8 +288,13 @@ class AntigravityQuotaSentinel:
                             reset_time=reset_time_str,
                             reset_timestamp=reset_ts,
                             display_name=display_name,
+                            server_description=desc,
+                            is_gemini_primary=is_gemini,
                         )
                     )
+
+            # Sort buckets with Gemini first
+            buckets.sort(key=lambda b: (not b.is_gemini_primary, b.window_type != "5h", b.bucket_id))
 
             profile = AccountQuotaProfile(
                 account_id=acc_id,
@@ -226,7 +308,19 @@ class AntigravityQuotaSentinel:
                 access_token=access_token,
                 token_expiry=token_expiry,
                 buckets=buckets,
+                live_fetched=False,
             )
+
+            # If live querying is enabled, attempt live fetch (active account prioritized)
+            if live and access_token and not disabled:
+                # Active account gets authoritative live query; others query if active or quick timeout
+                timeout_val = 3.5 if is_active else 1.5
+                live_b = self.fetch_live_quota(access_token, timeout=timeout_val)
+                if live_b:
+                    profile.buckets = live_b
+                    profile.live_fetched = True
+                    profile.last_updated = time.time()
+
             profiles.append(profile)
 
         # Sort with active account first, then alphabetically by email
@@ -361,6 +455,15 @@ class AntigravityQuotaSentinel:
                     "reset_timestamp": b.reset_timestamp,
                 })
 
+        # Sort candidates prioritizing active account and Gemini models first
+        candidates.sort(
+            key=lambda c: (
+                not c["is_active"],
+                not ("gemini" in c["bucket_id"].lower()),
+                c["window_type"] != "5h",
+                c["bucket_id"],
+            )
+        )
         return candidates
 
     def execute_warmup_sync(self, candidate: dict[str, Any], trigger_reason: str = "5h_window_reset") -> dict[str, Any]:
@@ -480,18 +583,20 @@ class AntigravityQuotaSentinel:
         account_email: Optional[str] = None,
         bucket_id: Optional[str] = None,
         force: bool = False,
+        live: bool = True,
     ) -> dict[str, Any]:
         """
         Main execution loop for Sentinel:
-        1. Scans account profiles.
+        1. Scans account profiles (authoritative live query when live=True).
         2. Syncs quotas to SQLite SSOT.
-        3. Evaluates warmup candidates.
+        3. Evaluates warmup candidates (Gemini models prioritized).
         4. Dispatches warmup pings.
-        5. Returns structured summary.
+        5. Emits SSE real-time push events.
+        6. Returns structured summary.
         """
         async with self._lock:
             t0 = time.time()
-            profiles = await asyncio.to_thread(self.scan_accounts)
+            profiles = await asyncio.to_thread(self.scan_accounts, live)
             upserted = await asyncio.to_thread(self.sync_quotas_to_db, profiles)
             candidates = self.evaluate_warmup_candidates(
                 profiles,
@@ -521,6 +626,19 @@ class AntigravityQuotaSentinel:
                 "timestamp": self._last_sweep_time,
             }
 
+            if self.broker:
+                try:
+                    await self.broker.publish("events", {
+                        "event": "antigravity_quota_update",
+                        "type": "antigravity_quota_update",
+                        "reason": reason,
+                        "accounts_scanned": len(profiles),
+                        "warmups_executed": len(warmup_results),
+                        "timestamp": self._last_sweep_time,
+                    })
+                except Exception as b_err:
+                    logger.debug("Failed publishing quota update event: %s", b_err)
+
             if warmup_results:
                 logger.info(
                     "Antigravity Quota Sentinel (%s): Dispatched %d warmups in %dms",
@@ -532,14 +650,14 @@ class AntigravityQuotaSentinel:
     def get_quota_overview(self, account_email: Optional[str] = None) -> dict[str, Any]:
         """
         Build an operational, human-friendly quota overview from SQLite SSOT and current state.
-        Calculates time-until-reset, formatted percentages, and countdown status.
+        Calculates dynamic countdown, formatted percentages, and Gemini-first ordering.
         """
         if not self.db:
             return {"error": "Database not initialized"}
 
         snapshots = self.db.get_quota_snapshots(account_email=account_email)
         stats = self.db.get_quota_summary_stats()
-        recent_warmups = self.db.get_warmup_logs(account_email=account_email, limit=10)
+        recent_warmups = self.db.get_warmup_logs(account_email=account_email, limit=15)
 
         now = time.time()
         accounts_map: dict[str, dict[str, Any]] = {}
@@ -567,11 +685,24 @@ class AntigravityQuotaSentinel:
                 rem_seconds = int(reset_ts - now)
                 hours = rem_seconds // 3600
                 minutes = (rem_seconds % 3600) // 60
-                human_reset = f"{hours}h {minutes}m"
+                seconds = rem_seconds % 60
+                human_reset = f"{hours}h {minutes:02d}m"
             elif rem_pct >= 99.9:
                 human_reset = "Ready to Warmup (100% full)"
             else:
-                human_reset = "Expired"
+                human_reset = "Reset / Idle"
+
+            # Parse raw summary json for description & display name
+            raw_meta = {}
+            if s.get("raw_summary_json"):
+                try:
+                    raw_meta = json.loads(s["raw_summary_json"])
+                except Exception:
+                    raw_meta = {}
+
+            server_desc = raw_meta.get("server_description") or raw_meta.get("description")
+            d_name = raw_meta.get("display_name") or s["bucket_id"]
+            is_gemini = "gemini" in s["bucket_id"].lower() or "gemini" in s["model_group"].lower()
 
             # Get latest warmup for this bucket
             latest_w = self.db.get_latest_warmup(email, s["bucket_id"])
@@ -586,13 +717,125 @@ class AntigravityQuotaSentinel:
                 "reset_timestamp": reset_ts,
                 "remaining_seconds": rem_seconds,
                 "human_countdown": human_reset,
+                "server_description": server_desc,
+                "display_name": d_name,
+                "is_gemini_primary": is_gemini,
                 "latest_warmup": latest_w,
             })
+
+        # Ensure Gemini models are sorted FIRST for every account
+        for acc in accounts_map.values():
+            acc["buckets"].sort(
+                key=lambda b: (
+                    not b["is_gemini_primary"],
+                    b["window_type"] != "5h",
+                    b["bucket_id"],
+                )
+            )
+
+        acc_list = list(accounts_map.values())
+        active_acc = next((a for a in acc_list if a.get("is_active_account")), None)
+        if not active_acc and acc_list:
+            active_acc = acc_list[0]
 
         return {
             "stats": stats,
             "accounts_count": len(accounts_map),
-            "accounts": list(accounts_map.values()),
+            "active_account": active_acc,
+            "all_accounts": acc_list,
+            "accounts": acc_list,
             "recent_warmups": recent_warmups,
             "last_sweep_at": self._last_sweep_time,
         }
+
+    def is_active_account_healthy(self, threshold: float = 0.10, live: bool = False) -> tuple[bool, Optional[str], dict[str, Any]]:
+        """
+        Check if the active account in ~/.antigravity_tools has healthy quota (> threshold, default 10%).
+        Returns (is_healthy, active_email, details_dict).
+        """
+        profiles = self.scan_accounts(live=live)
+        active_profile = next((p for p in profiles if p.is_active), None)
+        if not active_profile:
+            return False, None, {"reason": "no_active_profile"}
+        if active_profile.disabled or active_profile.proxy_disabled:
+            return False, active_profile.email, {"reason": "active_profile_disabled"}
+
+        if not active_profile.buckets:
+            return True, active_profile.email, {"reason": "active_profile_no_bucket_restrictions"}
+
+        # 5h rolling window is the primary short-term gate for Antigravity executions
+        five_h_buckets = [b for b in active_profile.buckets if b.window_type == "5h"]
+        buckets_to_check = five_h_buckets if five_h_buckets else active_profile.buckets
+
+        healthy_buckets = [b for b in buckets_to_check if b.remaining_fraction > threshold]
+        is_healthy = len(healthy_buckets) > 0
+
+        return is_healthy, active_profile.email, {
+            "healthy_buckets": [b.bucket_id for b in healthy_buckets],
+            "all_buckets": {b.bucket_id: b.remaining_fraction for b in active_profile.buckets},
+        }
+
+    def get_quota_health(self) -> dict[str, Any]:
+        """
+        Evaluate operational health of Quota Sentinel for Uptime Kuma keyword monitoring.
+        Emits clean, compact JSON with status 'ok' and sentinel 'healthy'.
+        """
+        if not self.db:
+            return {"status": "degraded", "sentinel": "degraded", "error": "Database not attached"}
+
+        try:
+            overview = self.get_quota_overview()
+            stats = overview.get("stats", {})
+            accounts = overview.get("accounts", [])
+            if not accounts:
+                try:
+                    profiles = self.scan_accounts(live=False)
+                    if profiles:
+                        self.sync_quotas_to_db(profiles)
+                        overview = self.get_quota_overview()
+                        stats = overview.get("stats", {})
+                        accounts = overview.get("accounts", [])
+                except Exception:
+                    pass
+
+            active_acc = next((a for a in accounts if a.get("is_active_account")), None)
+            if not active_acc and accounts:
+                active_acc = accounts[0]
+
+            if not active_acc:
+                return {
+                    "status": "ok",
+                    "sentinel": "healthy",
+                    "timestamp": time.time(),
+                    "active_account": None,
+                    "accounts_count": 0,
+                    "total_5h_buckets": 0,
+                    "ready_5h_buckets": 0,
+                    "successful_warmups": 0,
+                }
+
+            # Find active Gemini 5h bucket
+            gemini_bucket = next(
+                (b for b in active_acc.get("buckets", []) if b.get("is_gemini_primary") and b.get("window_type") == "5h"),
+                None
+            )
+
+            rem_pct = gemini_bucket["remaining_percent"] if gemini_bucket else 100.0
+            countdown = gemini_bucket["human_countdown"] if gemini_bucket else "N/A"
+
+            return {
+                "status": "ok",
+                "sentinel": "healthy",
+                "timestamp": time.time(),
+                "active_account": active_acc["email"],
+                "active_tier": active_acc.get("subscription_tier") or "Unknown",
+                "gemini_5h_remaining": rem_pct,
+                "gemini_countdown": countdown,
+                "accounts_count": len(accounts),
+                "total_5h_buckets": stats.get("total_5h_buckets", 0),
+                "ready_5h_buckets": stats.get("ready_5h_buckets", 0),
+                "successful_warmups": stats.get("successful_warmups", 0),
+            }
+        except Exception as e:
+            logger.exception("Quota Sentinel health check evaluation error: %s", e)
+            return {"status": "degraded", "sentinel": "degraded", "error": str(e)}

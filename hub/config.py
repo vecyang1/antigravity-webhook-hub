@@ -105,6 +105,7 @@ class AntigravityWatchdogConfig:
     probe_timeout_seconds: float = 1.0
     brain_dir: Optional[str] = None
     sidecar_data_dir: Optional[str] = None
+    conversations_dir: Optional[str] = None
 
 
 @dataclass(slots=True)

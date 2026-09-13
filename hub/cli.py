@@ -1918,7 +1918,15 @@ def cmd_antigravity(args: Any) -> int:
     db_path = getattr(args, "db", None) or cfg.database.path
     db = DatabaseManager(db_path)
 
-    watchdog = AntigravityWatchdog(db=db, config=cfg.antigravity_watchdog)
+    quota_sentinel = None
+    if getattr(cfg, "antigravity_quota", None) and cfg.antigravity_quota.enabled:
+        try:
+            from hub.antigravity.quota_sentinel import AntigravityQuotaSentinel
+            quota_sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        except Exception:
+            pass
+
+    watchdog = AntigravityWatchdog(db=db, config=cfg.antigravity_watchdog, quota_sentinel=quota_sentinel)
 
     if action in ("doctor", "status", "health"):
         status_info = watchdog.get_status()
@@ -2056,7 +2064,8 @@ def cmd_antigravity(args: Any) -> int:
         stalled = watchdog.scan_stalled_conversations()
         if dry_run:
             if is_json:
-                print(json.dumps([s.__dict__ for s in stalled], default=str, indent=2, ensure_ascii=False))
+                import dataclasses
+                print(json.dumps([dataclasses.asdict(s) for s in stalled], default=str, indent=2, ensure_ascii=False))
             else:
                 print(f"🔍 [DRY-RUN] 扫描到 {len(stalled)} 个挂起/中断会话:")
                 for s in stalled:

@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] - 2026-09-14
+
+### Added & Hardened
+- **Antigravity Watchdog Language Server PID Lifecycle & In-Memory Timer Loss Recovery**:
+  - **The 37.5-Minute Restart Blind Spot Eliminated**:
+    - Discovered that Antigravity IDE restarts wipe all in-memory Node.js timers (`schedule`) while Watchdog previously relied on a 1.25x Cron interval timeout (37.5 minutes for a 30m cron), leading to extensive monitoring downtime.
+    - Implemented `check_language_server_lifecycle` in `hub/antigravity/watchdog.py` and `find_active_language_server_pid` in `hub/antigravity/agentapi_client.py`, dynamically detecting PID changes of `language_server --standalone` and pulling up lost schedules within 10–30 seconds.
+  - **Strict Tool-Call Evidence Verification ("测遍会说谎的那一半")**:
+    - Enforced that only actual `tool_calls` invoking `schedule` in transcript steps are accepted as valid registrations in `extract_active_schedule_from_transcript`, completely rejecting hallucinated model text claims ("已调用 schedule 挂载 task-1212") without actual execution.
+  - **Robust Standard 5-Part Cron Interval Parsing**:
+    - Upgraded `parse_cron_interval_seconds` to parse standard 5-part cron syntax (`* * * * *`, `*/N * * * *`, `0 * * * *`, `0 */N * * *`, `0 0 * * *`, and comma-separated lists) replacing fragile regex matches.
+
+- **Boost & Multi-Agent Delegation Split-Brain Prevention & Anti-Solo Fallback**:
+  - **Single Point of Orchestration**:
+    - Identified a critical split-brain failure mode where Watchdog independently awakened child subagents (`b29b6acb`) while the parent session simultaneously resumed in Solo mode, running conflicting operations in the same git repository.
+    - Watchdog now strictly identifies sessions with `parent_conversation_id` or caller reminders, completely forbidding direct pull-ups to subagents.
+  - **Dedicated Boost Delegation Resuscitation Prompt (`BOOST_DELEGATION_RESUSCITATION_PROMPT`)**:
+    - Watchdog awakens the parent session instead, injecting current active account health and remaining quota, and explicitly instructing the parent to resume its delegation routine (`send_message` or `invoke_subagent`) rather than falling back to solo execution.
+    - Added per-tick parent deduplication preventing multiple stalling subagents from spamming the parent session.
+
+- **Multi-Account QuotaSentinel Integration & Instant Cooldown Clearance**:
+  - Connected `AntigravityQuotaSentinel` directly into `AntigravityWatchdog` (`check_and_clear_quota_cooldowns`).
+  - When the user switches accounts (e.g. from an exhausted account to an Ultra account with 100% quota) or when quota resets (>10%), all SQLite `quota_cooldown` locks are automatically cleared within 10–30 seconds without waiting hours for the original cooldown timer to expire.
+
+- **Session-Scoped Project ID Isolation**:
+  - Added `resolve_conversation_project_id` in `AgentAPIClient` extracting the target conversation's project ID directly from its SQLite metadata blob, injecting it into `ANTIGRAVITY_PROJECT_ID` during `agentapi send-message` to prevent cross-workspace permission collisions.
+
+- **Cadence Doctor & CLI Timeout Hardening**:
+  - Increased `cadence_ctl doctor` health check timeout from 0.3s to 5.0s, and `cadence_ctl schedules` timeout from 1.0s to 10.0s, preventing false-negative offline warnings.
+
 ## [1.13.0] - 2026-09-13
 
 ### Added & Hardened

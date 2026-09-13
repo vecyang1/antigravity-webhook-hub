@@ -570,6 +570,71 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       border-color: var(--accent-blue) !important;
       color: #93c5fd !important;
     }}
+    /* Quota Sentinel & 5h Warmup UI Styles */
+    .quota-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
+      margin-bottom: 20px;
+    }}
+    .quota-card {{
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 20px;
+      position: relative;
+      transition: all 0.2s ease;
+    }}
+    .quota-card-primary {{
+      border-color: rgba(59, 130, 246, 0.4);
+      background: linear-gradient(180deg, rgba(30, 41, 59, 0.7) 0%, var(--bg-card) 100%);
+      box-shadow: 0 4px 20px -2px rgba(59, 130, 246, 0.15);
+    }}
+    .quota-badge-gemini {{
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      background: rgba(59, 130, 246, 0.2);
+      color: #93c5fd;
+      border: 1px solid rgba(59, 130, 246, 0.35);
+    }}
+    .quota-progress-track {{
+      height: 10px;
+      background: #090d16;
+      border-radius: 9999px;
+      overflow: hidden;
+      margin: 10px 0 6px 0;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }}
+    .quota-progress-fill {{
+      height: 100%;
+      border-radius: 9999px;
+      transition: width 0.4s ease, background 0.4s ease;
+    }}
+    .quota-desc-text {{
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.4;
+      margin-top: 6px;
+      font-style: italic;
+    }}
+    .countdown-pill {{
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid var(--border-subtle);
+      color: #38bdf8;
+    }}
     /* Drawer */
     .drawer-overlay {{
       position: fixed;
@@ -1710,6 +1775,13 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         <div>
           <div class="sidebar-section-title">Agent &amp; Sentinel Hub</div>
           <ul class="nav-list">
+            <li class="nav-item" id="navItemQuota" data-nav="quota" onclick="switchMainView('quota', this)" title="Google Antigravity 5-Hour &amp; Weekly Quota Sentinel, live countdowns &amp; autonomous warmup">
+              <div class="nav-item-left">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                <span>5h Quota &amp; Warmup</span>
+              </div>
+              <span class="nav-count" id="countQuotaStatus" style="background: rgba(16, 185, 129, 0.15); color: var(--status-success);">Live</span>
+            </li>
             <li class="nav-item" id="navItemSentinels" data-nav="sentinels" onclick="switchMainView('sentinels', this)" title="View autonomous Sentinel runs &amp; reports">
               <div class="nav-item-left">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8Z"/><path d="m9 12 2 2 4-4"/></svg>
@@ -2250,6 +2322,127 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
             </div>
           </div>
         </div>
+
+        <!-- View 6: Antigravity 5h Quota Sentinel & Warmup Console -->
+        <div id="viewContainerQuota" class="view-panel" style="display: none;">
+          <!-- Telemetry & Actions Header -->
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
+            <div>
+              <div style="font-size: 18px; font-weight: 700; color: #ffffff; display: flex; align-items: center; gap: 8px;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--status-success);"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                <span>Antigravity Quota Sentinel &amp; 5-Hour Autonomous Warmup</span>
+              </div>
+              <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+                Autonomous sentinel eliminating the 5-hour countdown freeze via minimal token pings, prioritizing user's primary Gemini models.
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <button class="btn btn-secondary" onclick="refreshQuotaLive()" title="Synchronize quotas live directly from Google Cloud Code PA API">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
+                <span>Sync Live Quotas</span>
+              </button>
+              <button class="btn btn-primary" onclick="triggerAllReadyWarmups()" title="Trigger token ping warmup for all pools at 100% with expired timer">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                <span>Warmup All Idle Pools</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Top Quota Metric Summary Row -->
+          <div class="metric-row" style="margin-bottom: 24px;">
+            <div class="metric-box">
+              <span class="metric-box-title">Active IDE Account</span>
+              <span class="metric-box-value" style="font-size: 15px; color: #60a5fa;" id="statQuotaActiveEmail">Loading...</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-title">Gemini 5h Limit (Primary)</span>
+              <span class="metric-box-value" style="color: var(--status-success);" id="statQuotaGemini5h">--%</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-title">Gemini Reset Countdown</span>
+              <span class="metric-box-value" style="color: #38bdf8;" id="statQuotaGeminiCountdown">--:--</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-title">Claude &amp; GPT 5h Limit</span>
+              <span class="metric-box-value" style="color: #c084fc;" id="statQuota3p5h">--%</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-title">Successful Warmups</span>
+              <span class="metric-box-value" style="color: var(--status-success);" id="statQuotaWarmupCount">0</span>
+            </div>
+          </div>
+
+          <!-- Featured Active Account Card (Gemini Highlighted) -->
+          <div id="quotaActiveAccountContainer">
+            <!-- Dynamically populated -->
+          </div>
+
+          <!-- Fleet Multi-Account Matrix Table -->
+          <div class="table-card" style="margin-bottom: 24px;">
+            <div class="table-header">
+              <div>
+                <div class="table-title">Fleet Quota Matrix (All 8 Accounts)</div>
+                <div style="font-size: 12px; color: var(--text-muted);">Authoritative multi-account quota status synced into SQLite SSOT</div>
+              </div>
+              <span class="badge" id="badgeQuotaAccountsCount">8 Accounts Tracked</span>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Account &amp; Status</th>
+                    <th>Subscription Tier</th>
+                    <th>Gemini 5h (Primary)</th>
+                    <th>Gemini Countdown</th>
+                    <th>Claude/GPT 5h</th>
+                    <th>Claude Countdown</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="quotaFleetTableBody">
+                  <tr>
+                    <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 32px;">
+                      Loading fleet quota status...
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Warmup Audit Log History Table -->
+          <div class="table-card">
+            <div class="table-header">
+              <div>
+                <div class="table-title">Autonomous 5h Warmup Audit Log</div>
+                <div style="font-size: 12px; color: var(--text-muted);">Authoritative audit trail from SQLite antigravity_warmup_logs table</div>
+              </div>
+              <span class="badge badge-success" id="badgeWarmupLogsCount">0 Records</span>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Account Email</th>
+                    <th>Bucket ID</th>
+                    <th>Model Used</th>
+                    <th>Trigger Reason</th>
+                    <th>Status</th>
+                    <th>Latency</th>
+                  </tr>
+                </thead>
+                <tbody id="quotaWarmupLogsTableBody">
+                  <tr>
+                    <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 32px;">
+                      Loading warmup history...
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
     </main>
   </div>
@@ -2543,6 +2736,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       watchdogStatus: null,
       resuscitationFilter: 'all',
       activeResuscitationRecord: null,
+      quotaOverview: null,
+      quotaClockInterval: null,
       openSections: new Set(),
       drawerDurationTimer: null,
       drawerRenderScheduled: false,
@@ -2911,6 +3106,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         el.classList.add('active');
       }} else {{
         const targetNav = document.getElementById(
+          viewName === 'quota' ? 'navItemQuota' :
           viewName === 'sentinels' ? 'navItemSentinels' :
           viewName === 'signals' ? 'navItemSignals' :
           viewName === 'pulses' ? 'navItemPulses' :
@@ -2922,6 +3118,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       // Toggle view panels
       const panels = {{
         tasks: document.getElementById('viewContainerTasks'),
+        quota: document.getElementById('viewContainerQuota'),
         sentinels: document.getElementById('viewContainerSentinels'),
         signals: document.getElementById('viewContainerSignals'),
         pulses: document.getElementById('viewContainerPulses'),
@@ -2949,7 +3146,12 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       const sb = document.getElementById('appSidebar');
       if (sb) sb.classList.remove('mobile-open');
 
-      if (viewName === 'sentinels') {{
+      if (viewName === 'quota') {{
+        if (titleEl) titleEl.innerText = 'Antigravity Quota Sentinel & 5-Hour Warmup';
+        if (toggleFilterBtn) toggleFilterBtn.style.display = 'none';
+        if (searchInput) searchInput.placeholder = 'Search quota accounts, models...';
+        loadQuota();
+      }} else if (viewName === 'sentinels') {{
         if (titleEl) titleEl.innerText = 'Sentinel AI Agent Runs';
         if (toggleFilterBtn) toggleFilterBtn.style.display = 'none';
         if (searchInput) searchInput.placeholder = 'Search sentinel runs, prompts...';
@@ -2995,7 +3197,9 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       clearTimeout(searchDebounceTimeout);
       searchDebounceTimeout = setTimeout(() => {{
         state.searchQuery = val;
-        if (state.currentMainView === 'signals') {{
+        if (state.currentMainView === 'quota') {{
+          renderQuotaOverview();
+        }} else if (state.currentMainView === 'signals') {{
           loadSignals();
         }} else if (state.currentMainView === 'sentinels') {{
           renderSentinels();
@@ -3962,6 +4166,465 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       showToast('Copied resuscitation prompt to clipboard', 'info');
     }}
 
+    // Antigravity 5h Quota Sentinel & Autonomous Warmup Logic (SSOT from /antigravity/quota)
+    let quotaDebounceTimeout = null;
+    function loadQuotaDebounced(delay = 100) {{
+      clearTimeout(quotaDebounceTimeout);
+      quotaDebounceTimeout = setTimeout(() => {{
+        loadQuota(false);
+      }}, delay);
+    }}
+
+    async function refreshQuotaLive() {{
+      showToast('Synchronizing live quotas with Google Cloud Code PA API...', 'info');
+      await loadQuota(true);
+    }}
+
+    async function loadQuota(forceLive = false) {{
+      try {{
+        const url = forceLive ? '/antigravity/quota?refresh=true' : '/antigravity/quota';
+        const resp = await fetch(url);
+        if (!resp.ok) {{
+          console.warn('Failed to load quota overview:', resp.statusText);
+          return;
+        }}
+        const data = await resp.json();
+        state.quotaOverview = data;
+        renderQuotaOverview();
+        startQuotaClockTicker();
+        if (forceLive) {{
+          showToast('Live quota synchronization complete', 'info');
+        }}
+      }} catch (err) {{
+        console.warn('Error fetching quota overview:', err);
+        showToast('Failed to fetch quota overview: ' + err.message, 'error');
+      }}
+    }}
+
+    function formatRemainingClock(sec) {{
+      if (sec === null || sec === undefined) return '--:--';
+      if (sec <= 0) return 'Reset ready';
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = Math.floor(sec % 60);
+      if (h > 0) {{
+        return `${{h}}h ${{String(m).padStart(2, '0')}}m ${{String(s).padStart(2, '0')}}s`;
+      }}
+      return `${{String(m).padStart(2, '0')}}m ${{String(s).padStart(2, '0')}}s`;
+    }}
+
+    function startQuotaClockTicker() {{
+      if (state.quotaClockInterval) {{
+        clearInterval(state.quotaClockInterval);
+      }}
+      state.quotaClockInterval = setInterval(() => {{
+        if (!state.quotaOverview) return;
+
+        // 1. Tick active account buckets
+        const active = state.quotaOverview.active_account;
+        if (active && active.buckets) {{
+          active.buckets.forEach(b => {{
+            if (b.remaining_seconds && b.remaining_seconds > 0) {{
+              b.remaining_seconds -= 1;
+            }}
+          }});
+        }}
+
+        // 2. Tick all fleet accounts
+        if (state.quotaOverview.all_accounts) {{
+          state.quotaOverview.all_accounts.forEach(acc => {{
+            if (acc.buckets) {{
+              acc.buckets.forEach(b => {{
+                if (b.remaining_seconds && b.remaining_seconds > 0) {{
+                  b.remaining_seconds -= 1;
+                }}
+              }});
+            }}
+          }});
+        }}
+
+        // Update DOM clocks directly without destroying elements
+        updateClockElements();
+      }}, 1000);
+    }}
+
+    function updateClockElements() {{
+      if (!state.quotaOverview) return;
+      const active = state.quotaOverview.active_account;
+      if (active && active.buckets) {{
+        const gemini5h = active.buckets.find(b => b.bucket_id === 'gemini-5h');
+        if (gemini5h) {{
+          const txt = formatRemainingClock(gemini5h.remaining_seconds);
+          const topClock = document.getElementById('statQuotaGeminiCountdown');
+          if (topClock) topClock.innerText = txt;
+          const activeClock = document.getElementById('clockActiveGemini5h');
+          if (activeClock) activeClock.innerText = txt;
+        }}
+        const p3_5h = active.buckets.find(b => b.bucket_id === '3p-5h');
+        if (p3_5h) {{
+          const txt = formatRemainingClock(p3_5h.remaining_seconds);
+          const activeClock3p = document.getElementById('clockActive3p5h');
+          if (activeClock3p) activeClock3p.innerText = txt;
+        }}
+      }}
+
+      // Fleet table clocks
+      if (state.quotaOverview.all_accounts) {{
+        state.quotaOverview.all_accounts.forEach((acc, idx) => {{
+          const g5 = acc.buckets && acc.buckets.find(b => b.bucket_id === 'gemini-5h');
+          if (g5) {{
+            const el = document.getElementById(`clockFleetGemini_${{idx}}`);
+            if (el) el.innerText = formatRemainingClock(g5.remaining_seconds);
+          }}
+          const c5 = acc.buckets && acc.buckets.find(b => b.bucket_id === '3p-5h');
+          if (c5) {{
+            const el = document.getElementById(`clockFleet3p_${{idx}}`);
+            if (el) el.innerText = formatRemainingClock(c5.remaining_seconds);
+          }}
+        }});
+      }}
+    }}
+
+    function renderQuotaOverview() {{
+      const data = state.quotaOverview;
+      if (!data) return;
+
+      const active = data.active_account;
+      const allAccs = data.all_accounts || [];
+      const recentWarmups = data.recent_warmups || [];
+
+      // 1. Top metric row
+      const statEmail = document.getElementById('statQuotaActiveEmail');
+      if (statEmail) {{
+        statEmail.innerText = active ? active.email : 'None';
+      }}
+
+      let gemini5hPct = '--%';
+      let geminiCountdown = '--:--';
+      let p3_5hPct = '--%';
+
+      if (active && active.buckets) {{
+        const g5 = active.buckets.find(b => b.bucket_id === 'gemini-5h');
+        if (g5) {{
+          gemini5hPct = (g5.remaining_percent !== null && g5.remaining_percent !== undefined) ? g5.remaining_percent.toFixed(1) + '%' : '--%';
+          geminiCountdown = formatRemainingClock(g5.remaining_seconds);
+        }}
+        const c5 = active.buckets.find(b => b.bucket_id === '3p-5h');
+        if (c5) {{
+          p3_5hPct = (c5.remaining_percent !== null && c5.remaining_percent !== undefined) ? c5.remaining_percent.toFixed(1) + '%' : '--%';
+        }}
+      }}
+
+      const statG5 = document.getElementById('statQuotaGemini5h');
+      if (statG5) statG5.innerText = gemini5hPct;
+
+      const statGCount = document.getElementById('statQuotaGeminiCountdown');
+      if (statGCount) statGCount.innerText = geminiCountdown;
+
+      const stat3p = document.getElementById('statQuota3p5h');
+      if (stat3p) stat3p.innerText = p3_5hPct;
+
+      const statWarmups = document.getElementById('statQuotaWarmupCount');
+      if (statWarmups) {{
+        statWarmups.innerText = recentWarmups.filter(w => w.status === 'success').length;
+      }}
+
+      // 2. Featured Active Account Card (Gemini highlighted)
+      const activeCardContainer = document.getElementById('quotaActiveAccountContainer');
+      if (activeCardContainer) {{
+        if (!active) {{
+          activeCardContainer.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-muted);">No active IDE account detected in ~/.gemini/antigravity.</div>';
+        }} else {{
+          const g5 = (active.buckets || []).find(b => b.bucket_id === 'gemini-5h');
+          const gWeek = (active.buckets || []).find(b => b.bucket_id === 'gemini-weekly');
+          const c5 = (active.buckets || []).find(b => b.bucket_id === '3p-5h');
+          const cWeek = (active.buckets || []).find(b => b.bucket_id === '3p-weekly');
+
+          const serverDesc = (g5 && g5.server_description) || (gWeek && gWeek.server_description) || '';
+
+          const g5Pct = g5 ? (g5.remaining_percent || 0).toFixed(1) : '100.0';
+          const c5Pct = c5 ? (c5.remaining_percent || 0).toFixed(1) : '100.0';
+          const gWeekPct = gWeek ? (gWeek.remaining_percent || 0).toFixed(1) : '100.0';
+          const cWeekPct = cWeek ? (cWeek.remaining_percent || 0).toFixed(1) : '100.0';
+
+          const g5Sec = g5 ? g5.remaining_seconds : null;
+          const c5Sec = c5 ? c5.remaining_seconds : null;
+
+          activeCardContainer.innerHTML = `
+            <div class="quota-card quota-card-primary" style="margin-bottom: 24px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <span class="quota-badge-gemini">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                    ACTIVE IDE POOL
+                  </span>
+                  <span style="font-size: 16px; font-weight: 700; color: #ffffff;">${{escapeHtml(active.email)}}</span>
+                  <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3);">${{escapeHtml(active.subscription_tier || 'Subscription')}}</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; display: inline-flex; align-items: center; gap: 6px;">
+                    <span class="pulse-indicator" style="background-color: var(--status-success); width: 6px; height: 6px;"></span>
+                    Google Cloud Code PA: Live
+                  </span>
+                </div>
+              </div>
+
+              ${{serverDesc ? `
+                <div style="background: rgba(16, 185, 129, 0.08); border-left: 3px solid var(--status-success); padding: 10px 14px; border-radius: 4px; margin-bottom: 16px; font-size: 13px; color: #a7f3d0; display: flex; align-items: center; gap: 8px;">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink: 0;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                  <span><strong>Upstream Status:</strong> "${{escapeHtml(serverDesc)}}"</span>
+                </div>
+              ` : ''}}
+
+              <div class="quota-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 16px;">
+                <!-- Gemini 5h Card (Primary) -->
+                <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 8px; padding: 16px;">
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--status-success);"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                      <span style="font-weight: 600; color: #ffffff;">Gemini Models (Primary)</span>
+                    </div>
+                    <span class="countdown-pill" id="clockActiveGemini5h">${{formatRemainingClock(g5Sec)}}</span>
+                  </div>
+                  <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px;">5-Hour Rolling Limit (Autonomous Warmup Target)</div>
+                  
+                  <div style="display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 6px;">
+                    <span style="font-size: 24px; font-weight: 700; color: var(--status-success);">${{g5Pct}}%</span>
+                    <span style="font-size: 11px; color: var(--text-muted);">Remaining</span>
+                  </div>
+                  <div class="quota-progress-track" style="margin-bottom: 14px;">
+                    <div class="quota-progress-fill quota-progress-gemini" style="width: ${{g5Pct}}%;"></div>
+                  </div>
+
+                  <button class="btn btn-secondary" style="width: 100%; justify-content: center; font-size: 12px; padding: 6px;" onclick="triggerBucketWarmup('${{escapeJsString(active.email)}}', 'gemini-5h', this)">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                    <span>Warmup Gemini 5h Ping</span>
+                  </button>
+                </div>
+
+                <!-- Claude & GPT 5h Card -->
+                <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(192, 132, 252, 0.3); border-radius: 8px; padding: 16px;">
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #c084fc;"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/></svg>
+                      <span style="font-weight: 600; color: #ffffff;">Claude &amp; GPT Models</span>
+                    </div>
+                    <span class="countdown-pill" id="clockActive3p5h">${{formatRemainingClock(c5Sec)}}</span>
+                  </div>
+                  <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px;">5-Hour Rolling Limit</div>
+                  
+                  <div style="display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 6px;">
+                    <span style="font-size: 24px; font-weight: 700; color: #c084fc;">${{c5Pct}}%</span>
+                    <span style="font-size: 11px; color: var(--text-muted);">Remaining</span>
+                  </div>
+                  <div class="quota-progress-track" style="margin-bottom: 14px;">
+                    <div class="quota-progress-fill" style="width: ${{c5Pct}}%; background: linear-gradient(90deg, #a855f7, #c084fc);"></div>
+                  </div>
+
+                  <button class="btn btn-secondary" style="width: 100%; justify-content: center; font-size: 12px; padding: 6px;" onclick="triggerBucketWarmup('${{escapeJsString(active.email)}}', '3p-5h', this)">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                    <span>Warmup Claude 5h Ping</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Weekly Secondary Row -->
+              <div style="display: flex; gap: 16px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.08); font-size: 12px; color: var(--text-muted);">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span>Gemini Weekly Pool:</span>
+                  <span style="font-weight: 600; color: #ffffff;">${{gWeekPct}}%</span>
+                  <span style="font-size: 11px; color: var(--text-muted);">${{gWeek ? (gWeek.human_countdown || '') : ''}}</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span>Claude &amp; GPT Weekly Pool:</span>
+                  <span style="font-weight: 600; color: #ffffff;">${{cWeekPct}}%</span>
+                  <span style="font-size: 11px; color: var(--text-muted);">${{cWeek ? (cWeek.human_countdown || '') : ''}}</span>
+                </div>
+              </div>
+            </div>
+          `;
+        }}
+      }}
+
+      // 3. Fleet Multi-Account Matrix Table
+      const fleetTbody = document.getElementById('quotaFleetTableBody');
+      const badgeAccounts = document.getElementById('badgeQuotaAccountsCount');
+      if (badgeAccounts) {{
+        badgeAccounts.innerText = `${{allAccs.length}} Accounts Tracked`;
+      }}
+
+      if (fleetTbody) {{
+        const query = (state.searchQuery || '').trim().toLowerCase();
+        const filtered = allAccs.filter(acc => {{
+          if (!query) return true;
+          return (acc.email || '').toLowerCase().includes(query) ||
+                 (acc.subscription_tier || '').toLowerCase().includes(query);
+        }});
+
+        if (filtered.length === 0) {{
+          fleetTbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 32px;">No matching accounts found.</td></tr>';
+        }} else {{
+          fleetTbody.innerHTML = filtered.map((acc, idx) => {{
+            const g5 = (acc.buckets || []).find(b => b.bucket_id === 'gemini-5h');
+            const c5 = (acc.buckets || []).find(b => b.bucket_id === '3p-5h');
+
+            const g5Pct = g5 ? (g5.remaining_percent || 0).toFixed(1) : '--';
+            const c5Pct = c5 ? (c5.remaining_percent || 0).toFixed(1) : '--';
+
+            const g5Sec = g5 ? g5.remaining_seconds : null;
+            const c5Sec = c5 ? c5.remaining_seconds : null;
+
+            return `
+              <tr style="${{acc.is_active_account ? 'background: rgba(16, 185, 129, 0.05);' : ''}}">
+                <td>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    ${{acc.is_active_account ? '<span class="quota-badge-gemini" style="font-size: 10px; padding: 2px 6px;">ACTIVE</span>' : ''}}
+                    <span style="font-weight: ${{acc.is_active_account ? '600' : '400'}}; color: #ffffff;">${{escapeHtml(acc.email)}}</span>
+                  </div>
+                </td>
+                <td>
+                  <span class="badge" style="font-size: 11px;">${{escapeHtml(acc.subscription_tier || 'Free')}}</span>
+                </td>
+                <td>
+                  <div style="display: flex; align-items: center; gap: 8px; min-width: 120px;">
+                    <div class="quota-progress-track" style="flex: 1; height: 6px;">
+                      <div class="quota-progress-fill quota-progress-gemini" style="width: ${{g5Pct === '--' ? 0 : g5Pct}}%;"></div>
+                    </div>
+                    <span style="font-size: 12px; font-weight: 600; color: var(--status-success); min-width: 42px;">${{g5Pct}}%</span>
+                  </div>
+                </td>
+                <td>
+                  <span class="countdown-pill" id="clockFleetGemini_${{idx}}">${{formatRemainingClock(g5Sec)}}</span>
+                </td>
+                <td>
+                  <div style="display: flex; align-items: center; gap: 8px; min-width: 120px;">
+                    <div class="quota-progress-track" style="flex: 1; height: 6px;">
+                      <div class="quota-progress-fill" style="width: ${{c5Pct === '--' ? 0 : c5Pct}}%; background: #c084fc;"></div>
+                    </div>
+                    <span style="font-size: 12px; font-weight: 600; color: #c084fc; min-width: 42px;">${{c5Pct}}%</span>
+                  </div>
+                </td>
+                <td>
+                  <span class="countdown-pill" id="clockFleet3p_${{idx}}">${{formatRemainingClock(c5Sec)}}</span>
+                </td>
+                <td>
+                  <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" title="Warmup Gemini 5h pool" onclick="triggerBucketWarmup('${{escapeJsString(acc.email)}}', 'gemini-5h', this)">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                    <span>Warmup</span>
+                  </button>
+                </td>
+              </tr>
+            `;
+          }}).join('');
+        }}
+      }}
+
+      // 4. Warmup Audit Log Table
+      const warmupTbody = document.getElementById('quotaWarmupLogsTableBody');
+      const badgeWarmup = document.getElementById('badgeWarmupLogsCount');
+      if (badgeWarmup) {{
+        badgeWarmup.innerText = `${{recentWarmups.length}} Records`;
+      }}
+
+      if (warmupTbody) {{
+        if (recentWarmups.length === 0) {{
+          warmupTbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 32px;">No warmup executions logged yet.</td></tr>';
+        }} else {{
+          warmupTbody.innerHTML = recentWarmups.map(w => {{
+            const isSuccess = w.status === 'success';
+            const badgeClass = isSuccess ? 'badge-success' : 'badge-danger';
+            return `
+              <tr>
+                <td style="font-size: 12px; color: var(--text-muted); white-space: nowrap;">${{escapeHtml(w.created_at)}}</td>
+                <td style="font-weight: 500; color: #ffffff;">${{escapeHtml(w.account_email)}}</td>
+                <td><span class="badge" style="font-size: 11px;">${{escapeHtml(w.bucket_id)}}</span></td>
+                <td><span style="font-family: monospace; font-size: 11px; color: #38bdf8;">${{escapeHtml(w.model_name || '--')}}</span></td>
+                <td style="font-size: 12px; color: var(--text-muted);">${{escapeHtml(w.trigger_reason)}}</td>
+                <td><span class="badge ${{badgeClass}}">${{escapeHtml(w.status)}}</span></td>
+                <td style="font-size: 12px; font-family: monospace; color: var(--text-muted);">${{w.duration_ms}}ms</td>
+              </tr>
+            `;
+          }}).join('');
+        }}
+      }}
+    }}
+
+    async function triggerBucketWarmup(accountEmail, bucketId, btnEl) {{
+      if (btnEl) {{
+        btnEl.disabled = true;
+        btnEl.innerHTML = '<span class="loading-spinner"></span> Warming...';
+      }}
+      try {{
+        showToast(`Sending autonomous warmup ping for ${{accountEmail}} (${{bucketId}})...`, 'info');
+        const resp = await fetch('/antigravity/warmup', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{
+            account: accountEmail,
+            bucket: bucketId,
+            force: true,
+            reason: 'ui_manual_bucket'
+          }})
+        }});
+        if (resp.ok) {{
+          const res = await resp.json();
+          if (res.warmup_results && res.warmup_results.length > 0) {{
+            const first = res.warmup_results[0];
+            if (first.status === 'success') {{
+              showToast(`Warmup successful (${{first.duration_ms}}ms, model: ${{first.model_used}})`, 'info');
+            }} else {{
+              showToast(`Warmup failed: ${{first.error || 'Check logs'}}`, 'error');
+            }}
+          }} else {{
+            showToast('Warmup command processed', 'info');
+          }}
+          loadQuotaDebounced(100);
+        }} else {{
+          showToast('Failed to trigger warmup: ' + resp.statusText, 'error');
+        }}
+      }} catch (err) {{
+        showToast('Warmup dispatch error: ' + err.message, 'error');
+      }} finally {{
+        if (btnEl) {{
+          btnEl.disabled = false;
+          btnEl.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg> <span>Warmup</span>';
+        }}
+      }}
+    }}
+
+    async function triggerAllReadyWarmups(btnEl) {{
+      if (btnEl) {{
+        btnEl.disabled = true;
+        btnEl.innerHTML = '<span class="loading-spinner"></span> Warming Pools...';
+      }}
+      try {{
+        showToast('Evaluating and warming up all idle quota pools...', 'info');
+        const resp = await fetch('/antigravity/warmup', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{
+            force: false,
+            reason: 'ui_warmup_all_idle'
+          }})
+        }});
+        if (resp.ok) {{
+          const res = await resp.json();
+          const executed = res.warmups_executed || 0;
+          showToast(`Warmup pass complete: ${{executed}} pool(s) refreshed`, 'info');
+          loadQuotaDebounced(100);
+        }} else {{
+          showToast('Failed to trigger fleet warmup: ' + resp.statusText, 'error');
+        }}
+      }} catch (err) {{
+        showToast('Fleet warmup error: ' + err.message, 'error');
+      }} finally {{
+        if (btnEl) {{
+          btnEl.disabled = false;
+          btnEl.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg> <span>Warmup All Idle Pools</span>';
+        }}
+      }}
+    }}
+
     // Real-time Push Subscription via Server-Sent Events (SSE)
     function setupGlobalEventSource() {{
       if (state.globalEventSource) {{
@@ -4015,6 +4678,23 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
       sse.addEventListener('antigravity_status', () => {{
         loadWatchdogStatusDebounced(100);
+      }});
+
+      sse.addEventListener('antigravity_quota_update', (e) => {{
+        loadQuotaDebounced(100);
+        showToast('Antigravity live quota matrix updated', 'info');
+      }});
+
+      sse.addEventListener('antigravity_quota_warmup', (e) => {{
+        loadQuotaDebounced(100);
+        try {{
+          const data = JSON.parse(e.data);
+          const email = data.account_email || 'pool';
+          const model = data.model_used || '';
+          showToast(`Autonomous warmup succeeded: ${{email}} (${{model}})`, 'info');
+        }} catch (_) {{
+          showToast('Autonomous quota warmup executed', 'info');
+        }}
       }});
     }}
 
@@ -5152,9 +5832,15 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       refreshTasksAuthoritative();
       setupGlobalEventSource();
       loadWatchdogStatus();
+      loadQuota();
       // Periodic fallback polling every 10s if SSE reconnects
       setInterval(refreshTasksAuthoritative, 10000);
       setInterval(loadWatchdogStatus, 15000);
+      setInterval(() => {{
+        if (state.currentMainView === 'quota') {{
+          loadQuota(false);
+        }}
+      }}, 30000);
     }});
   </script>
 </body>

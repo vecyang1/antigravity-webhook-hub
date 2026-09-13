@@ -309,3 +309,26 @@ async def test_head_method_support(obs_server: Any):
         assert resp_dash.text == ""
         assert "text/html" in resp_dash.headers.get("content-type", "")
         assert int(resp_dash.headers.get("content-length", "0")) > 0
+
+
+async def test_antigravity_quota_endpoints(obs_server: Any):
+    """Verify /antigravity/quota and /antigravity/quota/health endpoints."""
+    base_url, server, db = obs_server
+
+    async with httpx.AsyncClient() as client:
+        # 1. GET /antigravity/quota/health for Uptime Kuma monitoring probe
+        resp_health = await client.get(f"{base_url}/antigravity/quota/health")
+        assert resp_health.status_code == 200
+        health_data = resp_health.json()
+        assert health_data.get("status") == "ok"
+        assert health_data.get("sentinel") == "healthy"
+        assert "timestamp" in health_data
+
+        # 2. GET /antigravity/quota authoritative SSOT
+        resp_quota = await client.get(f"{base_url}/antigravity/quota")
+        assert resp_quota.status_code == 200
+        quota_data = resp_quota.json()
+        assert "active_account" in quota_data
+        assert "all_accounts" in quota_data
+        assert "stats" in quota_data
+

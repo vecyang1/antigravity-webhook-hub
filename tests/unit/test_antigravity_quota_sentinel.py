@@ -364,21 +364,23 @@ async def test_sweep_and_warmup_e2e_with_broker(fake_accounts_dir, db):
     with patch("pathlib.Path.home", return_value=fake_accounts_dir):
         sentinel = AntigravityQuotaSentinel(config=cfg, db=db, broker=mock_broker)
 
-        # Mock successful HTTP call
-        fake_response = io.BytesIO(json.dumps({"success": True}).encode("utf-8"))
-        fake_response.status = 200
+        def fake_urlopen(req, *args, **kwargs):
+            resp = io.BytesIO(json.dumps({"success": True}).encode("utf-8"))
+            resp.status = 200
+            return resp
 
-        with patch("urllib.request.urlopen", return_value=fake_response):
-            summary = await sentinel.sweep_and_warmup(reason="test_cycle", force=False)
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            summary = await sentinel.sweep_and_warmup(reason="test_cycle", force=False, live=False)
 
     assert summary["accounts_scanned"] == 3
     assert summary["candidates_found"] == 2
     assert summary["warmups_executed"] == 2
 
-    # Verify SSE events were published
-    assert mock_broker.publish.call_count == 2
+    # Verify SSE events were published (2 warmups + 1 quota update)
+    assert mock_broker.publish.call_count == 3
     published_events = [call.args[1]["event"] for call in mock_broker.publish.call_args_list]
-    assert all(e == "antigravity_quota_warmup" for e in published_events)
+    assert published_events.count("antigravity_quota_warmup") == 2
+    assert published_events.count("antigravity_quota_update") == 1
 
 
 def test_get_quota_overview_formatting(fake_accounts_dir, db):
