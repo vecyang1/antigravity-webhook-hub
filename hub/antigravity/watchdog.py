@@ -79,6 +79,12 @@ SCHEDULE_REMOUNT_PROMPT = (
     "正在自动重新激活巡检流程，请立即执行一次巡检并调用 schedule 工具重新挂载该定时任务（请全中文汇报进展）。"
 )
 
+EMPTY_RESPONSE_RESUSCITATION_PROMPT = (
+    "【系统自动自愈拉起提醒】\n"
+    "检测到上一轮模型生成由于偶发超时或响应中断未输出有效内容，但你的上下文与环境完全完好。\n"
+    "请根据上一轮工具执行结果与当前任务计划，直接继续推进下一步（请全中文汇报进展）。"
+)
+
 
 @dataclass(slots=True)
 class StalledSessionInfo:
@@ -378,13 +384,6 @@ class AntigravityWatchdog:
                 if convo_id == "tempmediaStorage" or len(convo_id) < 20:
                     continue
 
-                try:
-                    mtime = convo_dir.stat().st_mtime
-                    if now - mtime > lookback_seconds:
-                        continue
-                except Exception:
-                    continue
-
                 transcript_path = resolve_transcript_path(convo_id, self._brain_dir)
                 if not transcript_path or not transcript_path.exists():
                     continue
@@ -431,6 +430,24 @@ class AntigravityWatchdog:
 
                 # --- 1. Check Active Quota Cooldown in DB ---
                 active_cd = self.db.get_active_quota_cooldown(convo_id) if self.db else None
+                if active_cd:
+                    cd_step = active_cd.get("last_step_index")
+                    if cd_step is not None and last_step_idx > cd_step + 1:
+                        # Session advanced past the recorded cooldown step!
+                        active_cd = None
+                    else:
+                        db_q = inspect_conversation_db_for_quota(convo_id)
+                        has_recent_quota = (
+                            any(
+                                (s.get("source") in ("SYSTEM", "ERROR") or s.get("status") == "ERROR")
+                                and ("individual quota reached" in str(s.get("content") or "").lower() or "resource_exhausted" in str(s.get("content") or "").lower())
+                                for s in parsed_steps[-4:]
+                            )
+                            or (db_q and abs(db_q.get("step_index", 0) - last_step_idx) <= 2)
+                        )
+                        if not has_recent_quota:
+                            active_cd = None
+
                 if active_cd:
                     cooldown_until = float(active_cd.get("cooldown_until") or 0.0)
                     if now < cooldown_until:
@@ -490,7 +507,7 @@ class AntigravityWatchdog:
 
                 if not quota_detected:
                     db_quota = inspect_conversation_db_for_quota(convo_id)
-                    if db_quota:
+                    if db_quota and abs(db_quota.get("step_index", 0) - last_step_idx) <= 2:
                         quota_detected = True
                         quota_sec = db_quota.get("resets_in_seconds")
                         quota_ts = db_quota.get("reset_timestamp")
@@ -542,7 +559,7 @@ class AntigravityWatchdog:
                             )
                         interval = sched_info["interval_seconds"]
                         last_trig = sched_info["last_trigger_time"]
-                        if last_trig > 0 and (now - last_trig > interval * 2.0) and (now - file_mtime > interval * 1.5):
+                        if last_trig > 0 and (now - last_trig > interval * 1.25) and (now - file_mtime > 300):
                             stalled.append(
                                 StalledSessionInfo(
                                     conversation_id=convo_id,
@@ -693,6 +710,8 @@ class AntigravityWatchdog:
         elif session_info.has_active_schedule or "schedule" in str(session_info.last_error).lower():
             cron_str = session_info.active_cron_expression or "*/30 * * * *"
             prompt = custom_prompt or SCHEDULE_REMOUNT_PROMPT.format(cron=cron_str)
+        elif session_info.last_error == "empty_planner_response_hang":
+            prompt = custom_prompt or EMPTY_RESPONSE_RESUSCITATION_PROMPT
         else:
             prompt = custom_prompt or DEFAULT_RESUSCITATION_PROMPT
 
