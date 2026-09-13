@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.1] - 2026-09-13
+
+### Hardened & Fixed
+- **Antigravity Watchdog False-Positive Scanning Elimination (Choosing the Rung: Rung 3)**:
+  - Scoped `INTERRUPTED_STREAM_PATTERNS` strictly to `source == "SYSTEM"` or `status == "ERROR"` / `type == "ERROR_MESSAGE"`, preventing false-positive resuscitation when conversational text, tool output, or code mentions error keywords.
+  - Added completed turn bypass: if the conversation's last step is a completed `PLANNER_RESPONSE` (`status == "DONE"` with content and no tool calls), it is recognized as a normal turn waiting for user input and skipped immediately.
+  - Added recovery progression detection: reverse traversal treats errors as resolved if any subsequent step is a completed `MODEL` planner turn.
+  - Added 2 adversarial unit tests (`test_adversarial_completed_turn_mentioning_error_keyword_not_flagged`, `test_adversarial_recovered_session_after_resuscitation_not_flagged`), bringing watchdog test suite to 10/10 green and full unit tests to 186/186 green.
+- **macOS System Protection & Stress Test Guardrails**:
+  - Prohibited unthrottled recursive `grep -r` across root/cowork directories that lock up macOS WindowServer and language_server.
+  - Enforced bounded timeouts (<=5s) and strict concurrency limits (<=2) across diagnostic and test routines.
+
 ## [1.11.0] - 2026-09-13
 
 ### Hardened & Optimized

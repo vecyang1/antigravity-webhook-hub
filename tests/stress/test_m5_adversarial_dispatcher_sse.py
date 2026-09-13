@@ -610,8 +610,20 @@ def test_adversarial_finding1_standalone_server_process_rss_breach(free_port: in
         env=env,
     )
     try:
-        time.sleep(1.0)
-        assert server_proc.poll() is None, "Server failed to start"
+        # Poll for server socket readiness instead of brittle fixed sleep
+        ready = False
+        t_poll_start = time.monotonic()
+        while time.monotonic() - t_poll_start < 5.0:
+            if server_proc.poll() is not None:
+                err_msg = server_proc.stderr.read().decode() if server_proc.stderr else ""
+                raise AssertionError(f"Server exited unexpectedly: {err_msg}")
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{free_port}/healthz", timeout=0.2):
+                    ready = True
+                    break
+            except Exception:
+                time.sleep(0.1)
+        assert ready, "Server failed to start and respond to /healthz within 5.0s"
 
         out_init = subprocess.check_output(["ps", "-o", "rss=", "-p", str(server_proc.pid)]).decode().strip()
         rss_init_mb = int(out_init) / 1024.0
@@ -669,6 +681,10 @@ async def test_adversarial_finding2_dispatcher_queue_concurrency_ignored(m5_harn
     causing head-of-line blocking.
     """
     db: DatabaseManager = m5_harness["db"]
+    # Stop fixture's background dispatcher to prevent dual-dispatcher task contention on shared DB
+    if "dispatcher" in m5_harness and m5_harness["dispatcher"]:
+        await m5_harness["dispatcher"].stop()
+
     cfg = AppConfig()
     cfg.dispatch.max_concurrent_tasks = 5
     dispatcher = TaskDispatcher(db, config=cfg)

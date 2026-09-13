@@ -1,9 +1,9 @@
 ---
 name: webhook-hub
-description: Control, monitor, and query the local Antigravity Webhook Hub daemon and event dispatcher on macOS.
-version: 1.8.4
+description: Control, monitor, and query the local Antigravity Webhook Hub daemon, event dispatcher, and Antigravity Watchdog on macOS.
+version: 1.11.1
 author: V
-date: 2026-09-12
+date: 2026-09-13
 source: local repository
 ---
 
@@ -263,6 +263,33 @@ Activities triggered by Webhook Hub are observable through two synchronized surf
 
 1. **Antigravity IDE Sidebar**: Registered as scheduled sentinel `webhook-hub-sentinel` (Cadence Card `CAD-20260911-webhook-hub-sentinel`). When incoming webhooks trigger `agent_signal` or review tasks, event snapshots are recorded to `$HOME/.antigravity/sidecar_data/webhook-hub-sentinel/events/*.json`, making activities directly visible in the IDE's Scheduled Tasks / Sidecars panel.
 2. **Embedded Web Console (`/dashboard` & `/ui`)**: Zero-dependency dark slate web interface with live SSE streaming (`/events/stream`), real-time RSS memory gauge (<30MB budget), task filtering, live stdout/stderr inspection drawer, one-click re-run, and interactive webhook simulator.
+
+## 10. Antigravity Watchdog & Auto Pull-Up Architecture
+
+The Webhook Hub provides continuous 24/7 background self-healing for Google Antigravity agents and subagents (`hub/antigravity/watchdog.py`), autonomously recovering sessions when network hiccups, stream interruptions, or language server restarts occur.
+
+### 10.1 Subagent Revival & IPC Architecture
+When Antigravity encounters an error, the GUI locks down with `Cannot send message to subagent.` and requires manual human intervention.
+- **Underlying Truth**: Subagents have independent `conversation_id`s in `~/.gemini/antigravity/brain/`.
+- **IPC Chokepoint**: `agentapi send-message <convo_id> "<message>"` connects directly to the local language server gRPC socket (`localhost:<port>`), bypassing the UI lock and waking the model's planner loop directly.
+- **Fail-Closed Network Probe**: Before attempting resuscitation, the engine performs a non-blocking TCP connect to DNS gateways (`1.1.1.1:53` / `8.8.8.8:53`). If the laptop is offline, resuscitation fails closed to prevent connection timeouts and log spam.
+
+### 10.2 Choosing the Rung: False-Positive Prevention (Rung 2/3 Guard)
+In accordance with `skill-creator` (Choosing the Rung) and `starting-with-readiness`:
+- **Problem**: Blindly grepping `transcript.jsonl` for `"the stream was interrupted"` triggers false positives whenever a healthy agent discusses the error or reads code files containing the string.
+- **Rung 3 Hard Gate (Code & Automated Tests)**:
+  1. `INTERRUPTED_STREAM_PATTERNS` is strictly scoped to `source == "SYSTEM"` or `status == "ERROR"` / `type == "ERROR_MESSAGE"`.
+  2. If the last step in a conversation is a completed `PLANNER_RESPONSE` (`status == "DONE"` with content and no tool calls), it is a healthy turn waiting for user input and is skipped immediately.
+  3. Reverse traversal checks for recovery: if any step after the error is a completed `MODEL` planner turn, the session is treated as recovered.
+  4. 15-second grace period (`stall_grace_seconds`) prevents racing against active tools; circuit breaker caps retries at 3 per session.
+- **Verified Receipts ("没人跑的检查不算证据")**: Tested via `pytest tests/unit/test_antigravity_watchdog.py` (10/10 green) including adversarial tests `test_adversarial_completed_turn_mentioning_error_keyword_not_flagged` and `test_adversarial_recovered_session_after_resuscitation_not_flagged`.
+
+### 10.3 macOS Resource Safety & Anti-Starvation Guardrails
+To prevent Mac freezing or system-wide lockups:
+- **No Unthrottled Grepping**: Never run recursive `grep -r` across entire user directories (`~`, `/Documents/Cowork`). Always bound search depth, exclude `.git` and `node_modules`, or use `find_by_name` / `rg` with narrow paths.
+- **Process Concurrency Limits**: Stress tests and subprocess runners must enforce concurrency <= 2 and timeouts <= 5s, with graceful fallback.
+- **Single Instance Watchdog**: Background sweeper runs in single-flight loops with sleep/wake detection, maintaining zero CPU and <28MB RSS.
+
 
 
 
