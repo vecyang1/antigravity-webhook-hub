@@ -113,8 +113,12 @@ def parse_transcript_events(
                 step_type = step.get("type", "")
                 status = step.get("status", "")
 
-                if status == "ERROR":
+                if source == "MODEL" and status == "ERROR":
                     has_error = True
+                elif source == "SYSTEM" and status == "ERROR":
+                    has_error = True
+                elif status == "DONE":
+                    has_error = False
 
                 # Tool calls extraction
                 for tc in step.get("tool_calls", []):
@@ -159,7 +163,8 @@ async def watch_and_deliver_result(
     start_time: float,
     is_follow_up: bool = False,
     start_step: int = 0,
-    max_wait_seconds: float = 240.0,
+    max_wait_seconds: float = 900.0,
+    inactivity_timeout: float = 300.0,
     poll_interval: float = 1.5,
     min_progress_interval: float = 4.0,
     brain_root: Optional[Path] = None,
@@ -172,6 +177,8 @@ async def watch_and_deliver_result(
     """
     last_reported_action: Optional[str] = None
     last_progress_time: float = 0.0
+    last_activity_time: float = time.time()
+    last_seen_step: int = start_step
     start_loop = time.time()
 
     logger.info(
@@ -184,13 +191,28 @@ async def watch_and_deliver_result(
         start_step,
     )
 
-    while (time.time() - start_loop) < max_wait_seconds:
+    while True:
+        now = time.time()
+        if (now - start_loop) >= max_wait_seconds:
+            logger.warning("Conversation watcher reached hard max_wait_seconds (%.1fs) for %s", max_wait_seconds, conversation_id)
+            break
+
+        if (now - last_activity_time) >= inactivity_timeout:
+            logger.warning("Conversation watcher detected inactivity (no progress for %.1fs) for %s", inactivity_timeout, conversation_id)
+            break
+
         await asyncio.sleep(poll_interval)
         elapsed = time.time() - start_time
 
         transcript_path = resolve_transcript_path(conversation_id, brain_root)
         if not transcript_path:
             continue
+
+        # Check for step progress to renew liveness lease
+        current_highest_step = get_latest_step_index(conversation_id, brain_root)
+        if current_highest_step > last_seen_step:
+            last_seen_step = current_highest_step
+            last_activity_time = time.time()
 
         actions, final_content, is_done, has_error = parse_transcript_events(
             transcript_path,
@@ -267,11 +289,20 @@ async def watch_and_deliver_result(
                 "error": "terminal_error_step",
             }
 
-    # Watcher timed out
+    # Watcher timed out - do one final check on the transcript
     elapsed_total = time.time() - start_time
+    transcript_path = resolve_transcript_path(conversation_id, brain_root)
+    if transcript_path:
+        _, final_content_last, is_done_last, _ = parse_transcript_events(
+            transcript_path,
+            start_step=start_step,
+        )
+        if final_content_last:
+            final_content = final_content_last
+
     logger.warning("Conversation watcher timed out after %.1fs for %s", elapsed_total, conversation_id)
     
-    # If final content was captured before timeout, deliver it
+    # If final content was captured, deliver it
     if final_content:
         notifier.notify_result_delivery(
             channel=channel,
@@ -287,6 +318,14 @@ async def watch_and_deliver_result(
             "elapsed_seconds": elapsed_total,
             "timed_out": True,
         }
+
+    # Notify failure to avoid silent thread abandonment
+    notifier.notify_failed(
+        channel=channel,
+        thread_ts=thread_ts,
+        task_id=task_id,
+        error_message=f"Antigravity 会话处理超时（持续运行超过 {int(elapsed_total)}s 未产生终态），请检查桌面端运行状态。",
+    )
 
     return {
         "delivered": False,

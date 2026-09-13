@@ -875,5 +875,80 @@ class TestProgressTrackingAndResultDelivery(unittest.TestCase):
         asyncio.run(_run())
 
 
+
+
+class TestSlackFormatter(unittest.TestCase):
+    """Unit tests for Slack mrkdwn formatting engine."""
+
+    def test_markdown_to_slack_mrkdwn_bold_and_headers(self):
+        from hub.antigravity.slack_formatter import markdown_to_slack_mrkdwn
+        md = "# 主标题\n## 副标题\n**加粗文字** 与 __下划线加粗__"
+        slack = markdown_to_slack_mrkdwn(md)
+        self.assertIn("*主标题*", slack)
+        self.assertIn("*副标题*", slack)
+        self.assertIn("*加粗文字*", slack)
+        self.assertIn("*下划线加粗*", slack)
+        self.assertNotIn("**", slack)
+        self.assertNotIn("##", slack)
+
+    def test_markdown_to_slack_mrkdwn_bullets_and_lists(self):
+        from hub.antigravity.slack_formatter import markdown_to_slack_mrkdwn
+        md = "- 列表条目 1\n* 列表条目 2\n+ 列表条目 3"
+        slack = markdown_to_slack_mrkdwn(md)
+        self.assertIn("• 列表条目 1", slack)
+        self.assertIn("• 列表条目 2", slack)
+        self.assertIn("• 列表条目 3", slack)
+
+    def test_markdown_to_slack_mrkdwn_links_and_italic(self):
+        from hub.antigravity.slack_formatter import markdown_to_slack_mrkdwn
+        md = "[访问官网](https://glintmuse.com) 与 *斜体重点* 以及 ~~删除文本~~"
+        slack = markdown_to_slack_mrkdwn(md)
+        self.assertIn("<https://glintmuse.com|访问官网>", slack)
+        self.assertIn("_斜体重点_", slack)
+        self.assertIn("~删除文本~", slack)
+
+    def test_markdown_to_slack_mrkdwn_code_preservation(self):
+        from hub.antigravity.slack_formatter import markdown_to_slack_mrkdwn
+        md = "测试保留代码块：\n```python\ndef test():\n    # **not bold**\n    return True\n```\n以及行内 `x = **y**`。"
+        slack = markdown_to_slack_mrkdwn(md)
+        self.assertIn("```python\ndef test():\n    # **not bold**\n    return True\n```", slack)
+        self.assertIn("`x = **y**`", slack)
+
+    def test_markdown_to_slack_mrkdwn_real_weather_payload(self):
+        from hub.antigravity.slack_formatter import markdown_to_slack_mrkdwn
+        md = """**【杭州 | 9月14日 气象资产与决策参考】**
+*(基于高分辨率数值预报与体感实测建模)*
+
+### 1. 核心气象矩阵 (Core Matrix)
+- **温感矩阵**: 晨间微凉（约22-24°C），午后最高升至31-32°C，昼夜温差近10°C。
+- **降水概率**: 全天多云到晴，降水概率 < 10%，基本无雨。
+- **空气质量与紫外线**: AQI 优良（~35-45），午后紫外线等级达到7级（中等偏强）。"""
+        slack = markdown_to_slack_mrkdwn(md)
+        self.assertIn("*【杭州 | 9月14日 气象资产与决策参考】*", slack)
+        self.assertIn("_(基于高分辨率数值预报与体感实测建模)_", slack)
+        self.assertIn("*1. 核心气象矩阵 (Core Matrix)*", slack)
+        self.assertIn("• *温感矩阵*: 晨间微凉", slack)
+        self.assertNotIn("**", slack)
+        self.assertNotIn("###", slack)
+
+    def test_notify_result_delivery_formats_mrkdwn(self):
+        notifier = ThreadNotifier(token="xoxb-mock-token")
+        notifier.post_thread_message = MagicMock(return_value=True)
+
+        notifier.notify_result_delivery(
+            channel="C0C1B86AMCN",
+            thread_ts="1789200000.100",
+            conversation_id="conv-formatted-1234",
+            content="### 总结报告\n- **重要发现**: 准确率达到 **100%**",
+            elapsed_seconds=12.5,
+        )
+        notifier.post_thread_message.assert_called_once()
+        sent_msg = notifier.post_thread_message.call_args[0][2]
+        self.assertIn("*总结报告*", sent_msg)
+        self.assertIn("• *重要发现*: 准确率达到 *100%*", sent_msg)
+        self.assertNotIn("**", sent_msg)
+        self.assertNotIn("###", sent_msg)
+
+
 if __name__ == "__main__":
     unittest.main()

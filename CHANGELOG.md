@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.5] - 2026-09-13
+
+### Added & Enhanced
+- **Slack Native mrkdwn Converter (`hub/antigravity/slack_formatter.py`)**:
+  - Implemented `markdown_to_slack_mrkdwn` to convert CommonMark / GitHub Flavored Markdown into native Slack `mrkdwn`.
+  - Converts bold (`**text**`, `__text__` -> `*text*`), italic (`*text*` -> `_text_`), bold-italic (`***text***` -> `*_text_*`), headings (`# H1` -> `*H1*`), bullet lists (`- item`, `* item` -> `• item`), links (`[text](url)` -> `<url|text>`), and strikethrough (`~~text~~` -> `~text~`).
+  - Shielded code blocks (```...```) and inline code (`...`) using collision-free placeholders (`\x00SLACK_CODE_*_*\x00`) to guarantee zero distortion of code content.
+  - Integrated into `ThreadNotifier.notify_result_delivery` so all agent-generated results delivered to Slack render with native styling and zero raw asterisk slop.
+- **Dynamic Sliding Liveness Lease & Timeout Extension (`hub/antigravity/result_delivery.py`)**:
+  - Increased default watcher timeout from 240.0s to 900.0s (15 minutes) to accommodate deep multimodal and multi-tool reasoning tasks (e.g. local file discovery, OCR, PDF parsing).
+  - Implemented activity lease renewal: automatically resets inactivity timer whenever new transcript steps or tool executions are detected via `get_latest_step_index`.
+  - Added inactivity timeout (300.0s) to distinguish between active tasks and frozen processes.
+  - Hardened transcript error parsing: intermediate tool failures no longer prematurely abort the conversation watcher.
+  - Added final transcript recovery check upon watcher exit and explicit Slack notification on true timeouts to prevent silent thread abandonment.
+- **Unit Test Coverage (`tests/unit/test_antigravity_agent.py`)**:
+  - Added comprehensive unit tests for `TestSlackFormatter` covering headers, bolding, lists, links, code shielding, real-world weather and allowance payloads (37/37 passing, 174/174 full suite passing).
+
 ## [1.9.4] - 2026-09-13
 
 ### Changed & Fixed

@@ -13,6 +13,7 @@ import urllib.request
 from typing import Any, Optional
 
 from hub.contact_review.slack_notifier import resolve_slack_bot_token
+from hub.antigravity.slack_formatter import markdown_to_slack_mrkdwn
 
 logger = logging.getLogger("hub.antigravity.thread_notifier")
 
@@ -151,9 +152,11 @@ class ThreadNotifier:
         """
         header_tag = "💡 *[追问解答 · 结果交付]*" if is_follow_up else "🎉 *[已完成 · 结果交付]*"
         time_str = f"{elapsed_seconds:.1f}s" if elapsed_seconds > 0 else "< 1s"
-        clean_content = (content or "").strip()
-        if not clean_content:
+        raw_content = (content or "").strip()
+        if not raw_content:
             clean_content = "（执行已结束，无文字输出）"
+        else:
+            clean_content = markdown_to_slack_mrkdwn(raw_content)
 
         max_len = 3500
         first_chunk = clean_content[:max_len]
