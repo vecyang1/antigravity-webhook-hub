@@ -225,7 +225,11 @@ def apply_memory_pressure_relief() -> None:
                     _darwin_malloc_default_zone_fn = None
                 try:
                     _darwin_num_zones = ctypes.c_uint.in_dll(_darwin_libc, "malloc_num_zones")
-                    _darwin_zones = ctypes.POINTER(ctypes.c_void_p).in_dll(_darwin_libc, "malloc_zones")
+                    _raw_zones_ptr = ctypes.c_void_p.in_dll(_darwin_libc, "malloc_zones")
+                    if _raw_zones_ptr.value:
+                        _darwin_zones = ctypes.cast(_raw_zones_ptr.value, ctypes.POINTER(ctypes.c_void_p))
+                    else:
+                        _darwin_zones = None
                 except Exception:
                     _darwin_num_zones = None
                     _darwin_zones = None
@@ -236,8 +240,9 @@ def apply_memory_pressure_relief() -> None:
                         _darwin_pressure_relief_fn(z, 0)
                 if _darwin_num_zones is not None and _darwin_zones is not None:
                     for i in range(_darwin_num_zones.value):
-                        if _darwin_zones[i]:
-                            _darwin_pressure_relief_fn(_darwin_zones[i], 0)
+                        zone_addr = _darwin_zones[i]
+                        if zone_addr:
+                            _darwin_pressure_relief_fn(zone_addr, 0)
         except Exception:
             pass
     elif hasattr(ctypes.CDLL(None), "malloc_trim"):

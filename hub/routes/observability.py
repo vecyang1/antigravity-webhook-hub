@@ -86,7 +86,7 @@ def register_observability_routes(
         if rss_mb > budget_limit:
             if db is not None and hasattr(db, "shrink_memory"):
                 try:
-                    db.shrink_memory(truncate_wal=False)
+                    db.shrink_memory(truncate_wal=True)
                 except Exception:
                     pass
             gc.collect(2)
