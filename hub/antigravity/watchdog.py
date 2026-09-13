@@ -956,23 +956,44 @@ class AntigravityWatchdog:
                 matched_error = ""
                 is_mcp = False
 
-                # Check if the conversation ended in an empty planner response hang
+                is_boost_goal = check_session_has_boost_or_goal(transcript_path, parsed_steps)
+                has_stop_hook = any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps)
+
+                # Widen MCP error detection across all loaded parsed steps (up to 15 steps)
+                for s in reversed(parsed_steps):
+                    t_calls = s.get("tool_calls") or []
+                    for tc in t_calls:
+                        tc_name = str(tc.get("name") or "").lower()
+                        if tc_name.startswith("mcp_") or "mcp" in tc_name:
+                            is_mcp = True
+                            break
+                    if is_mcp:
+                        break
+                    s_cnt = str(s.get("content") or "").lower()
+                    if "mcp error" in s_cnt or "mcp_" in s_cnt or "failed to call tool" in s_cnt:
+                        is_mcp = True
+                        break
+
+                # 1. Check if the conversation ended in an empty planner response hang
                 if len(parsed_steps) >= 2 and last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and not last_content and not last_step.get("tool_calls"):
                     if now - file_mtime > self.config.stall_grace_seconds:
                         is_stalled = True
-                        for s in reversed(parsed_steps[-5:]):
-                            t_calls = s.get("tool_calls") or []
-                            for tc in t_calls:
-                                tc_name = str(tc.get("name") or "").lower()
-                                if tc_name.startswith("mcp_") or "mcp" in tc_name:
-                                    is_mcp = True
-                                    break
-                            if "mcp" in str(s.get("content") or "").lower():
-                                is_mcp = True
-                                break
-                        matched_error = "mcp_error_hang" if is_mcp else "empty_planner_response_hang"
+                        if has_stop_hook:
+                            matched_error = "stop_hook_mcp_hang" if is_mcp else "stop_hook_hang"
+                        elif is_boost_goal:
+                            matched_error = "boost_goal_mcp_hang" if is_mcp else "boost_goal_hang"
+                        elif is_mcp:
+                            matched_error = "mcp_error_hang"
+                        else:
+                            matched_error = "empty_planner_response_hang"
 
-                # If not empty hang, inspect steps backwards for unresolved system/error interruptions
+                # 2. Check if the conversation halted on a Stop Hook block without subsequent agent progress
+                elif last_source == "SYSTEM" and "stop hook blocked termination" in str(last_content).lower():
+                    if now - file_mtime > self.config.stall_grace_seconds:
+                        is_stalled = True
+                        matched_error = "stop_hook_mcp_hang" if is_mcp else "stop_hook_hang"
+
+                # 3. If not empty hang or stop hook last step, inspect steps backwards for unresolved system/error interruptions
                 if not is_stalled:
                     for step in reversed(parsed_steps):
                         s_source = step.get("source", "")
@@ -987,13 +1008,23 @@ class AntigravityWatchdog:
                             for pattern in INTERRUPTED_STREAM_PATTERNS:
                                 if pattern in s_content:
                                     is_stalled = True
-                                    matched_error = pattern
+                                    if has_stop_hook:
+                                        matched_error = "stop_hook_mcp_hang" if is_mcp else "stop_hook_hang"
+                                    elif is_boost_goal:
+                                        matched_error = "boost_goal_mcp_hang" if is_mcp else "boost_goal_hang"
+                                    else:
+                                        matched_error = pattern
                                     break
                             if is_stalled:
                                 break
                             if s_status == "ERROR" or s_type == "ERROR_MESSAGE":
                                 is_stalled = True
-                                matched_error = s_content[:150] or f"{s_source}_{s_status}"
+                                if has_stop_hook:
+                                    matched_error = "stop_hook_mcp_hang" if is_mcp else "stop_hook_hang"
+                                elif is_boost_goal:
+                                    matched_error = "boost_goal_mcp_hang" if is_mcp else "boost_goal_hang"
+                                else:
+                                    matched_error = s_content[:150] or f"{s_source}_{s_status}"
                                 break
 
                 if not is_stalled:
@@ -1017,6 +1048,8 @@ class AntigravityWatchdog:
                             can_resuscitate=False,
                             skip_reason=f"max_retries_exhausted ({prior_attempts}/{self.config.max_retries_per_session})",
                             is_mcp_error=is_mcp,
+                            is_boost_goal=is_boost_goal,
+                            is_stop_hook_hang=has_stop_hook,
                         )
                     )
                     continue
@@ -1037,6 +1070,8 @@ class AntigravityWatchdog:
                             can_resuscitate=False,
                             skip_reason="within_stall_grace_period",
                             is_mcp_error=is_mcp,
+                            is_boost_goal=is_boost_goal,
+                            is_stop_hook_hang=has_stop_hook,
                         )
                     )
                     continue
@@ -1056,6 +1091,8 @@ class AntigravityWatchdog:
                         can_resuscitate=True,
                         skip_reason=None,
                         is_mcp_error=is_mcp,
+                        is_boost_goal=is_boost_goal,
+                        is_stop_hook_hang=has_stop_hook,
                     )
                 )
 
@@ -1098,6 +1135,8 @@ class AntigravityWatchdog:
             )
         elif session_info.is_quota_exhausted or session_info.last_error == "quota_restored_pull_up":
             prompt = custom_prompt or QUOTA_RESUSCITATION_PROMPT
+        elif session_info.is_boost_goal or session_info.is_stop_hook_hang or "stop_hook" in str(session_info.last_error).lower() or "boost" in str(session_info.last_error).lower() or "goal" in str(session_info.last_error).lower():
+            prompt = custom_prompt or BOOST_GOAL_RESUSCITATION_PROMPT
         elif session_info.is_mcp_error or "mcp" in str(session_info.last_error).lower():
             prompt = custom_prompt or MCP_ERROR_RESUSCITATION_PROMPT
         elif session_info.has_active_schedule or "schedule" in str(session_info.last_error).lower():
@@ -1213,7 +1252,7 @@ class AntigravityWatchdog:
                     }
 
                 new_status = "exhausted" if record["attempt_count"] >= self.config.max_retries_per_session else "failed"
-                self.db.update_resuscitation_status(res_id, new_status)
+                self.db.update_resuscitation_status(res_id, new_status, error_details=err[:500] if err else None)
                 logger.warning(
                     "Failed to resuscitate session %s via target %s: %s (status marked as %s)",
                     convo_id,
