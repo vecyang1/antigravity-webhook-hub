@@ -10,7 +10,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from hub.antigravity.agentapi_client import AgentAPIClient
+from hub.antigravity.agentapi_client import (
+    AgentAPIClient,
+    discover_active_antigravity_credentials,
+    is_connection_error,
+    validate_antigravity_address,
+)
 from hub.antigravity.models import AntigravityTaskPayload, ThreadMilestone
 from hub.antigravity.prompt_builder import (
     BOOST_DIRECTIVE,
@@ -418,6 +423,212 @@ class TestSessionManagerAndDatabase(unittest.TestCase):
             published_events = [call[0][1].get("event") for call in mock_broker.publish.call_args_list]
             self.assertIn("antigravity_model_downgraded", published_events)
             self.assertIn("antigravity_session_created", published_events)
+
+        asyncio.run(_run())
+
+
+class TestAgentAPIDynamicCredentialsAndSelfHealing(unittest.TestCase):
+    """Test dynamic credential discovery, address validation, error pattern detection, and self-healing retries."""
+
+    def test_validate_antigravity_address(self):
+        # Mock responsive 200 server
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            self.assertTrue(validate_antigravity_address("localhost:63347"))
+            self.assertTrue(validate_antigravity_address("127.0.0.1:63347"))
+
+        # Empty address
+        self.assertFalse(validate_antigravity_address(""))
+
+        # Error server
+        with patch("urllib.request.urlopen", side_effect=Exception("Connection refused")):
+            self.assertFalse(validate_antigravity_address("localhost:56268"))
+
+    def test_is_connection_error(self):
+        # True cases
+        self.assertTrue(is_connection_error("dial tcp 127.0.0.1:56268: connect: connection refused"))
+        self.assertTrue(is_connection_error("rpc error: code = Unavailable desc = connection error"))
+        self.assertTrue(is_connection_error("transport: Error while dialing: dial tcp"))
+        self.assertTrue(is_connection_error("Broken pipe"))
+        self.assertTrue(is_connection_error("Connection reset by peer"))
+        self.assertTrue(is_connection_error("channel is in state transient_failure"))
+
+        # False cases
+        self.assertFalse(is_connection_error(None))
+        self.assertFalse(is_connection_error(""))
+        self.assertFalse(is_connection_error("trajectory not found"))
+        self.assertFalse(is_connection_error("HTTP 429 quota exceeded"))
+        self.assertFalse(is_connection_error("invalid argument"))
+
+    def test_discover_active_antigravity_credentials_from_children(self):
+        fake_ps = (
+            "USER       PID  %CPU %MEM      VSZ    RSS   TT  STAT STARTED      TIME COMMAND\n"
+            "user     12115   0.1  0.5  1234567  50000   ??  S     8:24AM   0:10.00 "
+            "/Applications/Antigravity.app/Contents/Resources/bin/language_server --standalone "
+            "--csrf_token cc31d02d-949d-468e-a975-2bb657ac01c5 --app_data_dir antigravity\n"
+        )
+        fake_pgrep = "12187\n12188\n"
+        fake_ps_eww = (
+            "12187 ANTIGRAVITY_LS_ADDRESS=localhost:63347 "
+            "ANTIGRAVITY_CSRF_TOKEN=cc31d02d-949d-468e-a975-2bb657ac01c5 OTHER_VAR=1"
+        )
+
+        def mock_check_output(cmd, **kwargs):
+            cmd_str = " ".join(cmd)
+            if "ps aux" in cmd_str:
+                return fake_ps
+            elif "pgrep -P 12115" in cmd_str:
+                return fake_pgrep
+            elif "ps eww 12187" in cmd_str:
+                return fake_ps_eww
+            return ""
+
+        with patch("subprocess.check_output", side_effect=mock_check_output):
+            with patch("hub.antigravity.agentapi_client.validate_antigravity_address", return_value=True):
+                with patch.dict("os.environ", {}, clear=True):
+                    addr, token = discover_active_antigravity_credentials(force=True)
+                    self.assertEqual(addr, "localhost:63347")
+                    self.assertEqual(token, "cc31d02d-949d-468e-a975-2bb657ac01c5")
+
+    def test_discover_active_antigravity_credentials_fallback_lsof(self):
+        fake_ps = (
+            "user     12115   0.1  0.5  1234567  50000   ??  S     8:24AM   0:10.00 "
+            "/Applications/Antigravity.app/Contents/Resources/bin/language_server --standalone "
+            "--csrf_token fb001122-3344-5566-7788-99aabbccddeeff\n"
+        )
+        fake_lsof = (
+            "COMMAND     PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME\n"
+            "language_ 12115 user    7u  IPv4 0x1234      0t0  TCP 127.0.0.1:63346 (LISTEN)\n"
+            "language_ 12115 user    8u  IPv4 0x5678      0t0  TCP 127.0.0.1:63347 (LISTEN)\n"
+        )
+
+        def mock_check_output(cmd, **kwargs):
+            cmd_str = " ".join(cmd)
+            if "ps aux" in cmd_str:
+                return fake_ps
+            elif "pgrep" in cmd_str:
+                return ""
+            elif "lsof" in cmd_str:
+                return fake_lsof
+            return ""
+
+        def mock_validate(addr, **kwargs):
+            return "63347" in addr
+
+        with patch("subprocess.check_output", side_effect=mock_check_output):
+            with patch("hub.antigravity.agentapi_client.validate_antigravity_address", side_effect=mock_validate):
+                with patch.dict("os.environ", {}, clear=True):
+                    addr, token = discover_active_antigravity_credentials(force=True)
+                    self.assertEqual(addr, "localhost:63347")
+                    self.assertEqual(token, "fb001122-3344-5566-7788-99aabbccddeeff")
+
+    def test_discover_active_antigravity_credentials_absent_returns_none(self):
+        with patch("subprocess.check_output", return_value="user 1000 0.0 ps aux\n"):
+            with patch.dict("os.environ", {}, clear=True):
+                addr, token = discover_active_antigravity_credentials(force=True)
+                self.assertIsNone(addr)
+                self.assertIsNone(token)
+
+    def test_agentapi_client_new_conversation_self_healing_retry(self):
+        client = AgentAPIClient(executable_path="/usr/local/bin/agentapi")
+        client.is_available = MagicMock(return_value=True)
+
+        mock_proc_fail = AsyncMock()
+        mock_proc_fail.returncode = 1
+        mock_proc_fail.communicate = AsyncMock(return_value=(
+            b"",
+            b'rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 127.0.0.1:56268: connect: connection refused"',
+        ))
+
+        mock_proc_ok = AsyncMock()
+        mock_proc_ok.returncode = 0
+        mock_proc_ok.communicate = AsyncMock(return_value=(
+            b'{"response": {"newConversation": {"conversationId": "369d90c6-a9d5-468e-a975-2bb657ac01c5"}}}',
+            b"",
+        ))
+
+        async def _run_e2e_retry():
+            with patch("asyncio.create_subprocess_exec", side_effect=[mock_proc_fail, mock_proc_ok]) as mock_subproc:
+                with patch.object(client, "ensure_credentials") as mock_ensure:
+                    mock_ensure.side_effect = [
+                        ("localhost:56268", "old_token"),
+                        ("localhost:63347", "new_token"),
+                    ]
+                    success, cid, err = await client.new_conversation("阳朔天气", model="pro")
+                    self.assertTrue(success)
+                    self.assertEqual(cid, "369d90c6-a9d5-468e-a975-2bb657ac01c5")
+                    self.assertIsNone(err)
+                    self.assertEqual(mock_subproc.call_count, 2)
+                    self.assertEqual(mock_ensure.call_count, 2)
+
+        asyncio.run(_run_e2e_retry())
+
+    def test_agentapi_client_send_message_self_healing_retry(self):
+        client = AgentAPIClient(executable_path="/usr/local/bin/agentapi")
+        client.is_available = MagicMock(return_value=True)
+
+        mock_proc_fail = AsyncMock()
+        mock_proc_fail.returncode = 1
+        mock_proc_fail.communicate = AsyncMock(return_value=(
+            b"",
+            b'rpc error: code = Unavailable desc = connection error: desc = "dial tcp 127.0.0.1:56268: connect: connection refused"',
+        ))
+
+        mock_proc_ok = AsyncMock()
+        mock_proc_ok.returncode = 0
+        mock_proc_ok.communicate = AsyncMock(return_value=(b'{"status": "delivered"}', b""))
+
+        async def _run():
+            with patch("asyncio.create_subprocess_exec", side_effect=[mock_proc_fail, mock_proc_ok]) as mock_subproc:
+                with patch.object(client, "ensure_credentials") as mock_ensure:
+                    mock_ensure.side_effect = [
+                        ("localhost:56268", "old_token"),
+                        ("localhost:63347", "new_token"),
+                    ]
+                    success, res_msg, err = await client.send_message(
+                        conversation_id="conv-12345",
+                        content="请补充说明",
+                    )
+                    self.assertTrue(success)
+                    self.assertIn("delivered", res_msg)
+                    self.assertIsNone(err)
+                    self.assertEqual(mock_subproc.call_count, 2)
+
+        asyncio.run(_run())
+
+    def test_agentapi_client_retry_exhaustion_on_persistent_failure(self):
+        client = AgentAPIClient(executable_path="/usr/local/bin/agentapi")
+        client.is_available = MagicMock(return_value=True)
+
+        mock_proc_fail1 = AsyncMock()
+        mock_proc_fail1.returncode = 1
+        mock_proc_fail1.communicate = AsyncMock(return_value=(
+            b"",
+            b'dial tcp 127.0.0.1:56268: connect: connection refused',
+        ))
+
+        mock_proc_fail2 = AsyncMock()
+        mock_proc_fail2.returncode = 1
+        mock_proc_fail2.communicate = AsyncMock(return_value=(
+            b"",
+            b'dial tcp 127.0.0.1:63347: connect: connection refused',
+        ))
+
+        async def _run():
+            with patch("asyncio.create_subprocess_exec", side_effect=[mock_proc_fail1, mock_proc_fail2]) as mock_subproc:
+                with patch.object(client, "ensure_credentials") as mock_ensure:
+                    mock_ensure.side_effect = [
+                        ("localhost:56268", "old_token"),
+                        ("localhost:63347", "new_token"),
+                    ]
+                    success, cid, err = await client.new_conversation("测试重试耗尽")
+                    self.assertFalse(success)
+                    self.assertEqual(cid, "")
+                    self.assertIn("connection refused", err)
+                    self.assertEqual(mock_subproc.call_count, 2)
 
         asyncio.run(_run())
 

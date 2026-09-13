@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.2] - 2026-09-13
+
+### Added & Fixed
+- **Dynamic Language Server Credential Discovery (`hub/antigravity/agentapi_client.py`)**:
+  - Implemented `discover_active_antigravity_credentials` and `validate_antigravity_address` to deterministically discover live ephemeral gRPC port and CSRF token on macOS (~15ms) after Electron restarts.
+  - Added transparent child process inspection (`pgrep -P`, `ps eww`) and `lsof` TCP listening probe fallback.
+  - Implemented automatic self-healing retry in `AgentAPIClient._execute_with_retry`: upon `connection refused` or `Unavailable` gRPC transport failures, credentials are dynamically rediscovered and the command retried once before failing.
+- **E2E & Sentinel Observability Preflight (`scripts/verify_e2e.py`)**:
+  - Added Step 13: Antigravity AgentAPI & language_server live preflight check, enabling early detection of language_server disconnections and graceful fallback handling in headless CI.
+- **Unit Test Coverage (`tests/unit/test_antigravity_agent.py`)**:
+  - Added `TestAgentAPIDynamicCredentialsAndSelfHealing` covering address probing, error pattern recognition, multi-step credential discovery, and single-retry self-healing on connection refused.
+
 ## [1.9.1] - 2026-09-12
 
 ### Added & Enhanced

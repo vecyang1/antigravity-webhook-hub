@@ -4,7 +4,12 @@ Provides multi-modal task ingestion, session-thread linking, follow-up (追问) 
 and Slack thread milestone notifications for Google Antigravity.
 """
 
-from hub.antigravity.agentapi_client import AgentAPIClient, resolve_agentapi_path
+from hub.antigravity.agentapi_client import (
+    AgentAPIClient,
+    discover_active_antigravity_credentials,
+    resolve_agentapi_path,
+    validate_antigravity_address,
+)
 from hub.antigravity.models import AntigravityTaskPayload, SessionThreadRecord, ThreadMilestone
 from hub.antigravity.prompt_builder import (
     build_antigravity_prompt,
@@ -22,7 +27,9 @@ __all__ = [
     "ThreadNotifier",
     "build_antigravity_prompt",
     "build_follow_up_prompt",
+    "discover_active_antigravity_credentials",
     "execute_antigravity_task",
     "extract_slash_commands",
     "resolve_agentapi_path",
+    "validate_antigravity_address",
 ]

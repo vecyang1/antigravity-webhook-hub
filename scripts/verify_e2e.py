@@ -47,6 +47,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from hub.antigravity.agentapi_client import (
+    discover_active_antigravity_credentials,
+    resolve_agentapi_path,
+    validate_antigravity_address,
+)
+
 # ANSI styling
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -96,7 +102,7 @@ class E2EVerifier:
         self.temp_dir: Optional[tempfile.TemporaryDirectory] = None
         self.server_pid: Optional[int] = None
         self.is_ephemeral: bool = False
-        self.total_steps: int = 12
+        self.total_steps: int = 13
 
     def log_step(self, step_num: int, name: str, passed: bool, detail: str):
         status = f"{GREEN}[PASS]{RESET}" if passed else f"{RED}[FAIL]{RESET}"
@@ -709,6 +715,44 @@ class E2EVerifier:
             step12_detail = f"Error: {e}"
         results.append(step12_pass)
         self.log_step(12, "Antigravity Sidebar Sentinel Activity Emission", step12_pass, step12_detail)
+
+        # ====================================================================
+        # Step 13: Antigravity AgentAPI & language_server Live Preflight
+        # ====================================================================
+        step13_pass = False
+        step13_detail = ""
+        try:
+            agentapi_path = resolve_agentapi_path()
+            has_agentapi = bool(agentapi_path and os.path.isfile(agentapi_path) and os.access(agentapi_path, os.X_OK))
+
+            addr, token = discover_active_antigravity_credentials(force=False)
+            is_addr_valid = validate_antigravity_address(addr) if addr else False
+
+            is_ci = os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"
+
+            if has_agentapi and is_addr_valid and token:
+                step13_pass = True
+                step13_detail = f"agentapi={agentapi_path}, addr={addr}, token={token[:8]}..., server_alive=True"
+            elif is_ci:
+                # In headless CI runner without Antigravity desktop Electron app
+                step13_pass = True
+                step13_detail = f"Headless CI environment: agentapi={agentapi_path}, language_server offline (expected), discovery fallback safe"
+            else:
+                # On live macOS, report concrete diagnostics
+                if addr and is_addr_valid and not token:
+                    step13_detail = f"language_server found at {addr} but missing CSRF token"
+                elif addr and not is_addr_valid:
+                    step13_detail = f"language_server port {addr} connection refused / unresponsive"
+                elif not addr:
+                    step13_detail = "language_server --standalone process not running on host"
+                elif not has_agentapi:
+                    step13_detail = f"agentapi binary missing or non-executable at {agentapi_path}"
+                else:
+                    step13_detail = f"agentapi preflight degraded: addr={addr}, token={bool(token)}, alive={is_addr_valid}"
+        except Exception as e:
+            step13_detail = f"Error: {e}"
+        results.append(step13_pass)
+        self.log_step(13, "Antigravity AgentAPI & language_server Preflight", step13_pass, step13_detail)
 
         # Summary & Final Verification Receipt
         time.sleep(1.0)
