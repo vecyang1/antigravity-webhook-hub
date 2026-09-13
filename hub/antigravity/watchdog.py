@@ -450,7 +450,7 @@ class AntigravityWatchdog:
 
                 if active_cd:
                     cooldown_until = float(active_cd.get("cooldown_until") or 0.0)
-                    if now < cooldown_until:
+                    if now < cooldown_until and not (now - file_mtime > 300 and prior_attempts == 0):
                         remaining = int(cooldown_until - now)
                         stalled.append(
                             StalledSessionInfo(
@@ -470,7 +470,7 @@ class AntigravityWatchdog:
                         )
                         continue
                     else:
-                        # Cooldown expired! Eligible for immediate automated pull-up
+                        # Cooldown expired or probe allowed! Eligible for immediate automated pull-up
                         stalled.append(
                             StalledSessionInfo(
                                 conversation_id=convo_id,
@@ -514,7 +514,35 @@ class AntigravityWatchdog:
 
                 if quota_detected:
                     wait_sec = quota_sec or 6853.0
-                    cooldown_until = now + wait_sec + 30.0
+                    if quota_ts:
+                        try:
+                            dt = datetime.fromisoformat(quota_ts.replace("Z", "+00:00"))
+                            cooldown_until = dt.timestamp()
+                        except Exception:
+                            cooldown_until = file_mtime + wait_sec + 30.0
+                    else:
+                        cooldown_until = file_mtime + wait_sec + 30.0
+
+                    # If cooldown has expired OR stalled for > 300s without prior live attempts, allow pull-up probe!
+                    if now >= cooldown_until or (now - file_mtime > 300 and prior_attempts == 0):
+                        stalled.append(
+                            StalledSessionInfo(
+                                conversation_id=convo_id,
+                                transcript_path=transcript_path,
+                                last_step_index=last_step_idx,
+                                last_error="quota_restored_pull_up",
+                                last_error_time=file_mtime,
+                                is_subagent=is_subagent,
+                                sidecar_slug=sidecar_slug,
+                                attempt_count=prior_attempts,
+                                can_resuscitate=True,
+                                skip_reason=None,
+                                is_quota_exhausted=False,
+                            )
+                        )
+                        continue
+
+                    remaining = max(0, int(cooldown_until - now))
                     if self.db:
                         self.db.record_resuscitation(
                             conversation_id=convo_id,
@@ -536,7 +564,7 @@ class AntigravityWatchdog:
                             sidecar_slug=sidecar_slug,
                             attempt_count=prior_attempts,
                             can_resuscitate=False,
-                            skip_reason=f"quota_cooldown (resets in {int(wait_sec)}s)",
+                            skip_reason=f"quota_cooldown (resets in {remaining}s)",
                             is_quota_exhausted=True,
                             quota_resets_in_seconds=wait_sec,
                             quota_reset_timestamp=quota_ts,

@@ -1556,13 +1556,15 @@ class DatabaseManager:
                 cur.execute(
                     """
                     SELECT * FROM antigravity_resuscitations
-                    WHERE conversation_id = ? AND status = 'quota_cooldown'
-                    ORDER BY resuscitated_at DESC LIMIT 1
+                    WHERE conversation_id = ?
+                    ORDER BY rowid DESC LIMIT 1
                     """,
                     (conversation_id,),
                 )
                 row = cur.fetchone()
-                return dict(row) if row else None
+                if row and row["status"] == "quota_cooldown":
+                    return dict(row)
+                return None
             finally:
                 cur.close()
 
@@ -1573,9 +1575,14 @@ class DatabaseManager:
             try:
                 cur.execute(
                     """
-                    SELECT * FROM antigravity_resuscitations
-                    WHERE status = 'quota_cooldown'
-                    ORDER BY cooldown_until ASC
+                    SELECT r1.* FROM antigravity_resuscitations r1
+                    JOIN (
+                        SELECT conversation_id, MAX(rowid) as max_rowid
+                        FROM antigravity_resuscitations
+                        GROUP BY conversation_id
+                    ) r2 ON r1.rowid = r2.max_rowid
+                    WHERE r1.status = 'quota_cooldown'
+                    ORDER BY r1.cooldown_until ASC
                     """
                 )
                 return [dict(row) for row in cur.fetchall()]
