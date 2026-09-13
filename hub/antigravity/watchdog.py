@@ -53,6 +53,10 @@ INTERRUPTED_STREAM_PATTERNS = (
     "client network socket disconnected",
     "tls handshake timeout",
     "temporary failure in name resolution",
+    "the stream was interrupted",
+    "stream was interrupted",
+    "stop hook blocked termination",
+    "blocked termination",
 )
 
 DEFAULT_RESUSCITATION_PROMPT = (
@@ -95,6 +99,16 @@ BOOST_DELEGATION_RESUSCITATION_PROMPT = (
     "3. 请直接通过 send_message 向子 Agent（{subagent_id}）发送指令唤醒并继续委派，或重新调用 invoke_subagent 继续推进原定协同任务（请全中文汇报进展）。"
 )
 
+BOOST_GOAL_RESUSCITATION_PROMPT = (
+    "【系统自动自愈拉起提醒：/boost 目标自治与协同推进延续】\n"
+    "检测到本会话正在执行 /boost、/goal 或多 Agent 协同任务，此前因偶发网络超时/流中断、工具报错或 Stop Hook 阻断暂留。\n"
+    "⚠️ 关键执行纪律（严禁降级 Solo 模式）：\n"
+    "1. 本会话处于高阶自治推进状态，严禁退化为单兵等待或打假卡，继续贯彻团队/委派协同推进。\n"
+    "2. 若遇到 ⚠️ MCP 报错或连接异常，切勿陷入重复重试死循环。根据《统一工具链与原生收敛规范》，请直接降级使用原生 CLI 命令行、系统脚本或标准 API 绕过 MCP 摩擦点。\n"
+    "3. 若遇到 Stop Hook 阻断，说明任务目标尚未完全闭环。请依据最新排查结果与项目规范，持续推进直至完全交付并产出真实闭环凭据。\n"
+    "请全中文汇报当前诊断与下一步执行计划，并立即继续执行。"
+)
+
 
 @dataclass(slots=True)
 class StalledSessionInfo:
@@ -117,6 +131,39 @@ class StalledSessionInfo:
     is_mcp_error: bool = False
     has_active_schedule: bool = False
     active_cron_expression: Optional[str] = None
+    is_boost_goal: bool = False
+    is_stop_hook_hang: bool = False
+
+
+def check_session_has_boost_or_goal(transcript_path: Path, parsed_steps: list[dict[str, Any]]) -> bool:
+    """
+    Determine whether a session is operating in /boost, /goal, /teamwork-preview,
+    or multi-agent delegation mode, even if it is a root conversation.
+    """
+    for s in parsed_steps:
+        cnt = str(s.get("content") or "").lower()
+        if any(k in cnt for k in ("/boost", "/goal", "/teamwork-preview", "delegated agents")):
+            return True
+        if "stop hook blocked termination" in cnt:
+            return True
+        for tc in s.get("tool_calls") or []:
+            tc_name = str(tc.get("name") or "").lower()
+            if tc_name in ("invoke_subagent", "define_subagent"):
+                return True
+
+    # Check first line (step 0 prompt) if loaded window didn't capture it
+    try:
+        with open(transcript_path, "r", encoding="utf-8", errors="ignore") as fp:
+            first_line = fp.readline()
+            if first_line:
+                first_data = json.loads(first_line)
+                first_content = str(first_data.get("content") or "").lower()
+                if any(k in first_content for k in ("/boost", "/goal", "/teamwork-preview", "delegated agents")):
+                    return True
+    except Exception:
+        pass
+
+    return False
 
 
 def parse_quota_reset_seconds(text: str) -> Optional[float]:

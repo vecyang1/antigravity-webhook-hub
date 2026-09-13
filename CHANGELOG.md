@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.0] - 2026-09-14
+
+### Added & Hardened
+- **Antigravity Quota Sentinel & Warmup Dashboard Production Hardening**:
+  - **Fixed Search Filter Countdown Desynchronization Bug**:
+    - Discovered that fleet countdown pill elements used array index `idx` from the filtered array (`clockFleetGemini_${idx}`), causing search filtering (e.g., searching for `singh`) to assign index 0, which `updateClockElements` then overwritten every second with the countdown from `all_accounts[0]` (`viinam33`).
+    - Fixed by keying countdown DOM elements on sanitized, stable account identifiers (`clockFleetGemini_${accKey}` and `clockFleet3p_${accKey}`), completely decoupling display updates from array indices.
+  - **Interactive Button Loading States & Double-Dispatch Prevention**:
+    - Fixed `onclick="refreshQuotaLive(this)"` and `onclick="triggerAllReadyWarmups(this)"` to pass the button element, disabling clicks and rendering loading spinners during asynchronous network roundtrips.
+  - **Dual Gemini & Claude/GPT Fleet Warmup Action Controls**:
+    - Expanded the Fleet Matrix Actions column from a single hardcoded Gemini warmup button to dual targeted buttons ("Gemini" and "Claude") with SVG icons and disabled states when a bucket is unavailable.
+  - **Eliminated Redundant Inactive Account 401 Latency**:
+    - Optimized `scan_accounts` in `AntigravityQuotaSentinel` to skip upstream PA queries for inactive accounts whose access tokens are expired (`token_expiry < time.time()`), preventing up to 10.5s of sequential HTTP 401 connection timeouts during live sync.
+  - **Real Browser Playwright E2E Test Suite**:
+    - Added `tests/e2e/test_quota_dashboard_e2e.py` testing live page navigation, SSOT telemetry box rendering, active IDE pool cards, search filtering isolation, live sync triggers, and verified 0 console errors on the real page.
+
 ## [1.14.0] - 2026-09-14
 
 ### Added & Hardened

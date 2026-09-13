@@ -313,13 +313,15 @@ class AntigravityQuotaSentinel:
 
             # If live querying is enabled, attempt live fetch (active account prioritized)
             if live and access_token and not disabled:
-                # Active account gets authoritative live query; others query if active or quick timeout
-                timeout_val = 3.5 if is_active else 1.5
-                live_b = self.fetch_live_quota(access_token, timeout=timeout_val)
-                if live_b:
-                    profile.buckets = live_b
-                    profile.live_fetched = True
-                    profile.last_updated = time.time()
+                # Active account gets authoritative query; inactive accounts skip if token expired to eliminate 401 latency
+                is_expired = bool(token_expiry and token_expiry < time.time())
+                if is_active or not is_expired:
+                    timeout_val = 3.5 if is_active else 1.5
+                    live_b = self.fetch_live_quota(access_token, timeout=timeout_val)
+                    if live_b:
+                        profile.buckets = live_b
+                        profile.live_fetched = True
+                        profile.last_updated = time.time()
 
             profiles.append(profile)
 

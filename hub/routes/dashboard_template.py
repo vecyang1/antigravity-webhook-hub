@@ -2337,11 +2337,11 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
               </div>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
-              <button class="btn btn-secondary" onclick="refreshQuotaLive()" title="Synchronize quotas live directly from Google Cloud Code PA API">
+              <button class="btn btn-secondary" onclick="refreshQuotaLive(this)" title="Synchronize quotas live directly from Google Cloud Code PA API">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
                 <span>Sync Live Quotas</span>
               </button>
-              <button class="btn btn-primary" onclick="triggerAllReadyWarmups()" title="Trigger token ping warmup for all pools at 100% with expired timer">
+              <button class="btn btn-primary" onclick="triggerAllReadyWarmups(this)" title="Trigger token ping warmup for all pools at 100% with expired timer">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
                 <span>Warmup All Idle Pools</span>
               </button>
@@ -4175,9 +4175,21 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       }}, delay);
     }}
 
-    async function refreshQuotaLive() {{
+    async function refreshQuotaLive(btnEl) {{
+      if (btnEl) {{
+        btnEl.disabled = true;
+        btnEl.dataset.originalHtml = btnEl.innerHTML;
+        btnEl.innerHTML = '<span class="loading-spinner"></span> Syncing...';
+      }}
       showToast('Synchronizing live quotas with Google Cloud Code PA API...', 'info');
-      await loadQuota(true);
+      try {{
+        await loadQuota(true);
+      }} finally {{
+        if (btnEl) {{
+          btnEl.disabled = false;
+          btnEl.innerHTML = btnEl.dataset.originalHtml || '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg> <span>Sync Live Quotas</span>';
+        }}
+      }}
     }}
 
     async function loadQuota(forceLive = false) {{
@@ -4271,14 +4283,15 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       // Fleet table clocks
       if (state.quotaOverview.all_accounts) {{
         state.quotaOverview.all_accounts.forEach((acc, idx) => {{
+          const accKey = (acc.account_id || acc.email || ('acc_' + idx)).replace(/[^a-zA-Z0-9_-]/g, '_');
           const g5 = acc.buckets && acc.buckets.find(b => b.bucket_id === 'gemini-5h');
           if (g5) {{
-            const el = document.getElementById(`clockFleetGemini_${{idx}}`);
+            const el = document.getElementById(`clockFleetGemini_${{accKey}}`);
             if (el) el.innerText = formatRemainingClock(g5.remaining_seconds);
           }}
           const c5 = acc.buckets && acc.buckets.find(b => b.bucket_id === '3p-5h');
           if (c5) {{
-            const el = document.getElementById(`clockFleet3p_${{idx}}`);
+            const el = document.getElementById(`clockFleet3p_${{accKey}}`);
             if (el) el.innerText = formatRemainingClock(c5.remaining_seconds);
           }}
         }});
@@ -4465,6 +4478,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           fleetTbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 32px;">No matching accounts found.</td></tr>';
         }} else {{
           fleetTbody.innerHTML = filtered.map((acc, idx) => {{
+            const accKey = (acc.account_id || acc.email || ('acc_' + idx)).replace(/[^a-zA-Z0-9_-]/g, '_');
             const g5 = (acc.buckets || []).find(b => b.bucket_id === 'gemini-5h');
             const c5 = (acc.buckets || []).find(b => b.bucket_id === '3p-5h');
 
@@ -4494,7 +4508,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
                   </div>
                 </td>
                 <td>
-                  <span class="countdown-pill" id="clockFleetGemini_${{idx}}">${{formatRemainingClock(g5Sec)}}</span>
+                  <span class="countdown-pill" id="clockFleetGemini_${{accKey}}">${{formatRemainingClock(g5Sec)}}</span>
                 </td>
                 <td>
                   <div style="display: flex; align-items: center; gap: 8px; min-width: 120px;">
@@ -4505,13 +4519,19 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
                   </div>
                 </td>
                 <td>
-                  <span class="countdown-pill" id="clockFleet3p_${{idx}}">${{formatRemainingClock(c5Sec)}}</span>
+                  <span class="countdown-pill" id="clockFleet3p_${{accKey}}">${{formatRemainingClock(c5Sec)}}</span>
                 </td>
                 <td>
-                  <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" title="Warmup Gemini 5h pool" onclick="triggerBucketWarmup('${{escapeJsString(acc.email)}}', 'gemini-5h', this)">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-                    <span>Warmup</span>
-                  </button>
+                  <div style="display: inline-flex; gap: 6px; align-items: center;">
+                    <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" title="Warmup Gemini 5h pool" onclick="triggerBucketWarmup('${{escapeJsString(acc.email)}}', 'gemini-5h', this)" ${{g5 ? '' : 'disabled'}}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                      <span>Gemini</span>
+                    </button>
+                    <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" title="Warmup Claude/GPT 5h pool" onclick="triggerBucketWarmup('${{escapeJsString(acc.email)}}', '3p-5h', this)" ${{c5 ? '' : 'disabled'}}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/></svg>
+                      <span>Claude</span>
+                    </button>
+                  </div>
                 </td>
               </tr>
             `;
@@ -4690,7 +4710,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         try {{
           const data = JSON.parse(e.data);
           const email = data.account_email || 'pool';
-          const model = data.model_used || '';
+          const model = data.model_name || data.model_used || '';
           showToast(`Autonomous warmup succeeded: ${{email}} (${{model}})`, 'info');
         }} catch (_) {{
           showToast('Autonomous quota warmup executed', 'info');
