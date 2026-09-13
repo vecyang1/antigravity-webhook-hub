@@ -330,10 +330,15 @@ class DatabaseManager:
                     expected_interval_seconds INTEGER NOT NULL DEFAULT 1800,
                     last_trigger_at REAL NOT NULL DEFAULT 0.0,
                     status TEXT NOT NULL DEFAULT 'active',
+                    ls_pid INTEGER NOT NULL DEFAULT 0,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 """
             )
+            try:
+                self._conn.execute("ALTER TABLE conversation_schedules ADD COLUMN ls_pid INTEGER NOT NULL DEFAULT 0;")
+            except Exception:
+                pass
             self._conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_conversation_schedules_status
@@ -1731,6 +1736,7 @@ class DatabaseManager:
         expected_interval_seconds: int = 1800,
         last_trigger_at: float = 0.0,
         status: str = "active",
+        ls_pid: int = 0,
     ) -> None:
         """Upsert an in-memory recurring cron schedule for an Antigravity conversation."""
         with self._lock:
@@ -1740,14 +1746,15 @@ class DatabaseManager:
                     """
                     INSERT INTO conversation_schedules (
                         conversation_id, cron_expression, prompt,
-                        expected_interval_seconds, last_trigger_at, status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        expected_interval_seconds, last_trigger_at, status, ls_pid, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         cron_expression = excluded.cron_expression,
                         prompt = excluded.prompt,
                         expected_interval_seconds = excluded.expected_interval_seconds,
-                        last_trigger_at = CASE WHEN excluded.last_trigger_at > 0 THEN excluded.last_trigger_at ELSE conversation_schedules.last_trigger_at END,
-                        status = excluded.status
+                        last_trigger_at = MAX(conversation_schedules.last_trigger_at, excluded.last_trigger_at),
+                        status = excluded.status,
+                        ls_pid = CASE WHEN excluded.ls_pid > 0 THEN excluded.ls_pid ELSE conversation_schedules.ls_pid END
                     """,
                     (
                         conversation_id,
@@ -1756,6 +1763,7 @@ class DatabaseManager:
                         expected_interval_seconds,
                         last_trigger_at,
                         status,
+                        ls_pid,
                     ),
                 )
                 self._commit_and_shrink()
@@ -1792,15 +1800,22 @@ class DatabaseManager:
         self,
         conversation_id: str,
         last_trigger_at: float,
+        ls_pid: Optional[int] = None,
     ) -> bool:
-        """Update last trigger timestamp for a conversation schedule."""
+        """Update last trigger timestamp and optional ls_pid for a conversation schedule."""
         with self._lock:
             cur = self._conn.cursor()
             try:
-                cur.execute(
-                    "UPDATE conversation_schedules SET last_trigger_at = ? WHERE conversation_id = ?",
-                    (last_trigger_at, conversation_id),
-                )
+                if ls_pid:
+                    cur.execute(
+                        "UPDATE conversation_schedules SET last_trigger_at = MAX(last_trigger_at, ?), ls_pid = ? WHERE conversation_id = ?",
+                        (last_trigger_at, ls_pid, conversation_id),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE conversation_schedules SET last_trigger_at = MAX(last_trigger_at, ?) WHERE conversation_id = ?",
+                        (last_trigger_at, conversation_id),
+                    )
                 self._commit_and_shrink()
                 return cur.rowcount > 0
             finally:

@@ -20,12 +20,15 @@ import pytest
 from hub.antigravity.agentapi_client import AgentAPIClient
 from hub.antigravity.watchdog import (
     BOOST_DELEGATION_RESUSCITATION_PROMPT,
+    BOOST_GOAL_RESUSCITATION_PROMPT,
     DEFAULT_RESUSCITATION_PROMPT,
+    EMPTY_RESPONSE_RESUSCITATION_PROMPT,
     MCP_ERROR_RESUSCITATION_PROMPT,
     QUOTA_RESUSCITATION_PROMPT,
     SCHEDULE_REMOUNT_PROMPT,
     AntigravityWatchdog,
     StalledSessionInfo,
+    check_session_has_boost_or_goal,
     detect_parent_conversation_id,
     extract_active_schedule_from_transcript,
     parse_cron_interval_seconds,
@@ -763,6 +766,360 @@ class TestAntigravityWatchdog:
         t_path = _create_fake_session(temp_dir, convo_id, steps)
         sched = extract_active_schedule_from_transcript(t_path)
         assert sched is None
+
+    def test_scan_detects_stop_hook_blocked_termination_and_empty_hang(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that a session blocked by stop hook followed by an empty planner response
+        is accurately detected as stop_hook_hang and marked for resuscitation.
+        """
+        convo_id = "test-stop-hook-hang-001"
+        steps = [
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": "/goal complete setup /boost if need",
+            },
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "I will conclude here.",
+                "tool_calls": [],
+            },
+            {
+                "step_index": 2,
+                "source": "SYSTEM",
+                "type": "GENERIC",
+                "status": "DONE",
+                "content": "Stop hook blocked termination: You are still working toward the user's goal. Continue executing.",
+            },
+            {
+                "step_index": 3,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "",
+                "tool_calls": [],
+            },
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=30.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=15)
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        item = stalled[0]
+        assert item.conversation_id == convo_id
+        assert item.is_stop_hook_hang is True
+        assert item.is_boost_goal is True
+        assert item.last_error == "stop_hook_hang"
+        assert item.can_resuscitate is True
+
+    def test_scan_detects_stop_hook_as_last_step_halt(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that if the last step in a session is a Stop Hook block and agent halts,
+        watchdog identifies it as stop_hook_hang after stall grace seconds.
+        """
+        convo_id = "test-stop-hook-last-step-002"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Run tests"},
+            {"step_index": 1, "source": "SYSTEM", "type": "GENERIC", "status": "DONE", "content": "Stop hook blocked termination: You are still working toward the user's goal."},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=30.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=15)
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        item = stalled[0]
+        assert item.conversation_id == convo_id
+        assert item.last_error == "stop_hook_hang"
+        assert item.is_stop_hook_hang is True
+        assert item.can_resuscitate is True
+
+    def test_resuscitate_boost_goal_session_dispatches_boost_goal_prompt(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that resuscitating a session with /boost or /goal dispatches BOOST_GOAL_RESUSCITATION_PROMPT
+        to prevent degrading into a solo uncoordinated state.
+        """
+        convo_id = "test-boost-goal-dispatch-003"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "/adspower-browser e2e tested /boost if need; /goal"},
+            {"step_index": 1, "source": "SYSTEM", "type": "GENERIC", "status": "DONE", "content": "Stop hook blocked termination: You are still working toward the user's goal."},
+            {"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "", "tool_calls": []},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=30.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=15)
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        item = stalled[0]
+        assert item.is_boost_goal is True
+
+        res = asyncio.run(watchdog.resuscitate_session(item))
+        assert res["success"] is True
+        mock_agentapi.send_message.assert_awaited_once()
+        sent_content = mock_agentapi.send_message.await_args.kwargs["content"]
+        assert sent_content == BOOST_GOAL_RESUSCITATION_PROMPT
+        assert sent_content != EMPTY_RESPONSE_RESUSCITATION_PROMPT
+        assert "严禁降级 Solo 模式" in sent_content
+        assert "统一工具链与原生收敛规范" in sent_content
+
+    def test_mcp_error_detected_across_wide_window_with_stop_hook_loop(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that if an MCP tool error happened earlier in context followed by stop hook blocks,
+        the widened 15-step detection window correctly tags it as stop_hook_mcp_hang.
+        """
+        convo_id = "test-mcp-stop-hook-loop-004"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Automate browser"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "Opening browser",
+                "tool_calls": [{"name": "mcp_browser_action", "args": {}}],
+            },
+            {"step_index": 2, "source": "SYSTEM", "type": "GENERIC", "status": "DONE", "content": "⚠️ MCP Error: Browser disconnected"},
+            {"step_index": 3, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Trying to exit"},
+            {"step_index": 4, "source": "SYSTEM", "type": "GENERIC", "status": "DONE", "content": "Stop hook blocked termination: You are still working toward the user's goal."},
+            {"step_index": 5, "source": "SYSTEM", "type": "ERROR_MESSAGE", "status": "ERROR", "content": "The stream was interrupted."},
+            {"step_index": 6, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "", "tool_calls": []},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=30.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=15)
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        item = stalled[0]
+        assert item.is_mcp_error is True
+        assert item.is_stop_hook_hang is True
+        assert item.last_error == "stop_hook_mcp_hang"
+        assert item.can_resuscitate is True
+
+    def test_interrupted_stream_patterns_matches_the_stream_was_interrupted(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that 'Error: The stream was interrupted' is matched by INTERRUPTED_STREAM_PATTERNS.
+        """
+        convo_id = "test-stream-interrupted-005"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Process data"},
+            {"step_index": 1, "source": "SYSTEM", "type": "ERROR_MESSAGE", "status": "ERROR", "content": "Error: The stream was interrupted"},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=30.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=15)
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        assert stalled[0].last_error == "the stream was interrupted"
+        assert stalled[0].can_resuscitate is True
+
+    def test_resuscitate_failure_records_error_details_in_db(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that when agentapi send_message fails, the error_details string is correctly
+        persisted into the SQLite resuscitation record for auditing.
+        """
+        convo_id = "test-resuscitate-failure-audit-006"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Execute task"},
+            {"step_index": 1, "source": "SYSTEM", "type": "ERROR_MESSAGE", "status": "ERROR", "content": "network error"},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=30.0)
+
+        mock_agentapi.send_message = AsyncMock(
+            return_value=(False, None, "Connection refused: language server offline")
+        )
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=15)
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+
+        res = asyncio.run(watchdog.resuscitate_session(stalled[0]))
+        assert res["success"] is False
+
+        records = db.list_resuscitations(conversation_id=convo_id)
+        assert len(records) == 1
+        assert records[0]["status"] == "failed"
+        assert records[0]["error_details"] == "Connection refused: language server offline"
+
+    def test_schedule_mount_sets_baseline_and_prevents_spurious_pullup(self, db, mock_agentapi, temp_dir):
+        """
+        Verify Bug Fix: When a schedule is mounted (e.g. 5 minutes ago),
+        an old trigger from > 40 minutes ago does NOT cause a spurious pull-up
+        because baseline_time considers max(last_trigger_time, last_schedule_time).
+        """
+        from datetime import datetime, timezone
+        convo_id = "test-schedule-baseline-no-spurious-pullup"
+        now = time.time()
+        # Old trigger was 45 minutes ago (longer than 37.5m timeout for 30m cron)
+        old_trig_time = now - 2700.0
+        old_trig_iso = datetime.fromtimestamp(old_trig_time, tz=timezone.utc).isoformat()
+        # Schedule was mounted 5 minutes ago (300s)
+        sched_time = now - 300.0
+        sched_iso = datetime.fromtimestamp(sched_time, tz=timezone.utc).isoformat()
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Schedule check"},
+            {"step_index": 1, "source": "SYSTEM", "type": "CRON_TRIGGER", "status": "DONE", "content": "巡检汇报", "created_at": old_trig_iso},
+            {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": sched_iso,
+                "tool_calls": [{"name": "schedule", "args": {"CronExpression": "*/30 * * * *", "Prompt": "Check email"}}],
+            },
+            {
+                "step_index": 3,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": sched_iso,
+                "content": "### 巡检与后台守护重新挂载汇报\n已重新挂载定时任务 task-1212",
+                "tool_calls": [],
+            },
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=300.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=15)
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        # MUST NOT be flagged as stalled because the schedule was mounted only 5m ago!
+        assert len(stalled) == 0
+
+    def test_schedule_ls_pid_persistence_resilient_to_interim_status_checks(self, db, mock_agentapi, temp_dir):
+        """
+        Verify Bug Fix: When language_server restarts (PID 1000 -> 2000),
+        an interim read-only get_status() or /antigravity/status query does NOT
+        swallow the restart event. The schedule's ls_pid in DB ensures background
+        resuscitation still recognizes and pulls up the session.
+        """
+        convo_id = "test-ls-pid-persistence"
+        now = time.time()
+        # Schedule was mounted in language_server PID 1000
+        db.save_conversation_schedule(
+            conversation_id=convo_id,
+            cron_expression="*/30 * * * *",
+            prompt="Check email",
+            expected_interval_seconds=1800,
+            last_trigger_at=now - 100.0,
+            ls_pid=1000,
+        )
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Schedule check"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "Running schedule",
+                "tool_calls": [],
+            },
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=100.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.last_known_ls_pid = 1000
+        db.set_metadata("last_known_ls_pid", "1000")
+
+        # language_server restarted with PID 2000
+        mock_agentapi.get_language_server_pid.return_value = 2000
+
+        # 1. External read-only status query happens first
+        status = watchdog.get_status()
+        assert status["stalled_sessions_detected"] == 1
+        assert watchdog.last_known_ls_pid == 2000
+
+        # 2. Background worker runs afterwards
+        # Even though last_known_ls_pid is now 2000 (pid_changed would be False),
+        # the schedule's ls_pid in DB is still 1000 != 2000!
+        res = asyncio.run(watchdog.resuscitate_stalled_sessions())
+        assert len(res) == 1
+        assert res[0]["success"] is True
+        assert res[0]["conversation_id"] == convo_id
+
+        # 3. Verify schedule in DB now has ls_pid updated to 2000
+        sched = db.get_conversation_schedule(convo_id)
+        assert sched["ls_pid"] == 2000
+
+        # 4. Subsequent tick does NOT repeat resuscitation
+        res2 = asyncio.run(watchdog.resuscitate_stalled_sessions())
+        assert len(res2) == 0
+
+    def test_save_conversation_schedule_monotonic_timestamp(self, db):
+        """Verify DB timestamps never roll backward upon repeated upserts."""
+        convo_id = "test-monotonic-ts"
+        db.save_conversation_schedule(
+            conversation_id=convo_id,
+            cron_expression="*/30 * * * *",
+            prompt="Test",
+            last_trigger_at=1000.0,
+        )
+        s1 = db.get_conversation_schedule(convo_id)
+        assert s1["last_trigger_at"] == 1000.0
+
+        # Attempt to overwrite with older timestamp (500.0)
+        db.save_conversation_schedule(
+            conversation_id=convo_id,
+            cron_expression="*/30 * * * *",
+            prompt="Test",
+            last_trigger_at=500.0,
+        )
+        s2 = db.get_conversation_schedule(convo_id)
+        # MUST remain 1000.0!
+        assert s2["last_trigger_at"] == 1000.0
+
+    def test_stop_hook_halt_with_text_without_goal_complete_is_detected(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that if the model was blocked by Stop Hook, then outputs explanatory text
+        without tool calls and without <!-- GOAL_COMPLETE -->, it is NOT falsely treated
+        as a clean completion at line 898; it must be flagged as stop_hook_hang and pulled up.
+        """
+        convo_id = "test-stop-hook-text-halt-007"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Set up payment gateway /goal"},
+            {"step_index": 1, "source": "SYSTEM", "type": "GENERIC", "status": "DONE", "content": "Stop hook blocked termination: You are still working toward the user's goal."},
+            {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "I am unable to proceed because of network connection issues.",
+                "tool_calls": [],
+            },
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=30.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=15)
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        item = stalled[0]
+        assert item.conversation_id == convo_id
+        assert item.is_stop_hook_hang is True
+        assert item.last_error == "stop_hook_hang"
+        assert item.can_resuscitate is True
+
+
+
 
 
 

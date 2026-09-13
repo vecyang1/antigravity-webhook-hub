@@ -757,6 +757,8 @@ class AntigravityQuotaSentinel:
         """
         profiles = self.scan_accounts(live=live)
         active_profile = next((p for p in profiles if p.is_active), None)
+        if not active_profile and profiles:
+            active_profile = next((p for p in profiles if not (p.disabled or p.proxy_disabled)), profiles[0])
         if not active_profile:
             return False, None, {"reason": "no_active_profile"}
         if active_profile.disabled or active_profile.proxy_disabled:

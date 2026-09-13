@@ -109,6 +109,12 @@ BOOST_GOAL_RESUSCITATION_PROMPT = (
     "请全中文汇报当前诊断与下一步执行计划，并立即继续执行。"
 )
 
+TOOL_RESULT_RESUSCITATION_PROMPT = (
+    "【系统自动工具响应自愈拉起】\n"
+    "检测到上一步工具已执行完成并返回结果，但底层模型推理中断未触发后续回复生成。\n"
+    "请越过偶发中断，根据上一步工具返回的结果以及原定任务计划，直接继续推进下一步（请全中文汇报进展）。"
+)
+
 
 @dataclass(slots=True)
 class StalledSessionInfo:
@@ -489,7 +495,14 @@ class AntigravityWatchdog:
         When PID changes, in-memory Node.js timers and schedules are wiped.
         Returns (pid_changed, current_pid, old_pid).
         """
-        current_pid = self.agentapi.get_language_server_pid() if hasattr(self.agentapi, "get_language_server_pid") else None
+        raw_pid = self.agentapi.get_language_server_pid() if hasattr(self.agentapi, "get_language_server_pid") else None
+        current_pid: Optional[int] = None
+        if raw_pid is not None:
+            try:
+                current_pid = int(raw_pid)
+            except (ValueError, TypeError):
+                current_pid = None
+
         if not current_pid:
             return False, None, self.last_known_ls_pid
 
@@ -910,23 +923,32 @@ class AntigravityWatchdog:
                         }
 
                     if sched_info:
+                        existing_s = active_sched_map.get(convo_id, {})
+                        db_last_trig = existing_s.get("last_trigger_at", 0.0)
+                        last_sched = sched_info.get("last_schedule_time", 0.0)
+                        last_trig = sched_info.get("last_trigger_time", 0.0)
+                        baseline_time = max(last_trig, last_sched, db_last_trig)
+                        if baseline_time == 0.0:
+                            baseline_time = file_mtime
+
+                        sched_ls_pid = existing_s.get("ls_pid", 0)
                         if self.db:
                             self.db.save_conversation_schedule(
                                 conversation_id=convo_id,
                                 cron_expression=sched_info["cron"],
                                 prompt=sched_info["prompt"],
                                 expected_interval_seconds=sched_info["interval_seconds"],
-                                last_trigger_at=sched_info["last_trigger_time"],
+                                last_trigger_at=baseline_time,
+                                ls_pid=sched_ls_pid or (current_ls_pid or 0),
                             )
                         interval = sched_info["interval_seconds"]
-                        last_trig = sched_info["last_trigger_time"]
-                        lost_due_to_pid = pid_changed
-                        lost_due_to_timeout = last_trig > 0 and (now - last_trig > interval * 1.25) and (now - file_mtime > 300)
+                        lost_due_to_pid = pid_changed or (bool(current_ls_pid and sched_ls_pid and current_ls_pid != sched_ls_pid))
+                        lost_due_to_timeout = baseline_time > 0 and (now - baseline_time > interval * 1.25) and (now - file_mtime > 300)
 
                         if lost_due_to_pid or lost_due_to_timeout:
                             _resolve_subagent_and_parent()
                             error_reason = (
-                                f"lost_schedule_after_restart (language_server restarted: PID {old_ls_pid} -> {current_ls_pid}, cron: {sched_info['cron']})"
+                                f"lost_schedule_after_restart (language_server restarted: PID {old_ls_pid or sched_ls_pid} -> {current_ls_pid}, cron: {sched_info['cron']})"
                                 if lost_due_to_pid
                                 else f"lost_schedule_after_restart (cron: {sched_info['cron']})"
                             )
@@ -946,7 +968,13 @@ class AntigravityWatchdog:
                                     active_cron_expression=sched_info["cron"],
                                 )
                             )
-                    continue
+                    if not sched_info:
+                        # If session was blocked by Stop Hook and ended without completing the goal,
+                        # do not treat it as a clean completion; fall through to stall detection.
+                        if any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps) and not any("<!-- goal_complete -->" in str(s.get("content") or "").lower() for s in parsed_steps):
+                            pass
+                        else:
+                            continue
 
                 # If the last step is an active user input or running tool, it's not stalled.
                 if last_status == "RUNNING" or (last_source in ("USER_EXPLICIT", "USER") and now - file_mtime < self.config.stall_grace_seconds):
@@ -958,6 +986,8 @@ class AntigravityWatchdog:
 
                 is_boost_goal = check_session_has_boost_or_goal(transcript_path, parsed_steps)
                 has_stop_hook = any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps)
+                has_goal_complete = any("<!-- goal_complete -->" in str(s.get("content") or "").lower() for s in parsed_steps)
+                is_stop_hook_halt = has_stop_hook and not has_goal_complete and not last_step.get("tool_calls")
 
                 # Widen MCP error detection across all loaded parsed steps (up to 15 steps)
                 for s in reversed(parsed_steps):
@@ -974,8 +1004,8 @@ class AntigravityWatchdog:
                         is_mcp = True
                         break
 
-                # 1. Check if the conversation ended in an empty planner response hang
-                if len(parsed_steps) >= 2 and last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and not last_content and not last_step.get("tool_calls"):
+                # 1. Check if the conversation ended in an empty planner response hang or halted after Stop Hook
+                if len(parsed_steps) >= 2 and last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and (not last_content or is_stop_hook_halt) and not last_step.get("tool_calls"):
                     if now - file_mtime > self.config.stall_grace_seconds:
                         is_stalled = True
                         if has_stop_hook:
@@ -1197,7 +1227,7 @@ class AntigravityWatchdog:
                 new_st = "schedule_remounted" if session_info.has_active_schedule else "resuscitated"
                 self.db.update_resuscitation_status(res_id, new_st)
                 if session_info.has_active_schedule and self.db:
-                    self.db.update_conversation_schedule_trigger(convo_id, time.time())
+                    self.db.update_conversation_schedule_trigger(convo_id, time.time(), ls_pid=self.last_known_ls_pid)
                 logger.info("Successfully resuscitated session %s via target %s (res_id=%s, status=%s)", convo_id, target_convo_id, res_id, new_st)
                 if self.broker:
                     try:
@@ -1289,7 +1319,7 @@ class AntigravityWatchdog:
 
         except Exception as e:
             logger.exception("Unexpected exception resuscitating session %s via target %s: %s", convo_id, target_convo_id, e)
-            self.db.update_resuscitation_status(res_id, "failed")
+            self.db.update_resuscitation_status(res_id, "failed", error_details=str(e)[:500])
             if self.broker:
                 try:
                     await self.broker.publish("events", {
@@ -1363,6 +1393,7 @@ class AntigravityWatchdog:
                 results.append(res)
                 if item.is_subagent and item.parent_conversation_id and res.get("success"):
                     awakened_parents.add(item.parent_conversation_id)
+                await asyncio.sleep(0.25)
 
         return results
 
