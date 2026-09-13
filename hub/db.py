@@ -287,6 +287,7 @@ class DatabaseManager:
             )
 
             # 6. Antigravity Resuscitations Table (Auto Pull-Up & Network Self-Healing SSOT)
+            # 6. Antigravity Resuscitations Table (Auto Pull-Up & Network Self-Healing SSOT)
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS antigravity_resuscitations (
@@ -298,8 +299,10 @@ class DatabaseManager:
                     status TEXT NOT NULL DEFAULT 'resuscitated',
                     resuscitation_prompt TEXT,
                     last_step_index INTEGER DEFAULT 0,
+                    cooldown_until REAL,
+                    error_details TEXT,
                     resuscitated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    CONSTRAINT chk_resuscitation_status CHECK(status IN ('attempting', 'resuscitated', 'failed', 'exhausted', 'resolved'))
+                    CONSTRAINT chk_resuscitation_status CHECK(status IN ('attempting', 'resuscitated', 'failed', 'exhausted', 'resolved', 'quota_cooldown', 'schedule_remounted'))
                 );
                 """
             )
@@ -316,11 +319,79 @@ class DatabaseManager:
                 """
             )
 
+            # 7. Conversation Schedules Table (In-Memory Cron Monitor & Auto-Remount)
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_schedules (
+                    conversation_id TEXT PRIMARY KEY,
+                    cron_expression TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    expected_interval_seconds INTEGER NOT NULL DEFAULT 1800,
+                    last_trigger_at REAL NOT NULL DEFAULT 0.0,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_conversation_schedules_status
+                    ON conversation_schedules (status);
+                """
+            )
+
+            self._migrate_schema()
+
             self._conn.commit()
             try:
                 self._conn.execute("PRAGMA shrink_memory;")
             except Exception:
                 pass
+
+    def _migrate_schema(self) -> None:
+        """Apply non-destructive schema migrations for existing databases."""
+        try:
+            cur = self._conn.cursor()
+            # Check if antigravity_resuscitations needs constraint expansion or column addition
+            cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='antigravity_resuscitations'")
+            row = cur.fetchone()
+            if row and ("quota_cooldown" not in row[0] or "cooldown_until" not in row[0]):
+                self._conn.execute("PRAGMA foreign_keys = OFF;")
+                self._conn.execute(
+                    """
+                    CREATE TABLE antigravity_resuscitations_migrated (
+                        resuscitation_id TEXT PRIMARY KEY,
+                        conversation_id TEXT NOT NULL,
+                        sidecar_slug TEXT,
+                        last_error TEXT,
+                        attempt_count INTEGER NOT NULL DEFAULT 1,
+                        status TEXT NOT NULL DEFAULT 'resuscitated',
+                        resuscitation_prompt TEXT,
+                        last_step_index INTEGER DEFAULT 0,
+                        cooldown_until REAL,
+                        error_details TEXT,
+                        resuscitated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        CONSTRAINT chk_resuscitation_status CHECK(status IN ('attempting', 'resuscitated', 'failed', 'exhausted', 'resolved', 'quota_cooldown', 'schedule_remounted'))
+                    );
+                    """
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO antigravity_resuscitations_migrated (
+                        resuscitation_id, conversation_id, sidecar_slug, last_error,
+                        attempt_count, status, resuscitation_prompt, last_step_index, resuscitated_at
+                    ) SELECT resuscitation_id, conversation_id, sidecar_slug, last_error,
+                             attempt_count, status, resuscitation_prompt, last_step_index, resuscitated_at
+                      FROM antigravity_resuscitations;
+                    """
+                )
+                self._conn.execute("DROP TABLE antigravity_resuscitations;")
+                self._conn.execute("ALTER TABLE antigravity_resuscitations_migrated RENAME TO antigravity_resuscitations;")
+                self._conn.execute("CREATE INDEX IF NOT EXISTS idx_antigravity_resuscitations_convo ON antigravity_resuscitations (conversation_id, resuscitated_at DESC);")
+                self._conn.execute("CREATE INDEX IF NOT EXISTS idx_antigravity_resuscitations_status ON antigravity_resuscitations (status);")
+                self._conn.execute("PRAGMA foreign_keys = ON;")
+        except Exception as e:
+            logger.debug("Schema migration notice: %s", e)
 
     def close(self) -> None:
         """Cleanly close SQLite connection."""
@@ -1403,26 +1474,33 @@ class DatabaseManager:
         resuscitation_prompt: Optional[str] = None,
         last_step_index: int = 0,
         status: str = "resuscitated",
+        cooldown_until: Optional[float] = None,
+        error_details: Optional[str] = None,
     ) -> dict[str, Any]:
         """Record an autonomous pull-up resuscitation attempt for an Antigravity conversation."""
         with self._lock:
             cur = self._conn.cursor()
             try:
-                # Count prior attempts for this conversation
+                # Count prior attempts for this conversation (excluding quota cooldowns)
                 cur.execute(
-                    "SELECT COUNT(*) FROM antigravity_resuscitations WHERE conversation_id = ?",
+                    "SELECT COUNT(*) FROM antigravity_resuscitations WHERE conversation_id = ? AND status NOT IN ('quota_cooldown', 'schedule_remounted')",
                     (conversation_id,),
                 )
                 prior_count = cur.fetchone()[0]
-                attempt_count = prior_count + 1
+                # Quota cooldown and schedule remount do not consume failure retry attempts
+                if status in ("quota_cooldown", "schedule_remounted"):
+                    attempt_count = prior_count
+                else:
+                    attempt_count = prior_count + 1
 
                 resuscitation_id = f"res_{uuid.uuid4().hex[:12]}"
                 cur.execute(
                     """
                     INSERT INTO antigravity_resuscitations (
                         resuscitation_id, conversation_id, sidecar_slug, last_error,
-                        attempt_count, status, resuscitation_prompt, last_step_index, resuscitated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        attempt_count, status, resuscitation_prompt, last_step_index,
+                        cooldown_until, error_details, resuscitated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     """,
                     (
                         resuscitation_id,
@@ -1433,6 +1511,8 @@ class DatabaseManager:
                         status,
                         resuscitation_prompt,
                         last_step_index,
+                        cooldown_until,
+                        error_details,
                     ),
                 )
                 self._commit_and_shrink()
@@ -1445,6 +1525,8 @@ class DatabaseManager:
                     "status": status,
                     "resuscitation_prompt": resuscitation_prompt,
                     "last_step_index": last_step_index,
+                    "cooldown_until": cooldown_until,
+                    "error_details": error_details,
                 }
             except Exception as e:
                 logger.error("Failed to record resuscitation for %s: %s", conversation_id, e)
@@ -1453,16 +1535,133 @@ class DatabaseManager:
                 cur.close()
 
     def get_resuscitation_attempts(self, conversation_id: str) -> int:
-        """Count how many times this conversation has already been resuscitated."""
+        """Count how many times this conversation has already been resuscitated (excluding quota_cooldown)."""
         with self._lock:
             cur = self._conn.cursor()
             try:
                 cur.execute(
-                    "SELECT COUNT(*) FROM antigravity_resuscitations WHERE conversation_id = ?",
+                    "SELECT COUNT(*) FROM antigravity_resuscitations WHERE conversation_id = ? AND status NOT IN ('quota_cooldown', 'schedule_remounted')",
                     (conversation_id,),
                 )
                 row = cur.fetchone()
                 return int(row[0]) if row else 0
+            finally:
+                cur.close()
+
+    def get_active_quota_cooldown(self, conversation_id: str) -> Optional[dict[str, Any]]:
+        """Check if a conversation currently has an active quota cooldown."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT * FROM antigravity_resuscitations
+                    WHERE conversation_id = ? AND status = 'quota_cooldown'
+                    ORDER BY resuscitated_at DESC LIMIT 1
+                    """,
+                    (conversation_id,),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else None
+            finally:
+                cur.close()
+
+    def list_quota_cooldowns(self) -> list[dict[str, Any]]:
+        """List all sessions currently in quota cooldown."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT * FROM antigravity_resuscitations
+                    WHERE status = 'quota_cooldown'
+                    ORDER BY cooldown_until ASC
+                    """
+                )
+                return [dict(row) for row in cur.fetchall()]
+            finally:
+                cur.close()
+
+    def save_conversation_schedule(
+        self,
+        conversation_id: str,
+        cron_expression: str,
+        prompt: str,
+        expected_interval_seconds: int = 1800,
+        last_trigger_at: float = 0.0,
+        status: str = "active",
+    ) -> None:
+        """Upsert an in-memory recurring cron schedule for an Antigravity conversation."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO conversation_schedules (
+                        conversation_id, cron_expression, prompt,
+                        expected_interval_seconds, last_trigger_at, status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(conversation_id) DO UPDATE SET
+                        cron_expression = excluded.cron_expression,
+                        prompt = excluded.prompt,
+                        expected_interval_seconds = excluded.expected_interval_seconds,
+                        last_trigger_at = CASE WHEN excluded.last_trigger_at > 0 THEN excluded.last_trigger_at ELSE conversation_schedules.last_trigger_at END,
+                        status = excluded.status
+                    """,
+                    (
+                        conversation_id,
+                        cron_expression,
+                        prompt,
+                        expected_interval_seconds,
+                        last_trigger_at,
+                        status,
+                    ),
+                )
+                self._commit_and_shrink()
+            finally:
+                cur.close()
+
+    def get_conversation_schedule(self, conversation_id: str) -> Optional[dict[str, Any]]:
+        """Retrieve registered schedule for a conversation."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT * FROM conversation_schedules WHERE conversation_id = ?",
+                    (conversation_id,),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else None
+            finally:
+                cur.close()
+
+    def list_active_conversation_schedules(self) -> list[dict[str, Any]]:
+        """List all active conversation schedules monitored for restart heartbeats."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT * FROM conversation_schedules WHERE status = 'active' ORDER BY last_trigger_at DESC"
+                )
+                return [dict(row) for row in cur.fetchall()]
+            finally:
+                cur.close()
+
+    def update_conversation_schedule_trigger(
+        self,
+        conversation_id: str,
+        last_trigger_at: float,
+    ) -> bool:
+        """Update last trigger timestamp for a conversation schedule."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    "UPDATE conversation_schedules SET last_trigger_at = ? WHERE conversation_id = ?",
+                    (last_trigger_at, conversation_id),
+                )
+                self._commit_and_shrink()
+                return cur.rowcount > 0
             finally:
                 cur.close()
 
@@ -1494,15 +1693,33 @@ class DatabaseManager:
             finally:
                 cur.close()
 
-    def update_resuscitation_status(self, resuscitation_id: str, status: str) -> bool:
-        """Update status of a resuscitation attempt (e.g. resuscitated -> resolved / failed / exhausted)."""
+    def update_resuscitation_status(
+        self,
+        resuscitation_id: str,
+        status: str,
+        cooldown_until: Optional[float] = None,
+        error_details: Optional[str] = None,
+    ) -> bool:
+        """Update status of a resuscitation attempt (e.g. resuscitated -> resolved / failed / exhausted / quota_cooldown)."""
         with self._lock:
             cur = self._conn.cursor()
             try:
-                cur.execute(
-                    "UPDATE antigravity_resuscitations SET status = ? WHERE resuscitation_id = ?",
-                    (status, resuscitation_id),
-                )
+                if cooldown_until is not None or error_details is not None:
+                    cur.execute(
+                        """
+                        UPDATE antigravity_resuscitations
+                        SET status = ?,
+                            cooldown_until = COALESCE(?, cooldown_until),
+                            error_details = COALESCE(?, error_details)
+                        WHERE resuscitation_id = ?
+                        """,
+                        (status, cooldown_until, error_details, resuscitation_id),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE antigravity_resuscitations SET status = ? WHERE resuscitation_id = ?",
+                        (status, resuscitation_id),
+                    )
                 self._commit_and_shrink()
                 return cur.rowcount > 0
             except Exception as e:
@@ -1527,11 +1744,14 @@ class DatabaseManager:
                     "exhausted": 0,
                     "attempting": 0,
                     "resolved": 0,
+                    "quota_cooldown": 0,
+                    "schedule_remounted": 0,
                 }
                 for row in rows:
                     st = row[0]
                     cnt = int(row[1])
-                    stats[st] = cnt
+                    if st in stats:
+                        stats[st] = cnt
                     stats["total"] += cnt
                 return stats
             except Exception as e:
@@ -1543,6 +1763,8 @@ class DatabaseManager:
                     "exhausted": 0,
                     "attempting": 0,
                     "resolved": 0,
+                    "quota_cooldown": 0,
+                    "schedule_remounted": 0,
                 }
             finally:
                 cur.close()

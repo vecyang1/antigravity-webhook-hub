@@ -1937,6 +1937,26 @@ def cmd_antigravity(args: Any) -> int:
                 print(f"     中断原因: {s['last_error']}")
                 print(f"     状态判断: {status_tag} (历史尝试: {s['attempt_count']} 次)")
 
+        cooldowns = status_info.get("quota_cooldown_sessions") or []
+        if cooldowns:
+            print("-" * 65)
+            print(f"⏳ 配额冷却状态会话 (共 {len(cooldowns)} 个处于冷静期):")
+            for idx, c in enumerate(cooldowns, 1):
+                cd_until = float(c.get("cooldown_until") or 0.0)
+                rem = max(0, int(cd_until - time.time()))
+                print(f"  {idx}. 会话: {c.get('conversation_id')} (剩余等待: {rem}s)")
+                print(f"     详情: {c.get('error_details') or c.get('last_error')}")
+
+        schedules = status_info.get("active_conversation_schedules") or []
+        if schedules:
+            print("-" * 65)
+            print(f"⏰ 会话后台定时巡检哨兵 (共监控 {len(schedules)} 个会话内定时器):")
+            for idx, sc in enumerate(schedules, 1):
+                last_trig = float(sc.get("last_trigger_at") or 0.0)
+                last_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_trig)) if last_trig > 0 else "尚未触发"
+                print(f"  {idx}. 会话: {sc.get('conversation_id')} [Cron: {sc.get('cron_expression')}]")
+                print(f"     预期周期: {sc.get('expected_interval_seconds')}s | 最近触发: {last_str}")
+
         recent = status_info["recent_resuscitations"]
         print("-" * 65)
         print(f"📜 最近自愈恢复记录 (最近 {len(recent)} 条):")
@@ -1945,7 +1965,12 @@ def cmd_antigravity(args: Any) -> int:
         else:
             for r in recent:
                 st = r.get("status", "unknown")
-                st_icon = "✅" if st == "resuscitated" else ("⏳" if st == "attempting" else "❌")
+                if st in ("resuscitated", "schedule_remounted"):
+                    st_icon = "✅"
+                elif st in ("attempting", "quota_cooldown"):
+                    st_icon = "⏳"
+                else:
+                    st_icon = "❌"
                 print(f"  • {r.get('resuscitated_at')} [{st_icon} {st}] 会话: {r.get('conversation_id')} (第 {r.get('attempt_count')} 次)")
                 if r.get("last_error"):
                     print(f"    错误原因: {r.get('last_error')}")

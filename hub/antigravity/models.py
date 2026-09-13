@@ -159,3 +159,62 @@ class SessionThreadRecord:
             last_active_at=d.get("last_active_at", ""),
             created_at=d.get("created_at", ""),
         )
+
+
+@dataclass(slots=True)
+class QuotaCooldownInfo:
+    """Metadata tracking quota exhaustion and reset cooldown."""
+
+    conversation_id: str
+    resets_in_seconds: float
+    reset_timestamp: Optional[str] = None
+    reason: str = "QUOTA_EXHAUSTED"
+    error_id: Optional[str] = None
+    cooldown_until: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "conversation_id": self.conversation_id,
+            "resets_in_seconds": self.resets_in_seconds,
+            "reset_timestamp": self.reset_timestamp,
+            "reason": self.reason,
+            "error_id": self.error_id,
+            "cooldown_until": self.cooldown_until,
+        }
+
+
+@dataclass(slots=True)
+class ConversationScheduleRecord:
+    """Database record tracking in-memory recurring cron timers within an Antigravity conversation."""
+
+    conversation_id: str
+    cron_expression: str
+    prompt: str
+    expected_interval_seconds: int
+    last_trigger_at: float
+    status: str = "active"
+    created_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "conversation_id": self.conversation_id,
+            "cron_expression": self.cron_expression,
+            "prompt": self.prompt,
+            "expected_interval_seconds": self.expected_interval_seconds,
+            "last_trigger_at": self.last_trigger_at,
+            "status": self.status,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_row(cls, row: Any) -> ConversationScheduleRecord:
+        d = dict(row)
+        return cls(
+            conversation_id=d["conversation_id"],
+            cron_expression=d["cron_expression"],
+            prompt=d.get("prompt", ""),
+            expected_interval_seconds=int(d.get("expected_interval_seconds", 1800)),
+            last_trigger_at=float(d.get("last_trigger_at", 0.0)),
+            status=d.get("status", "active"),
+            created_at=d.get("created_at", ""),
+        )

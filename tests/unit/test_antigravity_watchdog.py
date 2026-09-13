@@ -20,8 +20,13 @@ import pytest
 from hub.antigravity.agentapi_client import AgentAPIClient
 from hub.antigravity.watchdog import (
     DEFAULT_RESUSCITATION_PROMPT,
+    MCP_ERROR_RESUSCITATION_PROMPT,
+    QUOTA_RESUSCITATION_PROMPT,
+    SCHEDULE_REMOUNT_PROMPT,
     AntigravityWatchdog,
     StalledSessionInfo,
+    extract_active_schedule_from_transcript,
+    parse_quota_reset_seconds,
 )
 from hub.config import AntigravityWatchdogConfig
 from hub.db import DatabaseManager
@@ -286,4 +291,207 @@ class TestAntigravityWatchdog:
 
         stalled = watchdog.scan_stalled_conversations()
         assert len(stalled) == 0
+
+    def test_parse_quota_reset_seconds(self):
+        """Verify parsing of various Google RPC quota reset delay formats."""
+        assert parse_quota_reset_seconds("Error Individual quota reached. Resets in 1h54m13s. Error ID: xyz") == 6853.0
+        assert parse_quota_reset_seconds("Resets in 45m10s") == 2710.0
+        assert parse_quota_reset_seconds("Resets in 30s") == 30.0
+        assert parse_quota_reset_seconds('retryDelay": "6853.667943359s"') == 6853.667943359
+        assert parse_quota_reset_seconds('quotaResetDelay": "1h0m0s"') == 3600.0
+        assert parse_quota_reset_seconds("Unrelated error message") is None
+        assert parse_quota_reset_seconds("") is None
+
+    def test_quota_exhaustion_quarantine_and_pull_up_after_cooldown(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that sessions hitting quota limits enter quota_cooldown,
+        do NOT exhaust normal retry counts, and automatically pull up with
+        QUOTA_RESUSCITATION_PROMPT once cooldown expires.
+        """
+        convo_id = "test-quota-cooldown-session"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Generate 100 images"},
+            {"step_index": 1, "source": "SYSTEM", "type": "ERROR_MESSAGE", "status": "ERROR", "content": "Error Individual quota reached. Resets in 1h54m13s. Error ID: 21fddb5c-89f8-488e-b690-33cee371397f-593"},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=30.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        # 1. Initial scan detects quota exhaustion -> registers quota_cooldown
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        item = stalled[0]
+        assert item.conversation_id == convo_id
+        assert item.is_quota_exhausted is True
+        assert item.quota_resets_in_seconds == 6853.0
+        assert item.can_resuscitate is False
+        assert "quota_cooldown" in item.skip_reason
+
+        # Verify DB records
+        active_cd = db.get_active_quota_cooldown(convo_id)
+        assert active_cd is not None
+        assert active_cd["status"] == "quota_cooldown"
+        assert active_cd["cooldown_until"] > time.time()
+        # Cooldown does not consume retry attempts
+        assert db.get_resuscitation_attempts(convo_id) == 0
+
+        # Attempting resuscitation during cooldown must not fire messages
+        res = asyncio.run(watchdog.resuscitate_stalled_sessions())
+        assert len(res) == 0
+        mock_agentapi.send_message.assert_not_called()
+
+        # 2. Advance time past cooldown_until
+        db.update_resuscitation_status(
+            active_cd["resuscitation_id"],
+            "quota_cooldown",
+            cooldown_until=time.time() - 10.0,
+        )
+
+        # 3. Next scan detects cooldown expired -> eligible for pull-up
+        stalled_after = watchdog.scan_stalled_conversations()
+        assert len(stalled_after) == 1
+        item_after = stalled_after[0]
+        assert item_after.can_resuscitate is True
+        assert item_after.last_error == "quota_restored_pull_up"
+
+        # 4. Pull-up triggers specialized QUOTA_RESUSCITATION_PROMPT
+        pull_up_res = asyncio.run(watchdog.resuscitate_session(item_after))
+        assert pull_up_res["success"] is True
+        mock_agentapi.send_message.assert_awaited_once_with(
+            conversation_id=convo_id,
+            content=QUOTA_RESUSCITATION_PROMPT,
+            timeout_seconds=30,
+        )
+
+    def test_resuscitation_failure_due_to_quota_enters_cooldown(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that if agentapi returns a 429 quota exhaustion error during resuscitation,
+        the watchdog safely transitions the session to quota_cooldown without consuming retry budget.
+        """
+        convo_id = "test-pullup-quota-error"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Execute task"},
+            {"step_index": 1, "source": "SYSTEM", "type": "ERROR_MESSAGE", "status": "ERROR", "content": "The stream was interrupted."},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=30.0)
+
+        # Mock agentapi failure with 429 quota exhaustion
+        mock_agentapi.send_message = AsyncMock(
+            return_value=(False, None, "429 Client Error: Error Individual quota reached. Resets in 1h30m0s. Error ID: test-err")
+        )
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        res = asyncio.run(watchdog.resuscitate_session(stalled[0]))
+
+        assert res["success"] is False
+        assert res["status"] == "quota_cooldown"
+        assert res["cooldown_until"] > time.time()
+
+        # Check DB state
+        cd = db.get_active_quota_cooldown(convo_id)
+        assert cd is not None
+        assert cd["status"] == "quota_cooldown"
+        assert db.get_resuscitation_attempts(convo_id) == 0
+
+    def test_mcp_error_hang_detection_and_prompt(self, db, mock_agentapi, temp_dir):
+        """
+        Verify Scenario 2: empty planner response hang following MCP tool call is detected
+        as an MCP error and receives MCP_ERROR_RESUSCITATION_PROMPT.
+        """
+        convo_id = "test-mcp-error-hang-session"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Browse page"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "Calling browser tool",
+                "tool_calls": [{"name": "mcp_browser_click", "args": {}}],
+            },
+            {"step_index": 2, "source": "SYSTEM", "type": "GENERIC", "status": "DONE", "content": "⚠️ MCP Error: Connection refused"},
+            {"step_index": 3, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "", "tool_calls": []},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=30.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=15)
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        item = stalled[0]
+        assert item.conversation_id == convo_id
+        assert item.is_mcp_error is True
+        assert item.last_error == "mcp_error_hang"
+        assert item.can_resuscitate is True
+
+        res = asyncio.run(watchdog.resuscitate_session(item))
+        assert res["success"] is True
+        mock_agentapi.send_message.assert_awaited_once_with(
+            conversation_id=convo_id,
+            content=MCP_ERROR_RESUSCITATION_PROMPT,
+            timeout_seconds=30,
+        )
+
+    def test_in_memory_schedule_loss_after_restart_detection_and_remount(self, db, mock_agentapi, temp_dir):
+        """
+        Verify Scenario 3: session with an in-memory /schedule cron that has dropped
+        heartbeats after restart is detected and receives SCHEDULE_REMOUNT_PROMPT.
+        """
+        from datetime import datetime, timezone
+        convo_id = "test-lost-schedule-restart-session"
+        last_trig_time = time.time() - 4000  # > 1 hour ago
+        created_iso = datetime.fromtimestamp(last_trig_time, tz=timezone.utc).isoformat()
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Monitor inbox"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "Scheduling check",
+                "tool_calls": [{"name": "schedule", "args": {"CronExpression": "*/30 * * * *", "Prompt": "Check email"}}],
+            },
+            {"step_index": 2, "source": "SYSTEM", "type": "CRON_TRIGGER", "status": "DONE", "content": "Cron trigger #1 for inbox check", "created_at": created_iso},
+            {"step_index": 3, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Checked inbox, nothing new.", "tool_calls": []},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=4000.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), lookback_minutes=120)
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        item = stalled[0]
+        assert item.conversation_id == convo_id
+        assert item.has_active_schedule is True
+        assert item.active_cron_expression == "*/30 * * * *"
+        assert item.can_resuscitate is True
+
+        # Verify schedule was saved in DB
+        sched = db.get_conversation_schedule(convo_id)
+        assert sched is not None
+        assert sched["cron_expression"] == "*/30 * * * *"
+
+        # Resuscitate
+        res = asyncio.run(watchdog.resuscitate_session(item))
+        assert res["success"] is True
+        assert res["status"] == "schedule_remounted"
+        expected_prompt = SCHEDULE_REMOUNT_PROMPT.format(cron="*/30 * * * *")
+        mock_agentapi.send_message.assert_awaited_once_with(
+            conversation_id=convo_id,
+            content=expected_prompt,
+            timeout_seconds=30,
+        )
+
+        # Verify schedule trigger time in DB updated to now
+        sched_updated = db.get_conversation_schedule(convo_id)
+        assert sched_updated["last_trigger_at"] > last_trig_time
+
 

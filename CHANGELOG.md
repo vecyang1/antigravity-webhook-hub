@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-09-13
+
+### Added & Hardened
+- **Antigravity 24/7 Watchdog Three-Scenario Self-Healing Engine**:
+  - **Scenario 1: Quota Exhaustion & Reset Countdown (`quota_cooldown`)**:
+    - Implemented binary protobuf inspection on SQLite conversation databases (`~/.gemini/antigravity/conversations/<id>.db` where `step_type == 17`) and regex parser `parse_quota_reset_seconds` supporting `Resets in 1h54m13s`, `quotaResetDelay`, `retryDelay: 6853.66s`, and UTC timestamps.
+    - Automated quarantine into `quota_cooldown` state that preserves the session retry budget (`status NOT IN ('quota_cooldown', 'schedule_remounted')`).
+    - Automated pull-up with `QUOTA_RESUSCITATION_PROMPT` once token cooldown expires.
+  - **Scenario 2: MCP Server Hiccup & Empty Response Hang Self-Healing (`mcp_error_hang`)**:
+    - Detects empty planner response stalls (`content == ""` and no tool calls) occurring after MCP tool executions or `⚠️ MCP Error` notices.
+    - Dispatches tailored `MCP_ERROR_RESUSCITATION_PROMPT` instructing the agent to bypass the failing MCP tool and proceed using local CLI, native commands, or direct code completion.
+  - **Scenario 3: IDE Restart In-Memory `/schedule` Loss Recovery (`lost_schedule_after_restart`)**:
+    - Added `conversation_schedules` schema and parser `extract_active_schedule_from_transcript` to track session-level recurring cron expressions and trigger heartbeats across IDE restarts.
+    - Automatically detects dropped timer heartbeats (`now - last_trigger_at > interval * 2.0`), resuscitates the conversation with `SCHEDULE_REMOUNT_PROMPT`, and updates the trigger cursor.
+- **CLI & Unified Observability Enhancements**:
+  - `./bin/webhook-hub antigravity doctor`: Added dedicated sections for "⏳ 配额冷却状态会话" (remaining seconds & reset timestamps) and "⏰ 会话后台定时巡检哨兵".
+  - Deep integration with `cadence_ctl doctor` in `scheduled-task-rescheduler` for cross-system telemetry and diagnostics.
+- **Test Suite Expansion**:
+  - Added 5 new unit tests in `tests/unit/test_antigravity_watchdog.py` covering quota parsing, cooldown quarantine, pull-up transitions, MCP hang prompts, and schedule heartbeat remounts (15/15 watchdog tests green, 192/192 full unit tests green, 62/62 API tests green).
+
 ## [1.11.3] - 2026-09-13
 
 ### Fixed & Hardened

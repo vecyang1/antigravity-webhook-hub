@@ -17,9 +17,12 @@ import asyncio
 import json
 import logging
 import os
+import re
 import socket
+import sqlite3
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
@@ -58,6 +61,24 @@ DEFAULT_RESUSCITATION_PROMPT = (
     "请越过中断错误，继续检查上一步执行进展并执行原定任务计划（请全中文汇报进展）。"
 )
 
+QUOTA_RESUSCITATION_PROMPT = (
+    "【系统自动配额恢复拉起】\n"
+    "检测到此前的账户配额冷却期已结束，现模型调用配额已恢复正常。\n"
+    "请越过配额中断报错，检查上一步执行进展并继续推进原定任务（请全中文汇报进展）。"
+)
+
+MCP_ERROR_RESUSCITATION_PROMPT = (
+    "【系统自动 MCP 故障自愈拉起】\n"
+    "检测到上一轮由于 MCP 工具报错或连接中断未能生成有效回复，但你的目标仍处于活跃状态。\n"
+    "请越过该 MCP 错误，跳过或规避报错的工具调用，选用本地 CLI、原生命令或直接完成代码，继续完成目标任务（请全中文汇报进展）。"
+)
+
+SCHEDULE_REMOUNT_PROMPT = (
+    "【系统后台调度守护提醒】\n"
+    "检测到 IDE 服务重启导致会话内的后台定时任务（原 Cron: {cron}）已中断未按期触发。\n"
+    "正在自动重新激活巡检流程，请立即执行一次巡检并调用 schedule 工具重新挂载该定时任务（请全中文汇报进展）。"
+)
+
 
 @dataclass(slots=True)
 class StalledSessionInfo:
@@ -73,6 +94,154 @@ class StalledSessionInfo:
     attempt_count: int = 0
     can_resuscitate: bool = True
     skip_reason: Optional[str] = None
+    is_quota_exhausted: bool = False
+    quota_resets_in_seconds: Optional[float] = None
+    quota_reset_timestamp: Optional[str] = None
+    is_mcp_error: bool = False
+    has_active_schedule: bool = False
+    active_cron_expression: Optional[str] = None
+
+
+def parse_quota_reset_seconds(text: str) -> Optional[float]:
+    """
+    Extract reset delay in seconds from error text or JSON.
+    Examples:
+      - 'Resets in 1h54m13s' -> 6853.0
+      - 'Resets in 45m10s' -> 2710.0
+      - 'Resets in 30s' -> 30.0
+      - 'retryDelay": "6853.667943359s"' -> 6853.66
+    """
+    if not text:
+        return None
+
+    # 1. Direct retryDelay matching (Google Error Info)
+    m_delay = re.search(r'retryDelay["\s:]+([0-9\.]+)s', text)
+    if m_delay:
+        try:
+            return float(m_delay.group(1))
+        except ValueError:
+            pass
+
+    # 2. Resets in / quotaResetDelay matching
+    m_resets = re.search(
+        r'(?:Resets in|quotaResetDelay["\s:]+)\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:([0-9\.]+)s)?',
+        text,
+        re.IGNORECASE,
+    )
+    if m_resets and any(m_resets.groups()):
+        hours = float(m_resets.group(1) or 0)
+        minutes = float(m_resets.group(2) or 0)
+        seconds = float(m_resets.group(3) or 0)
+        total = hours * 3600 + minutes * 60 + seconds
+        if total > 0:
+            return total
+
+    return None
+
+
+def inspect_conversation_db_for_quota(
+    convo_id: str,
+    conversations_dir: Optional[Path] = None,
+) -> Optional[dict[str, Any]]:
+    """Inspect SQLite database in ~/.gemini/antigravity/conversations/<id>.db for genuine QUOTA_EXHAUSTED errors."""
+    c_dir = conversations_dir or Path(os.path.expanduser("~/.gemini/antigravity/conversations"))
+    db_file = c_dir / f"{convo_id}.db"
+    if not db_file.exists():
+        return None
+
+    try:
+        conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True, timeout=1.0)
+        cur = conn.cursor()
+        # step_type 17 is error message step; checks only the latest 5 error steps
+        cur.execute(
+            "SELECT idx, step_payload FROM steps WHERE step_type = 17 ORDER BY idx DESC LIMIT 5"
+        )
+        rows = cur.fetchall()
+        conn.close()
+
+        for row in rows:
+            payload_bytes = row[1]
+            if not payload_bytes:
+                continue
+            payload_str = payload_bytes.decode("utf-8", errors="ignore")
+            if "QUOTA_EXHAUSTED" in payload_str or "Individual quota reached" in payload_str:
+                sec = parse_quota_reset_seconds(payload_str)
+                m_ts = re.search(r'quotaResetTimeStamp["\s:]+([0-9T:\-Z]+)', payload_str)
+                reset_ts = m_ts.group(1) if m_ts else None
+                return {
+                    "step_index": row[0],
+                    "resets_in_seconds": sec or 6853.0,
+                    "reset_timestamp": reset_ts,
+                }
+    except Exception as e:
+        logger.debug("Error checking conversation db %s for quota: %s", convo_id, e)
+    return None
+
+
+def extract_active_schedule_from_transcript(transcript_path: Path) -> Optional[dict[str, Any]]:
+    """Scan transcript for the last schedule tool call with CronExpression and last trigger time."""
+    try:
+        with open(transcript_path, "r", encoding="utf-8", errors="ignore") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            read_size = min(size, 262144)  # read last 256KB
+            f.seek(size - read_size, os.SEEK_SET)
+            block = f.read()
+
+        lines = block.splitlines()
+        last_schedule = None
+        last_trigger_time = 0.0
+
+        for line in reversed(lines):
+            line_clean = line.strip()
+            if not line_clean:
+                continue
+
+            if not last_schedule and ('"name":"schedule"' in line_clean or '"name": "schedule"' in line_clean):
+                try:
+                    obj = json.loads(line_clean)
+                    calls = obj.get("tool_calls") or []
+                    for call in calls:
+                        if call.get("name") == "schedule":
+                            args = call.get("args") or {}
+                            cron = args.get("CronExpression")
+                            prompt = args.get("Prompt")
+                            if cron:
+                                last_schedule = {
+                                    "cron": str(cron).strip(' "'),
+                                    "prompt": str(prompt or "").strip(' "'),
+                                }
+                                break
+                except Exception:
+                    pass
+
+            if "Cron trigger #" in line_clean or "巡检汇报" in line_clean:
+                try:
+                    obj = json.loads(line_clean)
+                    ts_str = obj.get("created_at")
+                    if ts_str:
+                        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        t_sec = dt.timestamp()
+                        if t_sec > last_trigger_time:
+                            last_trigger_time = t_sec
+                except Exception:
+                    pass
+
+        if last_schedule:
+            cron_expr = last_schedule["cron"]
+            interval = 1800
+            m = re.search(r'\*/(\d+)', cron_expr)
+            if m:
+                interval = int(m.group(1)) * 60
+            return {
+                "cron": cron_expr,
+                "prompt": last_schedule["prompt"],
+                "interval_seconds": interval,
+                "last_trigger_time": last_trigger_time,
+            }
+    except Exception as e:
+        logger.debug("Failed extracting schedule from %s: %s", transcript_path, e)
+    return None
 
 
 class AntigravityWatchdog:
@@ -252,9 +421,143 @@ class AntigravityWatchdog:
                 last_status = last_step.get("status", "")
                 last_content = last_step.get("content", "")
 
-                # If the last step is a normal completed model planner response with content,
-                # the agent has finished its turn and is waiting for the user. It is not stalled.
+                prior_attempts = self.db.get_resuscitation_attempts(convo_id) if self.db else 0
+                sidecar_slug = self._find_associated_sidecar(convo_id)
+
+                is_subagent = False
+                first_content = str(parsed_steps[0].get("content") or "")
+                if "<original_task>" in first_content or "invoke_subagent" in first_content or "DeepInvestigator" in first_content or "DeepCoder" in first_content:
+                    is_subagent = True
+
+                # --- 1. Check Active Quota Cooldown in DB ---
+                active_cd = self.db.get_active_quota_cooldown(convo_id) if self.db else None
+                if active_cd:
+                    cooldown_until = float(active_cd.get("cooldown_until") or 0.0)
+                    if now < cooldown_until:
+                        remaining = int(cooldown_until - now)
+                        stalled.append(
+                            StalledSessionInfo(
+                                conversation_id=convo_id,
+                                transcript_path=transcript_path,
+                                last_step_index=last_step_idx,
+                                last_error=active_cd.get("last_error") or "Individual quota reached",
+                                last_error_time=file_mtime,
+                                is_subagent=is_subagent,
+                                sidecar_slug=sidecar_slug,
+                                attempt_count=prior_attempts,
+                                can_resuscitate=False,
+                                skip_reason=f"quota_cooldown (resets in {remaining}s)",
+                                is_quota_exhausted=True,
+                                quota_resets_in_seconds=remaining,
+                            )
+                        )
+                        continue
+                    else:
+                        # Cooldown expired! Eligible for immediate automated pull-up
+                        stalled.append(
+                            StalledSessionInfo(
+                                conversation_id=convo_id,
+                                transcript_path=transcript_path,
+                                last_step_index=last_step_idx,
+                                last_error="quota_restored_pull_up",
+                                last_error_time=file_mtime,
+                                is_subagent=is_subagent,
+                                sidecar_slug=sidecar_slug,
+                                attempt_count=prior_attempts,
+                                can_resuscitate=True,
+                                skip_reason=None,
+                                is_quota_exhausted=False,
+                            )
+                        )
+                        continue
+
+                # --- 2. Check for Newly Encountered Quota Exhaustion ---
+                quota_detected = False
+                quota_sec = None
+                quota_ts = None
+                for s in reversed(parsed_steps[-6:]):
+                    # Only check genuine error/system steps, never user prompts or tool output text discussing quota
+                    s_source = s.get("source", "")
+                    s_type = s.get("type", "")
+                    s_status = s.get("status", "")
+                    if s_source not in ("SYSTEM", "ERROR") and s_type != "ERROR_MESSAGE" and s_status != "ERROR":
+                        continue
+                    s_content = str(s.get("content") or "")
+                    if "individual quota reached" in s_content.lower() or "resource_exhausted" in s_content.lower():
+                        quota_detected = True
+                        quota_sec = parse_quota_reset_seconds(s_content)
+                        break
+
+                if not quota_detected:
+                    db_quota = inspect_conversation_db_for_quota(convo_id)
+                    if db_quota:
+                        quota_detected = True
+                        quota_sec = db_quota.get("resets_in_seconds")
+                        quota_ts = db_quota.get("reset_timestamp")
+
+                if quota_detected:
+                    wait_sec = quota_sec or 6853.0
+                    cooldown_until = now + wait_sec + 30.0
+                    if self.db:
+                        self.db.record_resuscitation(
+                            conversation_id=convo_id,
+                            sidecar_slug=sidecar_slug,
+                            last_error=f"Individual quota reached (Resets in {int(wait_sec)}s)",
+                            status="quota_cooldown",
+                            cooldown_until=cooldown_until,
+                            error_details=f"Quota reset delay {int(wait_sec)}s, timestamp: {quota_ts}",
+                            last_step_index=last_step_idx,
+                        )
+                    stalled.append(
+                        StalledSessionInfo(
+                            conversation_id=convo_id,
+                            transcript_path=transcript_path,
+                            last_step_index=last_step_idx,
+                            last_error="Individual quota reached",
+                            last_error_time=file_mtime,
+                            is_subagent=is_subagent,
+                            sidecar_slug=sidecar_slug,
+                            attempt_count=prior_attempts,
+                            can_resuscitate=False,
+                            skip_reason=f"quota_cooldown (resets in {int(wait_sec)}s)",
+                            is_quota_exhausted=True,
+                            quota_resets_in_seconds=wait_sec,
+                            quota_reset_timestamp=quota_ts,
+                        )
+                    )
+                    continue
+
+                # --- 3. Normal Active / Completed State Checks ---
                 if last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and last_status == "DONE" and last_content and not last_step.get("tool_calls"):
+                    # Check if this session has an in-memory schedule dropped after restart
+                    sched_info = extract_active_schedule_from_transcript(transcript_path)
+                    if sched_info:
+                        if self.db:
+                            self.db.save_conversation_schedule(
+                                conversation_id=convo_id,
+                                cron_expression=sched_info["cron"],
+                                prompt=sched_info["prompt"],
+                                expected_interval_seconds=sched_info["interval_seconds"],
+                                last_trigger_at=sched_info["last_trigger_time"],
+                            )
+                        interval = sched_info["interval_seconds"]
+                        last_trig = sched_info["last_trigger_time"]
+                        if last_trig > 0 and (now - last_trig > interval * 2.0) and (now - file_mtime > interval * 1.5):
+                            stalled.append(
+                                StalledSessionInfo(
+                                    conversation_id=convo_id,
+                                    transcript_path=transcript_path,
+                                    last_step_index=last_step_idx,
+                                    last_error=f"lost_schedule_after_restart (cron: {sched_info['cron']})",
+                                    last_error_time=file_mtime,
+                                    is_subagent=is_subagent,
+                                    sidecar_slug=sidecar_slug,
+                                    attempt_count=prior_attempts,
+                                    can_resuscitate=True,
+                                    has_active_schedule=True,
+                                    active_cron_expression=sched_info["cron"],
+                                )
+                            )
                     continue
 
                 # If the last step is an active user input or running tool, it's not stalled.
@@ -263,12 +566,23 @@ class AntigravityWatchdog:
 
                 is_stalled = False
                 matched_error = ""
+                is_mcp = False
 
                 # Check if the conversation ended in an empty planner response hang
                 if len(parsed_steps) >= 2 and last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and not last_content and not last_step.get("tool_calls"):
                     if now - file_mtime > self.config.stall_grace_seconds:
                         is_stalled = True
-                        matched_error = "empty_planner_response_hang"
+                        for s in reversed(parsed_steps[-5:]):
+                            t_calls = s.get("tool_calls") or []
+                            for tc in t_calls:
+                                tc_name = str(tc.get("name") or "").lower()
+                                if tc_name.startswith("mcp_") or "mcp" in tc_name:
+                                    is_mcp = True
+                                    break
+                            if "mcp" in str(s.get("content") or "").lower():
+                                is_mcp = True
+                                break
+                        matched_error = "mcp_error_hang" if is_mcp else "empty_planner_response_hang"
 
                 # If not empty hang, inspect steps backwards for unresolved system/error interruptions
                 if not is_stalled:
@@ -278,13 +592,9 @@ class AntigravityWatchdog:
                         s_status = step.get("status", "")
                         s_content = str(step.get("content") or "").lower()
 
-                        # If we encounter a successful MODEL response before encountering any error,
-                        # the conversation was already successfully continuing or recovered.
-                        # (A completed planner response is valid whether it contains text or tool calls)
                         if s_source == "MODEL" and s_type == "PLANNER_RESPONSE" and s_status == "DONE" and (s_content or step.get("tool_calls")):
                             break
 
-                        # Only match error patterns against SYSTEM or ERROR messages (never against completed MODEL or tool output)
                         if s_source == "SYSTEM" or s_status == "ERROR" or s_type == "ERROR_MESSAGE":
                             for pattern in INTERRUPTED_STREAM_PATTERNS:
                                 if pattern in s_content:
@@ -301,16 +611,7 @@ class AntigravityWatchdog:
                 if not is_stalled:
                     continue
 
-                # 1. Resolve session metadata and prior attempts BEFORE evaluating eligibility
-                prior_attempts = self.db.get_resuscitation_attempts(convo_id) if self.db else 0
-                sidecar_slug = self._find_associated_sidecar(convo_id)
-
-                is_subagent = False
-                first_content = str(parsed_steps[0].get("content") or "")
-                if "<original_task>" in first_content or "invoke_subagent" in first_content or "DeepInvestigator" in first_content or "DeepCoder" in first_content:
-                    is_subagent = True
-
-                # 2. Check circuit breaker first: if retries already exhausted, do not mask as within_stall_grace_period
+                # Circuit breaker
                 if prior_attempts >= self.config.max_retries_per_session:
                     stalled.append(
                         StalledSessionInfo(
@@ -324,11 +625,12 @@ class AntigravityWatchdog:
                             attempt_count=prior_attempts,
                             can_resuscitate=False,
                             skip_reason=f"max_retries_exhausted ({prior_attempts}/{self.config.max_retries_per_session})",
+                            is_mcp_error=is_mcp,
                         )
                     )
                     continue
 
-                # 3. Stall grace period: recent errors (< stall_grace_seconds) are given time to self-heal
+                # Stall grace period: recent errors (< stall_grace_seconds) are given time to self-heal
                 if now - file_mtime < self.config.stall_grace_seconds:
                     stalled.append(
                         StalledSessionInfo(
@@ -342,11 +644,12 @@ class AntigravityWatchdog:
                             attempt_count=prior_attempts,
                             can_resuscitate=False,
                             skip_reason="within_stall_grace_period",
+                            is_mcp_error=is_mcp,
                         )
                     )
                     continue
 
-                # 4. Eligible for automated resuscitation
+                # Eligible for automated resuscitation
                 stalled.append(
                     StalledSessionInfo(
                         conversation_id=convo_id,
@@ -359,6 +662,7 @@ class AntigravityWatchdog:
                         attempt_count=prior_attempts,
                         can_resuscitate=True,
                         skip_reason=None,
+                        is_mcp_error=is_mcp,
                     )
                 )
 
@@ -380,7 +684,17 @@ class AntigravityWatchdog:
         convo_id = session_info.conversation_id
         sidecar_slug = session_info.sidecar_slug
         last_error = session_info.last_error
-        prompt = custom_prompt or DEFAULT_RESUSCITATION_PROMPT
+
+        # Determine tailored prompt based on scenario
+        if session_info.is_quota_exhausted or session_info.last_error == "quota_restored_pull_up":
+            prompt = custom_prompt or QUOTA_RESUSCITATION_PROMPT
+        elif session_info.is_mcp_error or "mcp" in str(session_info.last_error).lower():
+            prompt = custom_prompt or MCP_ERROR_RESUSCITATION_PROMPT
+        elif session_info.has_active_schedule or "schedule" in str(session_info.last_error).lower():
+            cron_str = session_info.active_cron_expression or "*/30 * * * *"
+            prompt = custom_prompt or SCHEDULE_REMOUNT_PROMPT.format(cron=cron_str)
+        else:
+            prompt = custom_prompt or DEFAULT_RESUSCITATION_PROMPT
 
         record = self.db.record_resuscitation(
             conversation_id=convo_id,
@@ -424,17 +738,20 @@ class AntigravityWatchdog:
             )
 
             if success:
-                self.db.update_resuscitation_status(res_id, "resuscitated")
-                logger.info("Successfully resuscitated session %s (res_id=%s)", convo_id, res_id)
+                new_st = "schedule_remounted" if session_info.has_active_schedule else "resuscitated"
+                self.db.update_resuscitation_status(res_id, new_st)
+                if session_info.has_active_schedule and self.db:
+                    self.db.update_conversation_schedule_trigger(convo_id, time.time())
+                logger.info("Successfully resuscitated session %s (res_id=%s, status=%s)", convo_id, res_id, new_st)
                 if self.broker:
                     try:
                         await self.broker.publish("events", {
                             "event": "antigravity_resuscitation",
                             "type": "antigravity_resuscitation",
-                            "action": "resuscitated",
+                            "action": new_st,
                             "resuscitation_id": res_id,
                             "conversation_id": convo_id,
-                            "status": "resuscitated",
+                            "status": new_st,
                             "success": True,
                             "timestamp": time.time(),
                         })
@@ -444,10 +761,34 @@ class AntigravityWatchdog:
                     "success": True,
                     "resuscitation_id": res_id,
                     "conversation_id": convo_id,
-                    "status": "resuscitated",
+                    "status": new_st,
                     "output": stdout,
                 }
             else:
+                # Check if failure was caused by Individual quota reached
+                if err and ("individual quota reached" in err.lower() or "resource_exhausted" in err.lower()):
+                    wait_sec = parse_quota_reset_seconds(err) or 6853.0
+                    cooldown_until = time.time() + wait_sec + 30.0
+                    self.db.update_resuscitation_status(
+                        res_id,
+                        "quota_cooldown",
+                        cooldown_until=cooldown_until,
+                        error_details=err[:500],
+                    )
+                    logger.warning(
+                        "Session %s hit quota exhaustion during pull-up; quarantined into quota_cooldown for %ds",
+                        convo_id,
+                        int(wait_sec),
+                    )
+                    return {
+                        "success": False,
+                        "resuscitation_id": res_id,
+                        "conversation_id": convo_id,
+                        "status": "quota_cooldown",
+                        "error": err,
+                        "cooldown_until": cooldown_until,
+                    }
+
                 new_status = "exhausted" if record["attempt_count"] >= self.config.max_retries_per_session else "failed"
                 self.db.update_resuscitation_status(res_id, new_status)
                 logger.warning(
@@ -561,6 +902,8 @@ class AntigravityWatchdog:
                 "exhausted": sum(1 for r in recent_resuscitations if r.get("status") == "exhausted"),
                 "attempting": sum(1 for r in recent_resuscitations if r.get("status") == "attempting"),
                 "resolved": sum(1 for r in recent_resuscitations if r.get("status") == "resolved"),
+                "quota_cooldown": sum(1 for r in recent_resuscitations if r.get("status") == "quota_cooldown"),
+                "schedule_remounted": sum(1 for r in recent_resuscitations if r.get("status") == "schedule_remounted"),
             }
         )
 
@@ -588,9 +931,17 @@ class AntigravityWatchdog:
                     "skip_reason": s.skip_reason,
                     "last_step_index": s.last_step_index,
                     "last_error_time": s.last_error_time,
+                    "is_quota_exhausted": s.is_quota_exhausted,
+                    "quota_resets_in_seconds": s.quota_resets_in_seconds,
+                    "quota_reset_timestamp": s.quota_reset_timestamp,
+                    "is_mcp_error": s.is_mcp_error,
+                    "has_active_schedule": s.has_active_schedule,
+                    "active_cron_expression": s.active_cron_expression,
                 }
                 for s in stalled
             ],
+            "quota_cooldown_sessions": self.db.list_quota_cooldowns() if self.db else [],
+            "active_conversation_schedules": self.db.list_active_conversation_schedules() if self.db else [],
             "resuscitation_stats": stats,
             "recent_resuscitations": recent_resuscitations,
         }
