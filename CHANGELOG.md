@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add circuit breaker for `quota_restored_pull_up` in `AntigravityWatchdog` to cap at `max_retries_per_session` and prevent runaway pull-up loops.
 - Add self-healing fallback for `OSError: [Errno 8] Exec format error` when invoking `agentapi` shell script on macOS in `AgentAPIClient`.
 - Upgrade `CAD-20260911-webhook-hub-sentinel` sidecar with comprehensive `AntigravityQuotaSentinel` and Uptime Kuma Monitor #94 verification.
+- Guard optional playwright dependency and server reachability in `tests/e2e/test_quota_dashboard_e2e.py` to prevent CI/CD collection errors and unblock GitHub Actions pipelines.
 
 ## [1.15.0] - 2026-09-14
 

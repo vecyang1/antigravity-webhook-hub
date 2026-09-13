@@ -11,10 +11,31 @@ Uses Playwright to interactively verify:
 
 import os
 import time
+import urllib.request
 import pytest
-from playwright.sync_api import sync_playwright
+
+try:
+    from playwright.sync_api import sync_playwright
+    HAS_PLAYWRIGHT = True
+except ImportError:
+    HAS_PLAYWRIGHT = False
 
 BASE_URL = os.environ.get("WEBHOOK_HUB_URL", "http://127.0.0.1:9423")
+
+
+def _is_server_reachable() -> bool:
+    try:
+        req = urllib.request.Request(f"{BASE_URL}/healthz", method="GET")
+        with urllib.request.urlopen(req, timeout=1.0) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    not HAS_PLAYWRIGHT or not _is_server_reachable(),
+    reason="playwright not installed or webhook-hub server unreachable",
+)
 
 
 def test_quota_dashboard_e2e():
