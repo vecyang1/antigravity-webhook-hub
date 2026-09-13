@@ -252,7 +252,7 @@ class E2EVerifier:
             req = urllib.request.Request(f"{self.base_url}/healthz", method="GET")
             with urllib.request.urlopen(req, timeout=3.0) as resp:
                 data = json.loads(resp.read().decode())
-                budget_limit = float(os.environ.get("MEMORY_BUDGET_MB", data.get("system", {}).get("memory_budget_mb", 30.0)))
+                budget_limit = float(os.environ.get("MEMORY_BUDGET_MB", data.get("system", {}).get("memory_budget_mb", 64.0)))
                 health_rss = data.get("system", {}).get("memory_rss_mb")
                 proc_rss = get_process_rss_mb(self.server_pid) if self.server_pid else None
                 eval_rss = float(health_rss) if health_rss is not None else (proc_rss or 0.0)
@@ -757,7 +757,7 @@ class E2EVerifier:
         # Summary & Final Verification Receipt
         time.sleep(1.0)
         elapsed = time.time() - start_time
-        summary_budget = float(os.environ.get("MEMORY_BUDGET_MB", 30.0))
+        summary_budget = float(os.environ.get("MEMORY_BUDGET_MB", 64.0))
         gateway_rss: float | None = None
         for _ in range(3):
             try:

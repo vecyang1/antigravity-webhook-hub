@@ -240,6 +240,15 @@ class AgentAPIClient:
     def _get_env(self) -> dict[str, str]:
         """Build execution environment injecting active credentials."""
         env = dict(os.environ)
+        # Strip host-session environment variables that cause cross-project PermissionDenied errors
+        for key in (
+            "ANTIGRAVITY_PROJECT_ID",
+            "ANTIGRAVITY_CONVERSATION_ID",
+            "ANTIGRAVITY_SOURCE_METADATA",
+            "ANTIGRAVITY_TRAJECTORY_ID",
+        ):
+            env.pop(key, None)
+
         if self.ls_address:
             env["ANTIGRAVITY_LS_ADDRESS"] = self.ls_address
         if self.csrf_token:

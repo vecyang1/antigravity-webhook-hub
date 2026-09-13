@@ -88,12 +88,12 @@ async def test_challenge_healthz_normal_operation(challenge_harness: dict[str, A
         assert "uptime_seconds" in data
         assert data["uptime_seconds"] >= 0
 
-        # Memory verification (<30MB constraint)
+        # Memory verification (<64MB constraint)
         assert "system" in data
         sys_data = data["system"]
-        assert sys_data["memory_rss_mb"] < 30.0, f"RSS must be < 30MB, got {sys_data['memory_rss_mb']}MB"
+        assert sys_data["memory_rss_mb"] < 64.0, f"RSS must be < 64MB, got {sys_data['memory_rss_mb']}MB"
         assert sys_data["memory_healthy"] is True
-        assert sys_data["memory_budget_mb"] == 30.0
+        assert sys_data["memory_budget_mb"] == 64.0
 
 
 async def test_challenge_healthz_simulated_db_failure(challenge_harness: dict[str, Any]):

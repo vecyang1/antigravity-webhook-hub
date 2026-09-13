@@ -284,7 +284,7 @@ Returns system liveness, database status, and memory RSS validation (supports bo
   "system": {
     "memory_rss_mb": 19.3,
     "memory_healthy": true,
-    "memory_budget_mb": 30.0
+    "memory_budget_mb": 64.0
   }
 }
 ```

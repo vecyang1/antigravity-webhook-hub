@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.3] - 2026-09-13
+
+### Fixed & Hardened
+- **Production Memory Budget Expansion (64.0 MB)**:
+  - Aligned server memory budget limit to 64.0 MB (`ServerConfig.memory_budget_mb = 64.0`, `get_memory_budget_mb() = 64.0`, CLI status & LaunchAgent displays) to provide comfortable, stable headroom for production workloads and dashboard queries without false alarms.
+- **Watchdog Stalled Detection & Resuscitation Circuit Breaker Fix**:
+  - Fixed backward scan logic in `AntigravityWatchdog` to recognize active MODEL planner responses that perform tool calls (`and (s_content or step.get("tool_calls"))`), eliminating false-positive stall reports for actively executing agents.
+  - Fixed `Prior Attempts: 0` UI discrepancy by querying `get_resuscitation_attempts` before eligibility evaluation and enforcing the max retries circuit breaker before checking `within_stall_grace_period`.
+- **Cross-Project AgentAPI Isolation**:
+  - Stripped session-specific environment variables (`ANTIGRAVITY_PROJECT_ID`, `ANTIGRAVITY_CONVERSATION_ID`, `ANTIGRAVITY_SOURCE_METADATA`, `ANTIGRAVITY_TRAJECTORY_ID`) in `AgentAPIClient._get_env()`, eliminating `PermissionDenied` errors caused by host session cross-project mismatch during `agentapi send-message`.
+- **Sidebar Pulse Queue FIFO Bounding & Stale File Cleanup**:
+  - Implemented automatic FIFO truncation keeping at most 500 pulse event files in `$HOME/.gemini/antigravity/sidecar_data/webhook-hub-sentinel/events/`, eliminating unbounded file growth and reducing directory scan latency.
+  - Cleaned up 3,996 accumulated historical event files to restore instant dashboard pulse queue rendering.
+
 ## [1.11.2] - 2026-09-13
 
 ### Fixed & Hardened

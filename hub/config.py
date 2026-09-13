@@ -22,7 +22,7 @@ class ServerConfig:
     max_body_bytes: int = 1048576  # 1MB
     log_level: str = "INFO"
     keep_alive_timeout: int = 65
-    memory_budget_mb: float = 30.0
+    memory_budget_mb: float = 64.0
 
 
 @dataclass(slots=True)

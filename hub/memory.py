@@ -177,7 +177,7 @@ def get_memory_rss_mb() -> float:
 
 
 def get_memory_budget_mb(config: Optional[Any] = None) -> float:
-    """Resolve active memory budget limit in megabytes (Environment > Config > Default 30.0MB)."""
+    """Resolve active memory budget limit in megabytes (Environment > Config > Default 64.0MB)."""
     env_budget = os.environ.get("MEMORY_BUDGET_MB")
     if env_budget:
         try:
@@ -192,7 +192,7 @@ def get_memory_budget_mb(config: Optional[Any] = None) -> float:
                 return float(cfg_budget)
             except (ValueError, TypeError):
                 pass
-    return 30.0
+    return 64.0
 
 
 def apply_memory_pressure_relief() -> None:

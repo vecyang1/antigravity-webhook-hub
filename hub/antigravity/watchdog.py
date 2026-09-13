@@ -280,7 +280,8 @@ class AntigravityWatchdog:
 
                         # If we encounter a successful MODEL response before encountering any error,
                         # the conversation was already successfully continuing or recovered.
-                        if s_source == "MODEL" and s_type == "PLANNER_RESPONSE" and s_status == "DONE" and s_content and not step.get("tool_calls"):
+                        # (A completed planner response is valid whether it contains text or tool calls)
+                        if s_source == "MODEL" and s_type == "PLANNER_RESPONSE" and s_status == "DONE" and (s_content or step.get("tool_calls")):
                             break
 
                         # Only match error patterns against SYSTEM or ERROR messages (never against completed MODEL or tool output)
@@ -300,22 +301,8 @@ class AntigravityWatchdog:
                 if not is_stalled:
                     continue
 
-                if now - file_mtime < self.config.stall_grace_seconds:
-                    stalled.append(
-                        StalledSessionInfo(
-                            conversation_id=convo_id,
-                            transcript_path=transcript_path,
-                            last_step_index=last_step_idx,
-                            last_error=matched_error,
-                            last_error_time=file_mtime,
-                            is_subagent=False,
-                            can_resuscitate=False,
-                            skip_reason="within_stall_grace_period",
-                        )
-                    )
-                    continue
-
-                prior_attempts = self.db.get_resuscitation_attempts(convo_id)
+                # 1. Resolve session metadata and prior attempts BEFORE evaluating eligibility
+                prior_attempts = self.db.get_resuscitation_attempts(convo_id) if self.db else 0
                 sidecar_slug = self._find_associated_sidecar(convo_id)
 
                 is_subagent = False
@@ -323,6 +310,7 @@ class AntigravityWatchdog:
                 if "<original_task>" in first_content or "invoke_subagent" in first_content or "DeepInvestigator" in first_content or "DeepCoder" in first_content:
                     is_subagent = True
 
+                # 2. Check circuit breaker first: if retries already exhausted, do not mask as within_stall_grace_period
                 if prior_attempts >= self.config.max_retries_per_session:
                     stalled.append(
                         StalledSessionInfo(
@@ -340,6 +328,25 @@ class AntigravityWatchdog:
                     )
                     continue
 
+                # 3. Stall grace period: recent errors (< stall_grace_seconds) are given time to self-heal
+                if now - file_mtime < self.config.stall_grace_seconds:
+                    stalled.append(
+                        StalledSessionInfo(
+                            conversation_id=convo_id,
+                            transcript_path=transcript_path,
+                            last_step_index=last_step_idx,
+                            last_error=matched_error,
+                            last_error_time=file_mtime,
+                            is_subagent=is_subagent,
+                            sidecar_slug=sidecar_slug,
+                            attempt_count=prior_attempts,
+                            can_resuscitate=False,
+                            skip_reason="within_stall_grace_period",
+                        )
+                    )
+                    continue
+
+                # 4. Eligible for automated resuscitation
                 stalled.append(
                     StalledSessionInfo(
                         conversation_id=convo_id,

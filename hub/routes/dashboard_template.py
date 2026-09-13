@@ -2747,7 +2747,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
     function renderTelemetry(health) {{
       const memMb = health.memory_rss_mb || 0;
-      const budgetMb = (health.system && health.system.memory_budget_mb) || 30;
+      const budgetMb = (health.system && health.system.memory_budget_mb) || 64;
       document.getElementById('telemetryMemory').innerText = memMb.toFixed(1) + ' MB / ' + budgetMb + ' MB';
       const pct = Math.min(100, Math.round((memMb / budgetMb) * 100));
       const bar = document.getElementById('telemetryMemoryBar');

@@ -1013,6 +1013,22 @@ class TaskDispatcher:
 
             event_file = events_dir / ts_name
             event_file.write_text(json.dumps(event_payload), encoding="utf-8")
+
+            # Prune old pulse events FIFO to keep pulse queue bounded (max 500 events)
+            try:
+                all_event_files = sorted(
+                    [f for f in events_dir.iterdir() if f.name.endswith(".json")],
+                    key=lambda p: p.name,
+                )
+                if len(all_event_files) > 500:
+                    for old_file in all_event_files[:-500]:
+                        try:
+                            old_file.unlink()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
             return event_file
         except Exception as sidecar_err:
             logger.debug("Failed to record Antigravity sidebar activity: %s", sidecar_err)
