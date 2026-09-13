@@ -16,6 +16,12 @@ from hub.antigravity.prompt_builder import (
     build_follow_up_prompt,
     extract_slash_commands,
 )
+from hub.antigravity.result_delivery import (
+    get_latest_step_index,
+    parse_transcript_events,
+    resolve_transcript_path,
+    watch_and_deliver_result,
+)
 from hub.antigravity.session_manager import execute_antigravity_task
 from hub.antigravity.thread_notifier import ThreadNotifier
 
@@ -30,6 +36,10 @@ __all__ = [
     "discover_active_antigravity_credentials",
     "execute_antigravity_task",
     "extract_slash_commands",
+    "get_latest_step_index",
+    "parse_transcript_events",
     "resolve_agentapi_path",
+    "resolve_transcript_path",
     "validate_antigravity_address",
+    "watch_and_deliver_result",
 ]

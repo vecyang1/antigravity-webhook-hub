@@ -6,6 +6,7 @@ import asyncio
 import json
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -709,6 +710,169 @@ class TestAgentAPIDynamicCredentialsAndSelfHealing(unittest.TestCase):
         self.assertTrue(is_connection_error("dial tcp 127.0.0.1:63347: connect: no route to host"))
         self.assertFalse(is_connection_error("unknown command: foo"))
         self.assertFalse(is_connection_error(None))
+
+
+class TestProgressTrackingAndResultDelivery(unittest.TestCase):
+    """Test transcript parsing, progress milestone extraction, and true result delivery to Slack."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.brain_dir = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _create_fake_transcript(self, conversation_id: str, steps: list[dict]) -> Path:
+        log_dir = self.brain_dir / conversation_id / ".system_generated" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        transcript_file = log_dir / "transcript_full.jsonl"
+        with open(transcript_file, "w", encoding="utf-8") as f:
+            for s in steps:
+                f.write(json.dumps(s, ensure_ascii=False) + "\n")
+        return transcript_file
+
+    def test_resolve_transcript_path(self):
+        from hub.antigravity.result_delivery import resolve_transcript_path
+        convo_id = "test-convo-resolve"
+        self.assertIsNone(resolve_transcript_path(convo_id, brain_root=self.brain_dir))
+
+        self._create_fake_transcript(convo_id, [{"step_index": 0, "type": "USER_INPUT"}])
+        resolved = resolve_transcript_path(convo_id, brain_root=self.brain_dir)
+        self.assertIsNotNone(resolved)
+        self.assertTrue(resolved.name.endswith(".jsonl"))
+
+    def test_get_latest_step_index(self):
+        from hub.antigravity.result_delivery import get_latest_step_index
+        convo_id = "test-convo-steps"
+        steps = [
+            {"step_index": 0, "type": "USER_INPUT"},
+            {"step_index": 5, "type": "PLANNER_RESPONSE"},
+            {"step_index": 9, "type": "PLANNER_RESPONSE"},
+        ]
+        self._create_fake_transcript(convo_id, steps)
+        latest_idx = get_latest_step_index(convo_id, brain_root=self.brain_dir)
+        self.assertEqual(latest_idx, 9)
+
+    def test_parse_transcript_events_tool_actions_and_result(self):
+        from hub.antigravity.result_delivery import parse_transcript_events
+        convo_id = "test-convo-weather"
+        steps = [
+            {"step_index": 0, "source": "USER", "type": "USER_INPUT", "status": "DONE", "content": "上海天气"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "tool_calls": [
+                    {
+                        "name": "run_command",
+                        "args": {"toolAction": "Checking weather", "toolSummary": "Weather in Shanghai"},
+                    }
+                ],
+            },
+            {"step_index": 2, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": "Sunny 28C"},
+            {
+                "step_index": 3,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "上海今日晴天，当前气温 28°C，体感舒适。",
+            },
+        ]
+        transcript_file = self._create_fake_transcript(convo_id, steps)
+        actions, content, is_done, has_error = parse_transcript_events(transcript_file, start_step=0)
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0], "Checking weather")
+        self.assertTrue(is_done)
+        self.assertFalse(has_error)
+        self.assertIn("上海今日晴天", content)
+
+    def test_thread_notifier_notify_progress_and_result_delivery(self):
+        notifier = ThreadNotifier(token="xoxb-mock-token")
+        notifier.post_thread_message = MagicMock(return_value=True)
+
+        # Progress notification
+        ok_prog = notifier.notify_progress("C0C1B86AMCN", "1789200000.100", "正在查询天气数据", elapsed_seconds=5.2)
+        self.assertTrue(ok_prog)
+        notifier.post_thread_message.assert_called_once()
+        prog_call_text = notifier.post_thread_message.call_args[0][2]
+        self.assertIn("[执行中 · 步骤进展]", prog_call_text)
+        self.assertIn("正在查询天气数据", prog_call_text)
+        self.assertIn("5.2s", prog_call_text)
+
+        # Result delivery notification
+        notifier.post_thread_message.reset_mock()
+        ok_deliv = notifier.notify_result_delivery(
+            channel="C0C1B86AMCN",
+            thread_ts="1789200000.100",
+            conversation_id="conv-weather-9999",
+            content="上海现在的天气是晴天，28°C。",
+            elapsed_seconds=18.4,
+            is_follow_up=False,
+        )
+        self.assertTrue(ok_deliv)
+        notifier.post_thread_message.assert_called_once()
+        deliv_text = notifier.post_thread_message.call_args[0][2]
+        self.assertIn("[已完成 · 结果交付]", deliv_text)
+        self.assertIn("上海现在的天气是晴天", deliv_text)
+        self.assertIn("conv-weather-9999", deliv_text)
+
+    def test_watch_and_deliver_result_end_to_end(self):
+        from hub.antigravity.result_delivery import watch_and_deliver_result
+        convo_id = "test-convo-async-e2e"
+        steps = [
+            {"step_index": 0, "source": "USER", "type": "USER_INPUT", "status": "DONE", "content": "阳朔天气"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "tool_calls": [
+                    {
+                        "name": "run_command",
+                        "args": {"toolAction": "Checking weather"},
+                    }
+                ],
+            },
+            {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "阳朔今日晴朗，25°C。",
+            },
+        ]
+        self._create_fake_transcript(convo_id, steps)
+
+        mock_notifier = MagicMock()
+        mock_notifier.notify_progress = MagicMock(return_value=True)
+        mock_notifier.notify_result_delivery = MagicMock(return_value=True)
+
+        mock_broker = MagicMock()
+        mock_broker.publish = AsyncMock()
+
+        async def _run():
+            res = await watch_and_deliver_result(
+                notifier=mock_notifier,
+                channel="C0C1B86AMCN",
+                thread_ts="1789200000.100",
+                conversation_id=convo_id,
+                task_id="tsk_async_test",
+                start_time=time.time(),
+                is_follow_up=False,
+                start_step=0,
+                max_wait_seconds=5.0,
+                poll_interval=0.05,
+                brain_root=self.brain_dir,
+                broker=mock_broker,
+            )
+            self.assertTrue(res["delivered"])
+            self.assertEqual(res["conversation_id"], convo_id)
+            mock_notifier.notify_result_delivery.assert_called_once()
+            mock_broker.publish.assert_called()
+
+        asyncio.run(_run())
 
 
 if __name__ == "__main__":

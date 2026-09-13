@@ -20,6 +20,10 @@ from hub.antigravity.prompt_builder import (
     build_follow_up_prompt,
     extract_slash_commands,
 )
+from hub.antigravity.result_delivery import (
+    get_latest_step_index,
+    watch_and_deliver_result,
+)
 from hub.antigravity.thread_notifier import ThreadNotifier
 
 logger = logging.getLogger("hub.antigravity.session_manager")
@@ -109,6 +113,7 @@ async def execute_antigravity_task(
             log(f"Found existing Antigravity session: {convo_id}. Dispatching follow-up prompt...")
 
             follow_up_prompt = build_follow_up_prompt(payload, downloaded_images=downloaded_images)
+            latest_step = get_latest_step_index(convo_id)
             success, resp_str, err_msg = await client.send_message(
                 conversation_id=convo_id,
                 content=follow_up_prompt,
@@ -132,6 +137,20 @@ async def execute_antigravity_task(
                         conversation_id=convo_id,
                         snippet=payload.text or payload.voice_transcript or "已同步附件",
                         files_count=len(downloaded_images),
+                    )
+                    # Launch background watcher for follow-up progress and result delivery
+                    asyncio.create_task(
+                        watch_and_deliver_result(
+                            notifier=notifier,
+                            channel=channel,
+                            thread_ts=thread_ts,
+                            conversation_id=convo_id,
+                            task_id=task_id,
+                            start_time=start_time,
+                            is_follow_up=True,
+                            start_step=latest_step,
+                            broker=broker,
+                        )
                     )
 
                 if broker:
@@ -312,6 +331,20 @@ async def execute_antigravity_task(
             conversation_id=convo_id,
             elapsed_seconds=elapsed,
             summary=summary_text,
+        )
+        # Launch background watcher for execution progress and result delivery
+        asyncio.create_task(
+            watch_and_deliver_result(
+                notifier=notifier,
+                channel=channel,
+                thread_ts=root_ts,
+                conversation_id=convo_id,
+                task_id=task_id,
+                start_time=start_time,
+                is_follow_up=False,
+                start_step=0,
+                broker=broker,
+            )
         )
 
     if broker:

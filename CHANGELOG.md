@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.3] - 2026-09-13
+
+### Added & Enhanced
+- **Live Execution Progress & True Result Delivery Engine (`hub/antigravity/result_delivery.py`)**:
+  - Implemented asynchronous transcript monitor watching `transcript_full.jsonl` under Antigravity Brain logs (`resolve_transcript_path`, `parse_transcript_events`, `watch_and_deliver_result`).
+  - Extracted live planner tool execution steps and dispatched real-time progress comments (`⚡ [执行中 · 步骤进展]`) directly into originating Slack threads.
+  - Extracted completed terminal response from `MODEL` `PLANNER_RESPONSE` (`status: "DONE"`) and delivered full formatted markdown results (`🎉 [已完成 · 结果交付]`) with session ID, total elapsed time, and interactive follow-up guidance.
+  - Implemented safe Slack message chunking (3500-char threshold) in `ThreadNotifier.notify_result_delivery` to prevent text truncation on long multi-turn outputs.
+  - Integrated asynchronous watcher into both new conversation instantiation (`session_manager.py` Branch B) and follow-up inquiry pipeline (`session_manager.py` Branch A).
+  - Emitted `antigravity_result_delivered` telemetry events over EventBroker for real-time SSE stream consumers.
+- **Test Coverage**:
+  - Added `TestProgressTrackingAndResultDelivery` covering transcript path resolution, step index tracking, tool action parsing, thread notifications, and end-to-end async watcher delivery (31/31 unit tests passing, 282/282 full suite passing).
+
 ## [1.9.2] - 2026-09-13
 
 ### Added & Fixed

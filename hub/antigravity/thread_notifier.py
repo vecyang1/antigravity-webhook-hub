@@ -121,6 +121,69 @@ class ThreadNotifier:
         )
         return self.post_thread_message(channel, thread_ts, msg)
 
+    def notify_progress(
+        self,
+        channel: str,
+        thread_ts: str,
+        action_summary: str,
+        elapsed_seconds: float = 0.0,
+    ) -> bool:
+        """Post live execution progress comment in thread."""
+        time_str = f"{elapsed_seconds:.1f}s" if elapsed_seconds > 0 else "< 1s"
+        clean_action = action_summary.replace("\n", " ").strip()
+        if len(clean_action) > 120:
+            clean_action = clean_action[:117] + "..."
+        msg = (
+            f"⚡ *[执行中 · 步骤进展]*\n"
+            f"• *当前动作*: `{clean_action}`\n"
+            f"• *已耗时*: `{time_str}`\n"
+            f"正在持续推演并调用工具生成结果..."
+        )
+        return self.post_thread_message(channel, thread_ts, msg)
+
+    def notify_result_delivery(
+        self,
+        channel: str,
+        thread_ts: str,
+        conversation_id: str,
+        content: str,
+        elapsed_seconds: float = 0.0,
+        is_follow_up: bool = False,
+    ) -> bool:
+        """
+        Deliver the actual generated response from Antigravity into the Slack thread.
+        Handles safe chunking for Slack's 4000-character limit.
+        """
+        header_tag = "💡 *[追问解答 · 结果交付]*" if is_follow_up else "🎉 *[已完成 · 结果交付]*"
+        time_str = f"{elapsed_seconds:.1f}s" if elapsed_seconds > 0 else "< 1s"
+        clean_content = (content or "").strip()
+        if not clean_content:
+            clean_content = "（执行已结束，无文字输出）"
+
+        max_len = 3500
+        first_chunk = clean_content[:max_len]
+        msg = (
+            f"{header_tag}\n"
+            f"• *会话ID*: `{conversation_id}`\n"
+            f"• *总计耗时*: `{time_str}`\n\n"
+            f"{first_chunk}\n\n"
+            f"💬 *追问通道已打通*：直接在此 Thread 下回复文字、发送语音或补充图片，即可无缝对该会话发起【追问】。"
+        )
+        res = self.post_thread_message(channel, thread_ts, msg)
+
+        # Deliver additional chunks if response exceeds max_len
+        if len(clean_content) > max_len:
+            remaining = clean_content[max_len:]
+            chunk_idx = 2
+            while remaining:
+                chunk = remaining[:3500]
+                remaining = remaining[3500:]
+                cont_msg = f"📄 *[结果续篇 {chunk_idx}]*\n\n{chunk}"
+                self.post_thread_message(channel, thread_ts, cont_msg)
+                chunk_idx += 1
+
+        return res
+
     def notify_done(
         self,
         channel: str,
