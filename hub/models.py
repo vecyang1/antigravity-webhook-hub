@@ -382,10 +382,7 @@ TEST_EVENT_SQL_FILTER = """(
     OR event_id LIKE '%pw_verify%'
     OR event_id LIKE '%playwright%'
     OR (
-        action_params_json NOT LIKE '%"is_test": false%'
-        AND action_params_json NOT LIKE '%"is_test":false%'
-        AND action_params_json NOT LIKE '%"is_test": 0%'
-        AND (
+        (
             command LIKE 'echo %'
             OR target_action LIKE 'echo %'
             OR source LIKE 'test/_%' ESCAPE '/'
@@ -429,6 +426,7 @@ TEST_EVENT_SQL_FILTER = """(
             OR action_params_json LIKE '%"is_test": true%'
             OR action_params_json LIKE '%"is_test":true%'
             OR action_params_json LIKE '%"is_test": 1%'
+            OR action_params_json LIKE '%''is_test'': true%'
             OR action_params_json LIKE '%test contact review verification%'
             OR action_params_json LIKE '%test-verify@%'
             OR action_params_json LIKE '%cloudflare-tunnel-test%'
@@ -441,6 +439,9 @@ TEST_EVENT_SQL_FILTER = """(
             OR action_params_json LIKE '%testing uptime kuma ingress%'
             OR action_params_json LIKE '%live public tunnel probe%'
         )
+        AND action_params_json NOT LIKE '%"is_test": false%'
+        AND action_params_json NOT LIKE '%"is_test":false%'
+        AND action_params_json NOT LIKE '%"is_test": 0%'
     )
 )"""
 

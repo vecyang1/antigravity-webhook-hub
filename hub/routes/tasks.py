@@ -458,15 +458,39 @@ def register_task_routes(
 
         if db is not None and hasattr(db, "execute_read"):
             try:
-                status_rows = await db.execute_read(
-                    "SELECT status, COUNT(*) as cnt FROM tasks GROUP BY status"
-                )
-                for r in status_rows:
+                real_by_status = {
+                    "received": 0, "queued": 0, "running": 0,
+                    "succeeded": 0, "failed": 0, "timed_out": 0, "cancelled": 0,
+                }
+                test_by_status = {
+                    "received": 0, "queued": 0, "running": 0,
+                    "succeeded": 0, "failed": 0, "timed_out": 0, "cancelled": 0,
+                }
+                real_tasks = 0
+                test_tasks = 0
+
+                summary_rows = await db.execute_read(f"""
+                    SELECT status,
+                           CASE WHEN {TEST_EVENT_SQL_FILTER} THEN 1 ELSE 0 END as is_test,
+                           COUNT(*) as cnt
+                    FROM tasks
+                    GROUP BY status, is_test
+                """)
+                for r in summary_rows:
                     st = r.get("status")
+                    is_t = bool(r.get("is_test", 0))
                     cnt = int(r.get("cnt", 0))
                     if st in counts_by_status:
-                        counts_by_status[st] = cnt
+                        counts_by_status[st] += cnt
                     total_tasks += cnt
+                    if is_t:
+                        if st in test_by_status:
+                            test_by_status[st] += cnt
+                        test_tasks += cnt
+                    else:
+                        if st in real_by_status:
+                            real_by_status[st] += cnt
+                        real_tasks += cnt
 
                 source_rows = await db.execute_read(
                     "SELECT source, COUNT(*) as cnt FROM tasks GROUP BY source ORDER BY cnt DESC LIMIT 10"
@@ -485,35 +509,6 @@ def register_task_routes(
                 evt_rows = await db.execute_read("SELECT COUNT(*) as cnt FROM webhook_events")
                 if evt_rows:
                     total_events = int(evt_rows[0].get("cnt", 0))
-
-                real_rows = await db.execute_read(f"SELECT COUNT(*) as cnt FROM tasks WHERE NOT {TEST_EVENT_SQL_FILTER}")
-                real_tasks = int(real_rows[0].get("cnt", 0)) if real_rows else 0
-                test_tasks = max(0, total_tasks - real_tasks)
-
-                real_by_status = {
-                    "received": 0, "queued": 0, "running": 0,
-                    "succeeded": 0, "failed": 0, "timed_out": 0, "cancelled": 0,
-                }
-                test_by_status = {
-                    "received": 0, "queued": 0, "running": 0,
-                    "succeeded": 0, "failed": 0, "timed_out": 0, "cancelled": 0,
-                }
-
-                real_status_rows = await db.execute_read(
-                    f"SELECT status, COUNT(*) as cnt FROM tasks WHERE NOT {TEST_EVENT_SQL_FILTER} GROUP BY status"
-                )
-                for r in real_status_rows:
-                    st = r.get("status")
-                    if st in real_by_status:
-                        real_by_status[st] = int(r.get("cnt", 0))
-
-                test_status_rows = await db.execute_read(
-                    f"SELECT status, COUNT(*) as cnt FROM tasks WHERE {TEST_EVENT_SQL_FILTER} GROUP BY status"
-                )
-                for r in test_status_rows:
-                    st = r.get("status")
-                    if st in test_by_status:
-                        test_by_status[st] = int(r.get("cnt", 0))
             except Exception as e:
                 logger.warning("Error aggregating tasks summary: %s", e)
                 real_tasks = 0

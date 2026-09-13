@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Hardened Darwin `malloc_zone_pressure_relief` in `hub/memory.py` with safe `ctypes.c_void_p` pointer checks against null dereferences.
   - Enabled WAL truncation on memory pressure relief in `hub/routes/observability.py`.
   - Corrected `hub_bin` directory traversal depth (`parents[2]`) in `tests/stress/test_m5_adversarial_dispatcher_sse.py`.
+  - Short-circuited `TEST_EVENT_SQL_FILTER` evaluation in `hub/models.py`, placing lightweight command/source checks ahead of payload JSON scans to eliminate expensive multi-megabyte string searches on large task payloads.
+  - Consolidated `GET /tasks/summary` aggregation in `hub/routes/tasks.py` into a single-pass `GROUP BY status, is_test` query, reducing endpoint response time from 3.38s to 0.28s (12x speedup).
   - Confirmed standalone server process RSS is maintained at 17.7MB - 27.9MB under high-concurrency burst loads (30 reqs, concurrency 10).
   - 100% full regression pass: 304/304 unit, contract, e2e, and stress tests passing cleanly.
 
