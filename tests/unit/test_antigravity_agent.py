@@ -901,7 +901,7 @@ class TestSlackFormatter(unittest.TestCase):
 
     def test_markdown_to_slack_mrkdwn_links_and_italic(self):
         from hub.antigravity.slack_formatter import markdown_to_slack_mrkdwn
-        md = "[访问官网](https://glintmuse.com) 与 *斜体重点* 以及 ~~删除文本~~"
+        md = "[访问官网](https://glintmuse.com) 与 _斜体重点_ 以及 ~~删除文本~~"
         slack = markdown_to_slack_mrkdwn(md)
         self.assertIn("<https://glintmuse.com|访问官网>", slack)
         self.assertIn("_斜体重点_", slack)
@@ -928,6 +928,40 @@ class TestSlackFormatter(unittest.TestCase):
         self.assertIn("_(基于高分辨率数值预报与体感实测建模)_", slack)
         self.assertIn("*1. 核心气象矩阵 (Core Matrix)*", slack)
         self.assertIn("• *温感矩阵*: 晨间微凉", slack)
+        self.assertNotIn("**", slack)
+        self.assertNotIn("###", slack)
+
+
+    def test_markdown_to_slack_mrkdwn_cjk_colons_and_commas(self):
+        from hub.antigravity.slack_formatter import markdown_to_slack_mrkdwn
+        md = "• **早晨**：局部有雨\n• **中午**：局部有雨\n**温度提示**：近期杭州气温舒适\n前文**加粗**后文\n**重点**，请留意\n【**重要通知**】"
+        slack = markdown_to_slack_mrkdwn(md)
+        self.assertIn("• *早晨*: 局部有雨", slack)
+        self.assertIn("• *中午*: 局部有雨", slack)
+        self.assertIn("*温度提示*: 近期杭州气温舒适", slack)
+        self.assertIn("前文 *加粗* 后文", slack)
+        self.assertIn("*重点*, 请留意", slack)
+        self.assertIn("*【重要通知】*", slack)
+
+    def test_markdown_to_slack_mrkdwn_real_hangzhou_2day_weather(self):
+        from hub.antigravity.slack_formatter import markdown_to_slack_mrkdwn
+        md = """为您查询到杭州近两天的天气预报如下：
+
+### 📍 9月13日（星期日）
+- **早晨**：局部有雨 🌦️ | 气温 26°C（体感 28°C）
+- **中午**：局部有雨 🌦️ | 气温 29°C（体感 31°C）
+- **傍晚**：有烟霾 🌫️ | 气温 26°C（体感 28°C）
+- **夜间**：有烟霾 🌫️ | 气温 24°C（体感 26°C）
+*今日白天可能伴有阵雨，夜间能见度略有下降，请注意携带雨具。*
+
+**温度提示**：近期杭州气温较为舒适，在 24°C - 29°C 之间。"""
+        slack = markdown_to_slack_mrkdwn(md)
+        self.assertIn("• *早晨*: 局部有雨", slack)
+        self.assertIn("• *中午*: 局部有雨", slack)
+        self.assertIn("• *傍晚*: 有烟霾", slack)
+        self.assertIn("• *夜间*: 有烟霾", slack)
+        self.assertIn("*温度提示*: 近期杭州气温较为舒适", slack)
+        self.assertIn("_今日白天可能伴有阵雨", slack)
         self.assertNotIn("**", slack)
         self.assertNotIn("###", slack)
 

@@ -165,7 +165,7 @@ class ThreadNotifier:
             f"• *会话ID*: `{conversation_id}`\n"
             f"• *总计耗时*: `{time_str}`\n\n"
             f"{first_chunk}\n\n"
-            f"💬 *追问通道已打通*：直接在此 Thread 下回复文字、发送语音或补充图片，即可无缝对该会话发起【追问】。"
+            f"💬 *追问通道已打通*: 直接在此 Thread 下回复文字、发送语音或补充图片，即可无缝对该会话发起【追问】。"
         )
         res = self.post_thread_message(channel, thread_ts, msg)
 
