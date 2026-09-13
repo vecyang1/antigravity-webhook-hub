@@ -229,42 +229,50 @@ class AntigravityWatchdog:
                 last_status = last_step.get("status", "")
                 last_content = last_step.get("content", "")
 
+                # If the last step is a normal completed model planner response with content,
+                # the agent has finished its turn and is waiting for the user. It is not stalled.
+                if last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and last_status == "DONE" and last_content and not last_step.get("tool_calls"):
+                    continue
+
+                # If the last step is an active user input or running tool, it's not stalled.
+                if last_status == "RUNNING" or (last_source in ("USER_EXPLICIT", "USER") and now - file_mtime < self.config.stall_grace_seconds):
+                    continue
+
                 is_stalled = False
                 matched_error = ""
 
-                for step in reversed(parsed_steps):
-                    s_source = step.get("source", "")
-                    s_type = step.get("type", "")
-                    s_status = step.get("status", "")
-                    s_content = str(step.get("content") or "").lower()
-
-                    for pattern in INTERRUPTED_STREAM_PATTERNS:
-                        if pattern in s_content:
-                            is_stalled = True
-                            matched_error = pattern
-                            break
-
-                    if is_stalled:
-                        break
-
-                    if s_status == "ERROR" or s_type == "ERROR_MESSAGE":
+                # Check if the conversation ended in an empty planner response hang
+                if len(parsed_steps) >= 2 and last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and not last_content and not last_step.get("tool_calls"):
+                    if now - file_mtime > self.config.stall_grace_seconds:
                         is_stalled = True
-                        matched_error = s_content[:150] or f"{s_source}_{s_status}"
-                        break
+                        matched_error = "empty_planner_response_hang"
 
-                    if step == last_step:
-                        if s_source == "MODEL" and s_status == "DONE" and s_content and not step.get("tool_calls"):
-                            break
-                        if s_source in ("USER_EXPLICIT", "USER") and s_status == "DONE":
+                # If not empty hang, inspect steps backwards for unresolved system/error interruptions
+                if not is_stalled:
+                    for step in reversed(parsed_steps):
+                        s_source = step.get("source", "")
+                        s_type = step.get("type", "")
+                        s_status = step.get("status", "")
+                        s_content = str(step.get("content") or "").lower()
+
+                        # If we encounter a successful MODEL response before encountering any error,
+                        # the conversation was already successfully continuing or recovered.
+                        if s_source == "MODEL" and s_type == "PLANNER_RESPONSE" and s_status == "DONE" and s_content and not step.get("tool_calls"):
                             break
 
-                if not is_stalled and len(parsed_steps) >= 2:
-                    if last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and not last_content and not last_step.get("tool_calls"):
-                        prev_step = parsed_steps[-2]
-                        if prev_step.get("status") == "DONE":
-                            if now - file_mtime > self.config.stall_grace_seconds:
+                        # Only match error patterns against SYSTEM or ERROR messages (never against completed MODEL or tool output)
+                        if s_source == "SYSTEM" or s_status == "ERROR" or s_type == "ERROR_MESSAGE":
+                            for pattern in INTERRUPTED_STREAM_PATTERNS:
+                                if pattern in s_content:
+                                    is_stalled = True
+                                    matched_error = pattern
+                                    break
+                            if is_stalled:
+                                break
+                            if s_status == "ERROR" or s_type == "ERROR_MESSAGE":
                                 is_stalled = True
-                                matched_error = "empty_planner_response_hang"
+                                matched_error = s_content[:150] or f"{s_source}_{s_status}"
+                                break
 
                 if not is_stalled:
                     continue
