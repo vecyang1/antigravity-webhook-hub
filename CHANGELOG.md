@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Features
 - Harden boost/goal hang recovery and MCP error detection (`a51fa0a`)
 
+### Fixes
+- Harden schedule remount ls_pid lifecycle and prevent infinite remount loops (`34f58f4`)
+
 ## [1.15.0] - 2026-09-14
 
 ### Added & Hardened
