@@ -33,12 +33,19 @@ from hub.server import AsyncHTTPServer
 
 
 @pytest.fixture
-async def dashboard_test_app(free_port: int, temp_db_path: str):
+async def dashboard_test_app(free_port: int, temp_db_path: str, tmp_path: Path):
     """Start full test server with all wired routes, dispatcher, and broker."""
     config = AppConfig()
     config.server.port = free_port
     config.server.host = "127.0.0.1"
     config.database.path = temp_db_path
+
+    test_brain = tmp_path / "brain"
+    test_brain.mkdir(parents=True, exist_ok=True)
+    test_sidecar = tmp_path / "sidecar_data"
+    test_sidecar.mkdir(parents=True, exist_ok=True)
+    config.antigravity_watchdog.brain_dir = str(test_brain)
+    config.antigravity_watchdog.sidecar_data_dir = str(test_sidecar)
 
     db = DatabaseManager(temp_db_path, cache_size=-16)
     db.init_schema()
