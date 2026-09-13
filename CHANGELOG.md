@@ -22,8 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CLI & Unified Observability Enhancements**:
   - `./bin/webhook-hub antigravity doctor`: Added dedicated sections for "⏳ 配额冷却状态会话" (remaining seconds & reset timestamps) and "⏰ 会话后台定时巡检哨兵".
   - Deep integration with `cadence_ctl doctor` in `scheduled-task-rescheduler` for cross-system telemetry and diagnostics.
-- **Test Suite Expansion**:
+- **Test Suite Expansion & CI/CD Stress Test Hardening**:
   - Added 5 new unit tests in `tests/unit/test_antigravity_watchdog.py` covering quota parsing, cooldown quarantine, pull-up transitions, MCP hang prompts, and schedule heartbeat remounts (15/15 watchdog tests green, 192/192 full unit tests green, 62/62 API tests green).
+  - **HTTP 413 Payload Too Large TCP RST Prevention (RFC 7230 §3.4)**:
+    - Gracefully drained incoming unread request body in `AsyncHTTPServer` when `content_length > max_body_bytes` before closing connection. This prevents the BSD/macOS kernel from issuing an abortive TCP RST on socket close with pending unread data, eliminating intermittent `httpx.ReadError` in `test_crypto_boundary_1mb_payloads` across CI runners.
 
 ## [1.11.3] - 2026-09-13
 

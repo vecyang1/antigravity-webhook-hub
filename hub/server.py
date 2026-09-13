@@ -422,8 +422,15 @@ class AsyncHTTPServer:
                             413,
                             f"Payload size ({content_length} bytes) exceeds maximum limit ({self.max_body_bytes} bytes)",
                         )
+                        # Gracefully drain incoming body so TCP does not send RST on close (RFC 7230 §3.4)
                         try:
-                            await asyncio.sleep(0.01)
+                            remaining = content_length
+                            max_drain = min(remaining, self.max_body_bytes * 2)
+                            while max_drain > 0:
+                                chunk = await asyncio.wait_for(reader.read(min(max_drain, 65536)), timeout=0.5)
+                                if not chunk:
+                                    break
+                                max_drain -= len(chunk)
                         except Exception:
                             pass
                         break
