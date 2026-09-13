@@ -72,7 +72,11 @@ def register_webhook_routes(
         elif not command and action_type in ("antigravity", "agent_conversation", "antigravity_task"):
             command = "agentapi new-conversation"
         elif not command and (source in ("surecart", "surecart-acs", "surecart_acs", "stripe-acs", "stripe_acs") or "/surecart" in req.path):
-            command = "python3 /Users/vecsatfoxmailcom/.agents/skills/stripe-agentic-commerce/scripts/stripe_acs_cli.py surecart sync"
+            evt = body_dict.get("event") or body_dict.get("type")
+            if evt == "product.deleted":
+                command = "python3 /Users/vecsatfoxmailcom/.agents/skills/stripe-agentic-commerce/scripts/stripe_acs_cli.py surecart sync --mode replace"
+            else:
+                command = "python3 /Users/vecsatfoxmailcom/.agents/skills/stripe-agentic-commerce/scripts/stripe_acs_cli.py surecart sync"
 
         raw_priority = body_dict.get("priority", 0)
         try:
