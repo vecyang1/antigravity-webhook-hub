@@ -22,9 +22,11 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
-from hub.antigravity.watchdog import AntigravityWatchdog
+if TYPE_CHECKING:
+    from hub.antigravity.watchdog import AntigravityWatchdog
+
 from hub.memory import apply_memory_pressure_relief
 
 logger = logging.getLogger("hub.dispatcher")
@@ -68,9 +70,13 @@ class TaskDispatcher:
         self._last_sleep_duration_seconds: float = 0.0
 
         aw_cfg = getattr(self.config, "antigravity_watchdog", None) if self.config else None
-        self.antigravity_watchdog: Optional[AntigravityWatchdog] = (
-            AntigravityWatchdog(db=self.db, config=aw_cfg) if self.db else None
-        )
+        self.antigravity_watchdog: Optional[Any] = None
+        if self.db and (aw_cfg is None or getattr(aw_cfg, "enabled", True)):
+            try:
+                from hub.antigravity.watchdog import AntigravityWatchdog
+                self.antigravity_watchdog = AntigravityWatchdog(db=self.db, config=aw_cfg, broker=self.broker)
+            except Exception as aw_err:
+                logger.debug("AntigravityWatchdog init skipped: %s", aw_err)
 
     async def start(self) -> None:
         """Start background task dispatcher workers, recover orphaned tasks, and launch unprocessed sweeper."""
@@ -348,6 +354,17 @@ class TaskDispatcher:
                                 "Antigravity Watchdog: Resuscitated %d stalled sessions after sleep/wake",
                                 len(resuscitated),
                             )
+                            if self.broker:
+                                try:
+                                    await self.broker.publish("events", {
+                                        "event": "antigravity_watchdog_sweep",
+                                        "type": "antigravity_watchdog_sweep",
+                                        "action": "sleep_wake_sweep",
+                                        "resuscitated_count": len(resuscitated),
+                                        "timestamp": time.time(),
+                                    })
+                                except Exception as b_err:
+                                    logger.debug("Failed publishing sleep wake sweep event: %s", b_err)
                         last_watchdog_sweep = time.time()
                     except Exception as e:
                         logger.error("Error during sleep recovery Antigravity watchdog sweep: %s", e)
@@ -368,6 +385,17 @@ class TaskDispatcher:
                                 "Antigravity Watchdog: Resuscitated %d stalled sessions in periodic sweep",
                                 len(resuscitated),
                             )
+                            if self.broker:
+                                try:
+                                    await self.broker.publish("events", {
+                                        "event": "antigravity_watchdog_sweep",
+                                        "type": "antigravity_watchdog_sweep",
+                                        "action": "periodic_sweep",
+                                        "resuscitated_count": len(resuscitated),
+                                        "timestamp": time.time(),
+                                    })
+                                except Exception as b_err:
+                                    logger.debug("Failed publishing periodic watchdog sweep event: %s", b_err)
                         last_watchdog_sweep = time.time()
                     except Exception as e:
                         logger.error("Error during periodic Antigravity watchdog sweep: %s", e)

@@ -12,9 +12,10 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
-from hub.antigravity.thread_notifier import ThreadNotifier
+if TYPE_CHECKING:
+    from hub.antigravity.thread_notifier import ThreadNotifier
 
 logger = logging.getLogger("hub.antigravity.result_delivery")
 

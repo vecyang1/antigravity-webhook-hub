@@ -600,7 +600,7 @@ def test_adversarial_finding1_standalone_server_process_rss_breach(free_port: in
     env = dict(os.environ)
     env["WEBHOOK_SECRET"] = secret
 
-    hub_bin = Path(__file__).resolve().parent.parent / "bin" / "webhook-hub"
+    hub_bin = Path(__file__).resolve().parents[2] / "bin" / "webhook-hub"
     entrypoint = [sys.executable, "-B", str(hub_bin)] if hub_bin.is_file() else [sys.executable, "-B", "-m", "hub.cli"]
 
     server_proc = subprocess.Popen(

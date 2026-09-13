@@ -1700,6 +1700,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
             <span class="telemetry-label">DB Engine</span>
             <span class="telemetry-value" style="color: var(--status-success);">SQLite WAL</span>
           </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">Watchdog Probe</span>
+            <span class="telemetry-value" id="telemetryWatchdogProbe" style="color: var(--status-success);">Online</span>
+          </div>
         </div>
 
         <!-- Antigravity Agent & Sentinel Hub -->
@@ -1726,6 +1730,13 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
                 <span>Sidebar Pulse Queue</span>
               </div>
               <span class="nav-count" id="countPulses">0</span>
+            </li>
+            <li class="nav-item" id="navItemWatchdog" data-nav="watchdog" onclick="switchMainView('watchdog', this)" title="Antigravity 24/7 Watchdog, network probes &amp; auto-resuscitation">
+              <div class="nav-item-left">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/></svg>
+                <span>Watchdog &amp; Health</span>
+              </div>
+              <span class="nav-count" id="countWatchdogStalled" style="background: rgba(59, 130, 246, 0.15); color: var(--accent-blue);">0</span>
             </li>
           </ul>
         </div>
@@ -1791,6 +1802,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
               <span>Sweep Unprocessed</span>
             </button>
+            <button class="btn btn-secondary" style="justify-content: center; width: 100%;" onclick="pullUpAllSessions(this)" title="Scan and pull up all stalled sessions immediately">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+              <span>1-Click Pull-Up</span>
+            </button>
           </div>
         </div>
       </div>
@@ -1835,6 +1850,26 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       <div class="content-viewport">
         <!-- View 1: Tasks / Activity Feed -->
         <div id="viewContainerTasks" class="view-panel active">
+          <!-- Watchdog Warning Banner (Visible only when stalled sessions detected) -->
+          <div id="watchdogAlertBanner" style="display: none; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; align-items: center; justify-content: space-between; gap: 12px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--status-danger); flex-shrink: 0;"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <div>
+                <span style="font-weight: 600; color: #fca5a5;" id="watchdogAlertTitle">Antigravity Watchdog Alert</span>
+                <span style="font-size: 13px; color: #cbd5e1; margin-left: 6px;" id="watchdogAlertText">Stalled or dropped sessions detected.</span>
+              </div>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <button class="btn btn-primary" style="padding: 4px 12px; font-size: 12px;" onclick="pullUpAllSessions(this)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+                <span>1-Click Pull-Up</span>
+              </button>
+              <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="switchMainView('watchdog')">
+                <span>View Watchdog &rarr;</span>
+              </button>
+            </div>
+          </div>
+
           <!-- Metric Cards -->
           <div class="metric-grid">
             <div class="metric-box">
@@ -2060,6 +2095,154 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
                   <tr>
                     <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 32px;">
                       Loading sidebar pulse queue...
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- View 5: Antigravity Watchdog & Resuscitation Center -->
+        <div id="viewContainerWatchdog" class="view-panel" style="display: none;">
+          <!-- Telemetry Banner -->
+          <div class="agent-telemetry-banner">
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Watchdog Engine</span>
+              <span class="agent-telemetry-val" id="watchdogEngineStatus">
+                <span class="pulse-indicator" style="background-color: var(--status-success);"></span>
+                <span>Active 24/7</span>
+              </span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Network Probe</span>
+              <span class="agent-telemetry-val" id="watchdogNetworkStatus">
+                <span class="pulse-indicator" style="background-color: var(--status-success);"></span>
+                <span id="watchdogProbeTarget">Online (1.1.1.1:53)</span>
+              </span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Language Server</span>
+              <span class="agent-telemetry-val" id="watchdogLsStatus">
+                <span class="pulse-indicator" style="background-color: var(--status-success);"></span>
+                <span id="watchdogLsAddress">Connected</span>
+              </span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Auto-Pull-Up Policy</span>
+              <span class="agent-telemetry-val" id="watchdogAutoPolicy" style="color: var(--accent-blue);">
+                Enabled (30s Tick)
+              </span>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <button class="btn btn-primary" onclick="pullUpAllSessions(this)" id="btnWatchdogPullUpTop">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+                <span>1-Click Pull-Up All</span>
+              </button>
+              <button class="btn btn-secondary" onclick="loadWatchdogStatus()" title="Refresh Watchdog Status">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                <span>Refresh</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Watchdog Metric Cards -->
+          <div class="metric-grid">
+            <div class="metric-box">
+              <span class="metric-box-title">Stalled / Interrupted</span>
+              <span class="metric-box-value" style="color: var(--status-success);" id="statWatchdogStalled">0</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-title">Total Resuscitation Attempts</span>
+              <span class="metric-box-value" id="statWatchdogTotalAttempts">0</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-title">Successfully Revived</span>
+              <span class="metric-box-value" style="color: var(--status-success);" id="statWatchdogRevived">0</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-title">Failed / Exhausted</span>
+              <span class="metric-box-value" style="color: var(--text-muted);" id="statWatchdogFailed">0</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-box-title">Watchdog Scan Interval</span>
+              <span class="metric-box-value" style="color: var(--accent-blue);" id="statWatchdogInterval">30s</span>
+            </div>
+          </div>
+
+          <!-- Section 1: Active Stalled / Hung Sessions -->
+          <div class="table-card">
+            <div class="table-header">
+              <div>
+                <div class="table-title">Detected Stalled Sessions &amp; Suspended Turns</div>
+                <div style="font-size: 12px; color: var(--text-muted);" id="stalledSubtitle">Sessions scanned in ~/.gemini/antigravity/brain/ needing resuscitation</div>
+              </div>
+              <span class="badge badge-queued" id="badgeStalledCount">0 Detected</span>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Conversation ID</th>
+                    <th>Type</th>
+                    <th>Sidecar Slug</th>
+                    <th>Last Error / Reason</th>
+                    <th>Prior Attempts</th>
+                    <th>Recovery Eligibility</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="stalledTableBody">
+                  <tr>
+                    <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 32px;">
+                      Scanning for stalled Antigravity sessions...
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Section 2: Resuscitation History (SQLite SSOT) -->
+          <div class="table-card">
+            <div class="table-header">
+              <div>
+                <div class="table-title">Resuscitation Audit Trail &amp; Self-Healing History</div>
+                <div style="font-size: 12px; color: var(--text-muted);">Authoritative recovery event log from SQLite antigravity_resuscitations table</div>
+              </div>
+              <div class="filter-pill-group" role="group" aria-label="Resuscitation Filter">
+                <button id="pillResuscitationAll" class="filter-pill active" onclick="setResuscitationFilter('all')">
+                  <span>All Attempts</span>
+                  <span class="pill-badge" id="pillResuscitationAllCount">0</span>
+                </button>
+                <button id="pillResuscitationSuccess" class="filter-pill" onclick="setResuscitationFilter('resuscitated')">
+                  <span>Revived</span>
+                  <span class="pill-badge" id="pillResuscitationSuccessCount">0</span>
+                </button>
+                <button id="pillResuscitationFailed" class="filter-pill" onclick="setResuscitationFilter('failed')">
+                  <span>Failed / Exhausted</span>
+                  <span class="pill-badge" id="pillResuscitationFailedCount">0</span>
+                </button>
+              </div>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Timestamp (UTC)</th>
+                    <th>Resuscitation ID</th>
+                    <th>Conversation ID</th>
+                    <th>Sidecar</th>
+                    <th>Outcome</th>
+                    <th>Attempt</th>
+                    <th>Last Error / Trigger</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="resuscitationsTableBody">
+                  <tr>
+                    <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 32px;">
+                      Loading resuscitation history...
                     </td>
                   </tr>
                 </tbody>
@@ -2295,6 +2478,30 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
     </div>
   </div>
 
+  <!-- Resuscitation Detail Modal -->
+  <div class="modal-overlay" id="resuscitationModalOverlay" onclick="if (event.target === this) closeResuscitationModal()">
+    <div class="modal" style="max-width: 680px;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent-blue);"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/></svg>
+          <span style="font-weight: 700; font-size: 15px;" id="resuscitationModalTitle">Resuscitation Record Details</span>
+        </div>
+        <button class="drawer-close" onclick="closeResuscitationModal()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body" id="resuscitationModalBody" style="display: flex; flex-direction: column; gap: 14px; max-height: 70vh; overflow-y: auto;">
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeResuscitationModal()">Close</button>
+        <button class="btn btn-primary" id="btnResuscitationModalCopy" onclick="copyResuscitationPrompt()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span>Copy Prompt</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast notifications -->
   <div class="toast-container" id="toastContainer"></div>
 
@@ -2333,6 +2540,9 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       signals: [],
       signalsFilter: 'all',
       pulses: [],
+      watchdogStatus: null,
+      resuscitationFilter: 'all',
+      activeResuscitationRecord: null,
       openSections: new Set(),
       drawerDurationTimer: null,
       drawerRenderScheduled: false,
@@ -2703,7 +2913,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         const targetNav = document.getElementById(
           viewName === 'sentinels' ? 'navItemSentinels' :
           viewName === 'signals' ? 'navItemSignals' :
-          viewName === 'pulses' ? 'navItemPulses' : 'navItemAll'
+          viewName === 'pulses' ? 'navItemPulses' :
+          viewName === 'watchdog' ? 'navItemWatchdog' : 'navItemAll'
         );
         if (targetNav) targetNav.classList.add('active');
       }}
@@ -2713,7 +2924,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         tasks: document.getElementById('viewContainerTasks'),
         sentinels: document.getElementById('viewContainerSentinels'),
         signals: document.getElementById('viewContainerSignals'),
-        pulses: document.getElementById('viewContainerPulses')
+        pulses: document.getElementById('viewContainerPulses'),
+        watchdog: document.getElementById('viewContainerWatchdog')
       }};
 
       Object.keys(panels).forEach(key => {{
@@ -2752,6 +2964,11 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         if (toggleFilterBtn) toggleFilterBtn.style.display = 'none';
         if (searchInput) searchInput.placeholder = 'Search pulse queue events...';
         loadPulses();
+      }} else if (viewName === 'watchdog') {{
+        if (titleEl) titleEl.innerText = 'Antigravity 24/7 Watchdog & Resuscitation Center';
+        if (toggleFilterBtn) toggleFilterBtn.style.display = 'none';
+        if (searchInput) searchInput.placeholder = 'Search stalled sessions, resuscitations...';
+        loadWatchdogStatus();
       }} else {{
         if (titleEl) titleEl.innerText = 'All Activities';
         if (toggleFilterBtn) toggleFilterBtn.style.display = 'inline-flex';
@@ -3361,6 +3578,390 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       }}, delay);
     }}
 
+    // Antigravity Watchdog & Resuscitation Logic (SSOT from /antigravity/status)
+    let watchdogStatusTimeout = null;
+    function loadWatchdogStatusDebounced(delay = 100) {{
+      clearTimeout(watchdogStatusTimeout);
+      watchdogStatusTimeout = setTimeout(() => {{
+        loadWatchdogStatus();
+      }}, delay);
+    }}
+
+    async function loadWatchdogStatus() {{
+      try {{
+        const resp = await fetch('/antigravity/status');
+        if (!resp.ok) {{
+          console.warn('Failed to load watchdog status:', resp.statusText);
+          return;
+        }}
+        const data = await resp.json();
+        state.watchdogStatus = data;
+        renderWatchdogStatus();
+      }} catch (err) {{
+        console.warn('Error fetching watchdog status:', err);
+      }}
+    }}
+
+    function renderWatchdogStatus() {{
+      const data = state.watchdogStatus;
+      if (!data) return;
+
+      // 1. Sidebar count and telemetry
+      const countEl = document.getElementById('countWatchdogStalled');
+      if (countEl) {{
+        const stalledCount = (data.stalled_sessions && data.stalled_sessions.length) || data.stalled_sessions_detected || 0;
+        countEl.innerText = stalledCount;
+        if (stalledCount > 0) {{
+          countEl.style.backgroundColor = 'rgba(239, 68, 68, 0.2)';
+          countEl.style.color = 'var(--status-danger)';
+        }} else {{
+          countEl.style.backgroundColor = 'rgba(59, 130, 246, 0.15)';
+          countEl.style.color = 'var(--accent-blue)';
+        }}
+      }}
+
+      const telemProbe = document.getElementById('telemetryWatchdogProbe');
+      if (telemProbe) {{
+        if (data.network_online) {{
+          telemProbe.innerText = 'Online';
+          telemProbe.style.color = 'var(--status-success)';
+        }} else {{
+          telemProbe.innerText = 'Offline';
+          telemProbe.style.color = 'var(--status-danger)';
+        }}
+      }}
+
+      // 2. Telemetry Banner on Watchdog view
+      const engineEl = document.getElementById('watchdogEngineStatus');
+      if (engineEl) {{
+        engineEl.innerHTML = data.watchdog_enabled
+          ? `<span class="pulse-indicator" style="background-color: var(--status-success);"></span><span>Active 24/7</span>`
+          : `<span class="pulse-indicator" style="background-color: var(--status-danger);"></span><span>Disabled</span>`;
+      }}
+
+      const netEl = document.getElementById('watchdogNetworkStatus');
+      if (netEl) {{
+        const probeTarget = data.probe_target || '1.1.1.1:53';
+        netEl.innerHTML = data.network_online
+          ? `<span class="pulse-indicator" style="background-color: var(--status-success);"></span><span>Online (${{escapeHtml(probeTarget)}})</span>`
+          : `<span class="pulse-indicator" style="background-color: var(--status-danger);"></span><span>Offline</span>`;
+      }}
+
+      const lsEl = document.getElementById('watchdogLsStatus');
+      if (lsEl) {{
+        const lsAddr = data.language_server_address || '';
+        lsEl.innerHTML = data.language_server_connected
+          ? `<span class="pulse-indicator" style="background-color: var(--status-success);"></span><span title="${{escapeHtml(lsAddr)}}">Connected</span>`
+          : `<span class="pulse-indicator" style="background-color: var(--status-warning);"></span><span>Unavailable</span>`;
+      }}
+
+      const autoPolicyEl = document.getElementById('watchdogAutoPolicy');
+      if (autoPolicyEl) {{
+        autoPolicyEl.innerText = data.auto_resuscitate ? `Enabled (${{data.interval_seconds || 30}}s Tick)` : 'Manual Only';
+      }}
+
+      // 3. Metric boxes
+      const stalledCount = (data.stalled_sessions && data.stalled_sessions.length) || data.stalled_sessions_detected || 0;
+      const statStalled = document.getElementById('statWatchdogStalled');
+      if (statStalled) {{
+        statStalled.innerText = stalledCount;
+        statStalled.style.color = stalledCount > 0 ? 'var(--status-danger)' : 'var(--status-success)';
+      }}
+
+      const stats = data.resuscitation_stats || {{}};
+      const statTotal = document.getElementById('statWatchdogTotalAttempts');
+      if (statTotal) statTotal.innerText = stats.total || 0;
+
+      const statRevived = document.getElementById('statWatchdogRevived');
+      if (statRevived) statRevived.innerText = stats.resuscitated || 0;
+
+      const statFailed = document.getElementById('statWatchdogFailed');
+      if (statFailed) {{
+        const failedCount = (stats.failed || 0) + (stats.exhausted || 0);
+        statFailed.innerText = failedCount;
+        statFailed.style.color = failedCount > 0 ? 'var(--status-danger)' : 'var(--text-muted)';
+      }}
+
+      const statInterval = document.getElementById('statWatchdogInterval');
+      if (statInterval) statInterval.innerText = (data.interval_seconds || 30) + 's';
+
+      // Toggle alert banner on main tasks view
+      const alertBanner = document.getElementById('watchdogAlertBanner');
+      if (alertBanner) {{
+        if (stalledCount > 0) {{
+          alertBanner.style.display = 'flex';
+          const alertText = document.getElementById('watchdogAlertText');
+          if (alertText) alertText.innerText = `${{stalledCount}} Antigravity session(s) stalled or interrupted in brain/ needing pull-up.`;
+        }} else {{
+          alertBanner.style.display = 'none';
+        }}
+      }}
+
+      // 4. Stalled sessions table
+      const badgeStalled = document.getElementById('badgeStalledCount');
+      if (badgeStalled) {{
+        badgeStalled.innerText = `${{stalledCount}} Detected`;
+        badgeStalled.className = stalledCount > 0 ? 'badge badge-danger' : 'badge badge-queued';
+      }}
+
+      const stalledTbody = document.getElementById('stalledTableBody');
+      if (stalledTbody) {{
+        const list = data.stalled_sessions || [];
+        if (list.length === 0) {{
+          stalledTbody.innerHTML = `
+            <tr>
+              <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 36px 20px;">
+                <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--status-success);"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/></svg>
+                  <span style="font-weight: 500; color: var(--text-main);">All Sessions Healthy</span>
+                  <span style="font-size: 12px; color: var(--text-subtle);">No stalled turns, hung network sockets, or interrupted subagents detected.</span>
+                </div>
+              </td>
+            </tr>
+          `;
+        }} else {{
+          stalledTbody.innerHTML = list.map(s => {{
+            const convoIdEsc = escapeHtml(s.conversation_id);
+            const typeBadge = s.is_subagent
+              ? '<span class="badge" style="background: rgba(147, 51, 234, 0.15); color: #c084fc;">Subagent</span>'
+              : '<span class="badge" style="background: rgba(59, 130, 246, 0.15); color: var(--accent-blue);">Main Session</span>';
+            const sidecar = escapeHtml(s.sidecar_slug || 'antigravity');
+            const errEsc = escapeHtml(s.last_error || 'interrupted');
+            const attempts = s.attempt_count || 0;
+            const canRevive = s.can_resuscitate;
+            const eligBadge = canRevive
+              ? '<span class="badge badge-success">Eligible</span>'
+              : `<span class="badge badge-warning" title="${{escapeHtml(s.skip_reason || '')}}">${{escapeHtml(s.skip_reason || 'Skipped')}}</span>`;
+
+            return `
+              <tr>
+                <td>
+                  <span class="task-id-code" style="cursor: pointer;" onclick="copyText('${{escapeJsString(s.conversation_id)}}')" title="Click to copy Conversation ID">${{convoIdEsc}}</span>
+                </td>
+                <td>${{typeBadge}}</td>
+                <td><span class="source-tag">${{sidecar}}</span></td>
+                <td style="max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 11px;" title="${{errEsc}}">${{errEsc}}</td>
+                <td><strong>${{attempts}}</strong></td>
+                <td>${{eligBadge}}</td>
+                <td>
+                  <button class="btn btn-primary" style="padding: 3px 10px; font-size: 11px;" onclick="pullUpSingleSession('${{escapeJsString(s.conversation_id)}}', this)" ${{canRevive ? '' : 'disabled'}}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+                    <span>Pull-Up Now</span>
+                  </button>
+                </td>
+              </tr>
+            `;
+          }}).join('');
+        }}
+      }}
+
+      // 5. Resuscitation History Table
+      const historyTbody = document.getElementById('resuscitationsTableBody');
+      if (historyTbody) {{
+        let history = data.recent_resuscitations || [];
+        const filter = state.resuscitationFilter;
+
+        const allCountEl = document.getElementById('pillResuscitationAllCount');
+        if (allCountEl) allCountEl.innerText = stats.total || history.length;
+        const succCountEl = document.getElementById('pillResuscitationSuccessCount');
+        if (succCountEl) succCountEl.innerText = stats.resuscitated || 0;
+        const failCountEl = document.getElementById('pillResuscitationFailedCount');
+        if (failCountEl) failCountEl.innerText = (stats.failed || 0) + (stats.exhausted || 0);
+
+        if (filter === 'resuscitated') {{
+          history = history.filter(r => r.status === 'resuscitated');
+        }} else if (filter === 'failed') {{
+          history = history.filter(r => r.status === 'failed' || r.status === 'exhausted');
+        }}
+
+        if (history.length === 0) {{
+          historyTbody.innerHTML = `
+            <tr>
+              <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 32px;">
+                No resuscitation records found for current filter.
+              </td>
+            </tr>
+          `;
+        }} else {{
+          historyTbody.innerHTML = history.map(r => {{
+            const resIdEsc = escapeHtml(r.resuscitation_id);
+            const convoIdEsc = escapeHtml(r.conversation_id);
+            const sidecar = escapeHtml(r.sidecar_slug || '-');
+            const timeStr = escapeHtml(r.resuscitated_at || '-');
+            const status = r.status || 'unknown';
+            let badgeClass = 'badge-queued';
+            if (status === 'resuscitated') badgeClass = 'badge-success';
+            else if (status === 'failed') badgeClass = 'badge-danger';
+            else if (status === 'exhausted') badgeClass = 'badge-warning';
+            else if (status === 'attempting') badgeClass = 'badge-running';
+
+            const errSnippet = escapeHtml(r.last_error || '-');
+
+            return `
+              <tr>
+                <td style="color: var(--text-muted); font-size: 12px; white-space: nowrap;">${{timeStr}}</td>
+                <td><span class="task-id-code" style="cursor: pointer;" onclick="copyText('${{escapeJsString(r.resuscitation_id)}}')" title="Click to copy">${{resIdEsc}}</span></td>
+                <td><span class="task-id-code" style="cursor: pointer;" onclick="copyText('${{escapeJsString(r.conversation_id)}}')" title="Click to copy">${{convoIdEsc}}</span></td>
+                <td><span class="source-tag">${{sidecar}}</span></td>
+                <td><span class="badge ${{badgeClass}}">${{escapeHtml(status)}}</span></td>
+                <td><strong>${{r.attempt_count || 1}}</strong></td>
+                <td style="max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 11px;" title="${{errSnippet}}">${{errSnippet}}</td>
+                <td>
+                  <div style="display: inline-flex; gap: 4px; align-items: center;">
+                    <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="openResuscitationModal('${{escapeJsString(r.resuscitation_id)}}')">Details</button>
+                    <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="pullUpSingleSession('${{escapeJsString(r.conversation_id)}}', this)">Re-pull Up</button>
+                  </div>
+                </td>
+              </tr>
+            `;
+          }}).join('');
+        }}
+      }}
+    }}
+
+    function setResuscitationFilter(filter) {{
+      state.resuscitationFilter = filter;
+      document.querySelectorAll('#pillResuscitationAll, #pillResuscitationSuccess, #pillResuscitationFailed').forEach(b => b.classList.remove('active'));
+      const activeBtn = document.getElementById(
+        filter === 'resuscitated' ? 'pillResuscitationSuccess' :
+        filter === 'failed' ? 'pillResuscitationFailed' : 'pillResuscitationAll'
+      );
+      if (activeBtn) activeBtn.classList.add('active');
+      renderWatchdogStatus();
+    }}
+
+    async function pullUpAllSessions(btnEl) {{
+      if (btnEl) {{
+        btnEl.disabled = true;
+        btnEl.dataset.originalHtml = btnEl.innerHTML;
+        btnEl.innerHTML = `<span class="pulse-indicator" style="background-color: #fff;"></span><span>Pulling up...</span>`;
+      }}
+      showToast('Triggering automated pull-up across all stalled sessions...', 'info');
+
+      try {{
+        const resp = await fetch('/antigravity/pull-up', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{}})
+        }});
+        const data = await resp.json();
+        if (resp.ok && data.success) {{
+          const count = data.resuscitated_count || (data.results && data.results.length) || 0;
+          showToast(`Pull-up completed: ${{count}} session(s) processed`, 'success');
+        }} else {{
+          showToast('Pull-up returned notice: ' + (data.error || resp.statusText), 'warning');
+        }}
+      }} catch (err) {{
+        showToast('Pull-up request failed: ' + err.message, 'error');
+      }} finally {{
+        if (btnEl) {{
+          btnEl.disabled = false;
+          btnEl.innerHTML = btnEl.dataset.originalHtml || '1-Click Pull-Up';
+        }}
+        // Unidirectional data flow: re-read authoritative state from SSOT API
+        await loadWatchdogStatus();
+        refreshTasksDebounced(150);
+      }}
+    }}
+
+    async function pullUpSingleSession(convoId, btnEl) {{
+      if (!convoId) return;
+      if (btnEl) {{
+        btnEl.disabled = true;
+        btnEl.dataset.originalHtml = btnEl.innerHTML;
+        btnEl.innerText = 'Pulling up...';
+      }}
+      showToast(`Initiating pull-up for session ${{convoId.substring(0, 10)}}...`, 'info');
+
+      try {{
+        const resp = await fetch('/antigravity/pull-up', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ conversation_id: convoId }})
+        }});
+        const data = await resp.json();
+        if (resp.ok && data.success) {{
+          showToast(`Session ${{convoId.substring(0, 8)}} resuscitated successfully!`, 'success');
+        }} else {{
+          showToast(`Pull-up failed: ${{data.error || data.status || resp.statusText}}`, 'error');
+        }}
+      }} catch (err) {{
+        showToast(`Pull-up error: ${{err.message}}`, 'error');
+      }} finally {{
+        if (btnEl) {{
+          btnEl.disabled = false;
+          btnEl.innerHTML = btnEl.dataset.originalHtml || 'Pull-Up Now';
+        }}
+        // Unidirectional data flow: re-read authoritative state from SSOT API
+        await loadWatchdogStatus();
+        refreshTasksDebounced(150);
+      }}
+    }}
+
+    function openResuscitationModal(resId) {{
+      const modal = document.getElementById('resuscitationModalOverlay');
+      const body = document.getElementById('resuscitationModalBody');
+      if (!modal || !body) return;
+
+      const data = state.watchdogStatus;
+      const history = (data && data.recent_resuscitations) || [];
+      const rec = history.find(r => r.resuscitation_id === resId);
+
+      if (!rec) {{
+        body.innerHTML = `<div style="color: var(--status-danger);">Record ${{escapeHtml(resId)}} not found in local cache.</div>`;
+        modal.classList.add('open');
+        return;
+      }}
+
+      state.activeResuscitationRecord = rec;
+      const promptText = rec.resuscitation_prompt || 'Default system prompt';
+
+      body.innerHTML = `
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; background: var(--bg-base); padding: 14px; border-radius: 8px; border: 1px solid var(--border-color);">
+          <div>
+            <span style="font-size: 11px; text-transform: uppercase; color: var(--text-subtle);">Resuscitation ID</span>
+            <div style="font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-main);">${{escapeHtml(rec.resuscitation_id)}}</div>
+          </div>
+          <div>
+            <span style="font-size: 11px; text-transform: uppercase; color: var(--text-subtle);">Timestamp</span>
+            <div style="font-size: 12px; color: var(--text-muted);">${{escapeHtml(rec.resuscitated_at || '-')}}</div>
+          </div>
+          <div>
+            <span style="font-size: 11px; text-transform: uppercase; color: var(--text-subtle);">Conversation ID</span>
+            <div style="font-family: var(--font-mono); font-size: 12px; color: var(--accent-blue); word-break: break-all;">${{escapeHtml(rec.conversation_id)}}</div>
+          </div>
+          <div>
+            <span style="font-size: 11px; text-transform: uppercase; color: var(--text-subtle);">Outcome Status</span>
+            <div><span class="badge ${{rec.status === 'resuscitated' ? 'badge-success' : 'badge-danger'}}">${{escapeHtml(rec.status || 'unknown')}}</span></div>
+          </div>
+          <div style="grid-column: span 2;">
+            <span style="font-size: 11px; text-transform: uppercase; color: var(--text-subtle);">Last Detected Error</span>
+            <div style="font-family: var(--font-mono); font-size: 12px; color: #fca5a5; background: rgba(239, 68, 68, 0.1); padding: 6px 10px; border-radius: 6px; margin-top: 4px;">${{escapeHtml(rec.last_error || '-')}}</div>
+          </div>
+        </div>
+
+        <div style="margin-top: 10px;">
+          <span style="font-size: 11px; text-transform: uppercase; font-weight: 600; color: var(--text-subtle); letter-spacing: 0.05em;">Resuscitation Prompt Injected (agentapi payload)</span>
+          <pre style="background: var(--bg-base); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; font-family: var(--font-mono); font-size: 12px; color: #cbd5e1; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto; margin-top: 6px;">${{escapeHtml(promptText)}}</pre>
+        </div>
+      `;
+
+      modal.classList.add('open');
+    }}
+
+    function closeResuscitationModal() {{
+      const modal = document.getElementById('resuscitationModalOverlay');
+      if (modal) modal.classList.remove('open');
+      state.activeResuscitationRecord = null;
+    }}
+
+    function copyResuscitationPrompt() {{
+      if (!state.activeResuscitationRecord) return;
+      const prompt = state.activeResuscitationRecord.resuscitation_prompt || '';
+      copyText(prompt);
+      showToast('Copied resuscitation prompt to clipboard', 'info');
+    }}
+
     // Real-time Push Subscription via Server-Sent Events (SSE)
     function setupGlobalEventSource() {{
       if (state.globalEventSource) {{
@@ -3392,6 +3993,28 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       sse.addEventListener('sweeper_run', (e) => {{
         refreshTasksDebounced(100);
         showToast('Auto-picker sweeper executed recovery pass', 'info');
+      }});
+
+      sse.addEventListener('antigravity_resuscitation', (e) => {{
+        loadWatchdogStatusDebounced(100);
+        refreshTasksDebounced(150);
+        try {{
+          const data = JSON.parse(e.data);
+          const action = data.action || data.status || 'resuscitation';
+          showToast('Antigravity Watchdog: ' + action, 'info');
+        }} catch (_) {{
+          showToast('Antigravity Watchdog activity detected', 'info');
+        }}
+      }});
+
+      sse.addEventListener('antigravity_watchdog_sweep', (e) => {{
+        loadWatchdogStatusDebounced(100);
+        refreshTasksDebounced(150);
+        showToast('Antigravity Watchdog sweeper run completed', 'info');
+      }});
+
+      sse.addEventListener('antigravity_status', () => {{
+        loadWatchdogStatusDebounced(100);
       }});
     }}
 
@@ -4528,8 +5151,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       syncFilterUI();
       refreshTasksAuthoritative();
       setupGlobalEventSource();
+      loadWatchdogStatus();
       // Periodic fallback polling every 10s if SSE reconnects
       setInterval(refreshTasksAuthoritative, 10000);
+      setInterval(loadWatchdogStatus, 15000);
     }});
   </script>
 </body>

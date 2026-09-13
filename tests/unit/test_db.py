@@ -280,3 +280,53 @@ def test_boot_time_crash_recovery_orphaned_tasks(db_manager: Any):
     recovered_task = db_manager.get_task(task_id)
     assert recovered_task["status"] == "failed"
     assert "restart" in recovered_task["error_message"].lower() or "interrupted" in recovered_task["error_message"].lower()
+
+
+def test_antigravity_resuscitation_stats_and_crud(db_manager: Any):
+    """Verify record_resuscitation, list_resuscitations, update_resuscitation_status, and get_resuscitation_stats."""
+    # 1. Initial empty stats
+    stats_empty = db_manager.get_resuscitation_stats()
+    assert stats_empty["total"] == 0
+    assert stats_empty["resuscitated"] == 0
+
+    # 2. Record resuscitations with different statuses
+    r1 = db_manager.record_resuscitation(
+        conversation_id="convo_test_001",
+        sidecar_slug="test_sidecar",
+        last_error="stream_disconnected",
+        status="attempting",
+        resuscitation_prompt="Wake up 1",
+    )
+    assert r1["conversation_id"] == "convo_test_001"
+    res_id_1 = r1["resuscitation_id"]
+
+    r2 = db_manager.record_resuscitation(
+        conversation_id="convo_test_002",
+        sidecar_slug="test_sidecar",
+        last_error="hung_subagent",
+        status="attempting",
+        resuscitation_prompt="Wake up 2",
+    )
+    res_id_2 = r2["resuscitation_id"]
+
+    # 3. Update status
+    assert db_manager.update_resuscitation_status(res_id_1, "resuscitated") is True
+    assert db_manager.update_resuscitation_status(res_id_2, "failed") is True
+
+    # 4. Query stats
+    stats = db_manager.get_resuscitation_stats()
+    assert stats["total"] == 2
+    assert stats["resuscitated"] == 1
+    assert stats["failed"] == 1
+    assert stats["exhausted"] == 0
+
+    # 5. List resuscitations
+    recs = db_manager.list_resuscitations(limit=10)
+    assert len(recs) == 2
+    assert recs[0]["resuscitation_prompt"] in ("Wake up 1", "Wake up 2")
+
+    # Filter by conversation_id
+    filtered = db_manager.list_resuscitations(conversation_id="convo_test_001")
+    assert len(filtered) == 1
+    assert filtered[0]["status"] == "resuscitated"
+

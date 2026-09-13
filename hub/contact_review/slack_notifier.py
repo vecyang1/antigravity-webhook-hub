@@ -12,9 +12,10 @@ import os
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
-from hub.contact_review.models import ContactInput, FieldDiffAction, ReviewResult, ReviewVerdict
+if TYPE_CHECKING:
+    from hub.contact_review.models import ContactInput, FieldDiffAction, ReviewResult, ReviewVerdict
 
 logger = logging.getLogger("hub.contact_review.slack")
 
@@ -64,6 +65,7 @@ class SlackNotifier:
 
     def format_review_message(self, result: ReviewResult, contact: ContactInput) -> str:
         """Construct human-readable markdown message for Slack."""
+        from hub.contact_review.models import FieldDiffAction, ReviewVerdict
         verdict = result.verdict
 
         emoji_map = {

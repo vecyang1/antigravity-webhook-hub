@@ -1511,4 +1511,41 @@ class DatabaseManager:
             finally:
                 cur.close()
 
+    def get_resuscitation_stats(self) -> dict[str, int]:
+        """Summary counts of all resuscitations by status from SQLite SSOT."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT status, COUNT(*) FROM antigravity_resuscitations GROUP BY status"
+                )
+                rows = cur.fetchall()
+                stats = {
+                    "total": 0,
+                    "resuscitated": 0,
+                    "failed": 0,
+                    "exhausted": 0,
+                    "attempting": 0,
+                    "resolved": 0,
+                }
+                for row in rows:
+                    st = row[0]
+                    cnt = int(row[1])
+                    stats[st] = cnt
+                    stats["total"] += cnt
+                return stats
+            except Exception as e:
+                logger.error("Failed to get resuscitation stats: %s", e)
+                return {
+                    "total": 0,
+                    "resuscitated": 0,
+                    "failed": 0,
+                    "exhausted": 0,
+                    "attempting": 0,
+                    "resolved": 0,
+                }
+            finally:
+                cur.close()
+
+
 

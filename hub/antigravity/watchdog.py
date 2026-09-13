@@ -21,27 +21,35 @@ import socket
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
-from hub.antigravity.agentapi_client import AgentAPIClient
+if TYPE_CHECKING:
+    from hub.antigravity.agentapi_client import AgentAPIClient
+
 from hub.antigravity.result_delivery import resolve_transcript_path
 from hub.config import AntigravityWatchdogConfig
 from hub.db import DatabaseManager
 
 logger = logging.getLogger("hub.antigravity.watchdog")
 
-# Keywords that indicate stream interruption or agent execution error
+# Common network/transport error signatures recorded in transcript turns
 INTERRUPTED_STREAM_PATTERNS = (
-    "the stream was interrupted",
-    "there was a network issue connecting to the server",
-    "agent execution terminated due to error",
-    "agent terminated due to error",
-    "stream disconnected",
-    "resourceexhausted",
-    "code = unavailable",
-    "transport: error while dialing",
-    "cannot send message to subagent",
-    "stopped due to server restart",
+    "stream disconnected before completion",
+    "connection reset by peer",
+    "broken pipe",
+    "network is unreachable",
+    "timed out waiting for response",
+    "transport error",
+    "socket error",
+    "econnreset",
+    "econnrefused",
+    "etimedout",
+    "network error",
+    "failed to connect to language_server",
+    "failed to connect to host",
+    "client network socket disconnected",
+    "tls handshake timeout",
+    "temporary failure in name resolution",
 )
 
 DEFAULT_RESUSCITATION_PROMPT = (
@@ -53,6 +61,8 @@ DEFAULT_RESUSCITATION_PROMPT = (
 
 @dataclass(slots=True)
 class StalledSessionInfo:
+    """Detailed metadata for a stalled Antigravity session requiring resuscitation."""
+
     conversation_id: str
     transcript_path: Path
     last_step_index: int
@@ -75,11 +85,13 @@ class AntigravityWatchdog:
         self,
         db: DatabaseManager,
         config: Optional[AntigravityWatchdogConfig] = None,
-        agentapi_client: Optional[AgentAPIClient] = None,
+        agentapi_client: Optional[Any] = None,
+        broker: Optional[Any] = None,
     ):
         self.db = db
         self.config = config or AntigravityWatchdogConfig()
-        self.agentapi = agentapi_client or AgentAPIClient()
+        self._agentapi_client = agentapi_client
+        self.broker = broker
         self._brain_dir = Path(
             self.config.brain_dir
             or os.environ.get("ANTIGRAVITY_BRAIN_DIR")
@@ -90,6 +102,17 @@ class AntigravityWatchdog:
             or os.environ.get("ANTIGRAVITY_SIDECAR_DATA_DIR")
             or os.path.expanduser("~/.gemini/antigravity/sidecar_data")
         )
+
+    @property
+    def agentapi(self):
+        if self._agentapi_client is None:
+            from hub.antigravity.agentapi_client import AgentAPIClient
+            self._agentapi_client = AgentAPIClient()
+        return self._agentapi_client
+
+    @agentapi.setter
+    def agentapi(self, value):
+        self._agentapi_client = value
 
     def check_network_health(self) -> bool:
         """
@@ -371,6 +394,21 @@ class AntigravityWatchdog:
             last_error,
         )
 
+        if self.broker:
+            try:
+                await self.broker.publish("events", {
+                    "event": "antigravity_resuscitation",
+                    "type": "antigravity_resuscitation",
+                    "action": "attempting",
+                    "resuscitation_id": res_id,
+                    "conversation_id": convo_id,
+                    "attempt_count": record["attempt_count"],
+                    "status": "attempting",
+                    "timestamp": time.time(),
+                })
+            except Exception as b_err:
+                logger.debug("Failed publishing resuscitation attempting event: %s", b_err)
+
         try:
             success, stdout, err = await self.agentapi.send_message(
                 conversation_id=convo_id,
@@ -381,6 +419,20 @@ class AntigravityWatchdog:
             if success:
                 self.db.update_resuscitation_status(res_id, "resuscitated")
                 logger.info("Successfully resuscitated session %s (res_id=%s)", convo_id, res_id)
+                if self.broker:
+                    try:
+                        await self.broker.publish("events", {
+                            "event": "antigravity_resuscitation",
+                            "type": "antigravity_resuscitation",
+                            "action": "resuscitated",
+                            "resuscitation_id": res_id,
+                            "conversation_id": convo_id,
+                            "status": "resuscitated",
+                            "success": True,
+                            "timestamp": time.time(),
+                        })
+                    except Exception as b_err:
+                        logger.debug("Failed publishing resuscitation success event: %s", b_err)
                 return {
                     "success": True,
                     "resuscitation_id": res_id,
@@ -397,6 +449,21 @@ class AntigravityWatchdog:
                     err,
                     new_status,
                 )
+                if self.broker:
+                    try:
+                        await self.broker.publish("events", {
+                            "event": "antigravity_resuscitation",
+                            "type": "antigravity_resuscitation",
+                            "action": new_status,
+                            "resuscitation_id": res_id,
+                            "conversation_id": convo_id,
+                            "status": new_status,
+                            "success": False,
+                            "error": err,
+                            "timestamp": time.time(),
+                        })
+                    except Exception as b_err:
+                        logger.debug("Failed publishing resuscitation failure event: %s", b_err)
                 return {
                     "success": False,
                     "resuscitation_id": res_id,
@@ -408,6 +475,21 @@ class AntigravityWatchdog:
         except Exception as e:
             logger.exception("Unexpected exception resuscitating session %s: %s", convo_id, e)
             self.db.update_resuscitation_status(res_id, "failed")
+            if self.broker:
+                try:
+                    await self.broker.publish("events", {
+                        "event": "antigravity_resuscitation",
+                        "type": "antigravity_resuscitation",
+                        "action": "failed",
+                        "resuscitation_id": res_id,
+                        "conversation_id": convo_id,
+                        "status": "failed",
+                        "success": False,
+                        "error": str(e),
+                        "timestamp": time.time(),
+                    })
+                except Exception as b_err:
+                    logger.debug("Failed publishing resuscitation exception event: %s", b_err)
             return {
                 "success": False,
                 "resuscitation_id": res_id,
@@ -459,14 +541,31 @@ class AntigravityWatchdog:
         addr, _ = self.agentapi.ensure_credentials(force=False)
         ls_ok = bool(addr)
 
-        recent_resuscitations = self.db.list_resuscitations(limit=10)
+        recent_resuscitations = self.db.list_resuscitations(limit=25) if self.db else []
         stalled = self.scan_stalled_conversations()
+
+        stats = (
+            self.db.get_resuscitation_stats()
+            if self.db and hasattr(self.db, "get_resuscitation_stats")
+            else {
+                "total": len(recent_resuscitations),
+                "resuscitated": sum(1 for r in recent_resuscitations if r.get("status") == "resuscitated"),
+                "failed": sum(1 for r in recent_resuscitations if r.get("status") == "failed"),
+                "exhausted": sum(1 for r in recent_resuscitations if r.get("status") == "exhausted"),
+                "attempting": sum(1 for r in recent_resuscitations if r.get("status") == "attempting"),
+                "resolved": sum(1 for r in recent_resuscitations if r.get("status") == "resolved"),
+            }
+        )
+
+        probe_host = self.config.probe_host or "1.1.1.1"
+        probe_port = self.config.probe_port or 53
 
         return {
             "watchdog_enabled": self.config.enabled,
             "auto_resuscitate": self.config.auto_resuscitate,
             "interval_seconds": self.config.interval_seconds,
             "network_online": net_ok,
+            "probe_target": f"{probe_host}:{probe_port}",
             "agentapi_available": agentapi_avail,
             "language_server_connected": ls_ok,
             "language_server_address": addr,
@@ -480,8 +579,11 @@ class AntigravityWatchdog:
                     "attempt_count": s.attempt_count,
                     "can_resuscitate": s.can_resuscitate,
                     "skip_reason": s.skip_reason,
+                    "last_step_index": s.last_step_index,
+                    "last_error_time": s.last_error_time,
                 }
                 for s in stalled
             ],
+            "resuscitation_stats": stats,
             "recent_resuscitations": recent_resuscitations,
         }

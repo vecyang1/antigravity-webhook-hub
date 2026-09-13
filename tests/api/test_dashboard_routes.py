@@ -990,4 +990,113 @@ async def test_observability_unauthorized_rendering(free_port: int, temp_db_path
         await server.stop()
 
 
+async def test_dashboard_antigravity_watchdog_ui_rendering(dashboard_test_app: dict[str, Any]):
+    """Verify Antigravity Watchdog UI integration in /dashboard and /ui.
+    Ensures zero-dependency SPA includes nav items, viewContainerWatchdog, alert banner,
+    resuscitation history table, prompt detail modal, and premium inline SVGs without emojis.
+    """
+    base_url = dashboard_test_app["base_url"]
 
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{base_url}/dashboard")
+        assert resp.status_code == 200
+        html = resp.text
+
+        # Navigation & Sidebar Telemetry
+        assert "navItemWatchdog" in html
+        assert "Watchdog &amp; Health" in html or "Watchdog & Health" in html
+        assert "countWatchdogStalled" in html
+        assert "telemetryWatchdogProbe" in html
+        assert "1-Click Pull-Up" in html
+
+        # Dedicated Watchdog View Panel
+        assert 'id="viewContainerWatchdog"' in html
+        assert "watchdogEngineStatus" in html
+        assert "watchdogNetworkStatus" in html
+        assert "watchdogLsStatus" in html
+        assert "statWatchdogStalled" in html
+        assert "statWatchdogTotalAttempts" in html
+        assert "statWatchdogRevived" in html
+        assert "statWatchdogFailed" in html
+        assert "stalledTableBody" in html
+        assert "resuscitationsTableBody" in html
+        assert "pillResuscitationAll" in html
+
+        # Alert Banner on Tasks View & Detail Modal
+        assert 'id="watchdogAlertBanner"' in html
+        assert 'id="resuscitationModalOverlay"' in html
+        assert "loadWatchdogStatus" in html
+        assert "pullUpAllSessions" in html
+        assert "pullUpSingleSession" in html
+        assert "openResuscitationModal" in html
+
+        # Zero Emoji Policy Verification
+        assert "🎨" not in html
+        assert "🚀" not in html
+
+
+async def test_dashboard_antigravity_status_api_ssot(dashboard_test_app: dict[str, Any]):
+    """Verify /antigravity/status delivers SSOT projection from SQLite with resuscitation_stats."""
+    base_url = dashboard_test_app["base_url"]
+    db = dashboard_test_app["db"]
+
+    # Seed SQLite with a resuscitation record
+    r = db.record_resuscitation(
+        conversation_id="convo_ssot_001",
+        sidecar_slug="test_slug",
+        last_error="stream_broken",
+        status="attempting",
+        resuscitation_prompt="Wake up test prompt",
+    )
+    db.update_resuscitation_status(r["resuscitation_id"], "resuscitated")
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{base_url}/antigravity/status")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert "watchdog_enabled" in data
+        assert "network_online" in data
+        assert "probe_target" in data
+        assert "resuscitation_stats" in data
+        assert data["resuscitation_stats"]["total"] >= 1
+        assert data["resuscitation_stats"]["resuscitated"] >= 1
+
+        recent = data.get("recent_resuscitations", [])
+        assert len(recent) >= 1
+        assert recent[0]["conversation_id"] == "convo_ssot_001"
+        assert recent[0]["status"] == "resuscitated"
+        assert recent[0]["resuscitation_prompt"] == "Wake up test prompt"
+
+
+async def test_dashboard_antigravity_pull_up_and_sse_streaming(dashboard_test_app: dict[str, Any]):
+    """Verify POST /antigravity/pull-up broadcasts real-time SSE events over /events/stream."""
+    import asyncio
+    base_url = dashboard_test_app["base_url"]
+    broker = dashboard_test_app["broker"]
+
+    # Subscribe to broker "events" to simulate EventSource client
+    queue = broker.subscribe("events")
+    try:
+        async with httpx.AsyncClient() as client:
+            # 1. Trigger batch pull-up
+            resp = await client.post(f"{base_url}/antigravity/pull-up", json={})
+            assert resp.status_code == 200
+            res_data = resp.json()
+            assert res_data["success"] is True
+
+            # 2. Verify SSE events were received on the broker stream
+            events = []
+            evt1 = await asyncio.wait_for(queue.get(), timeout=3.0)
+            events.append(evt1)
+            while True:
+                try:
+                    events.append(await asyncio.wait_for(queue.get(), timeout=0.3))
+                except asyncio.TimeoutError:
+                    break
+
+            actions = [e.get("action") for e in events]
+            assert any(e.get("event") == "antigravity_resuscitation" for e in events)
+            assert "attempting" in actions or "pull_up_batch_completed" in actions
+    finally:
+        broker.unsubscribe("events", queue)

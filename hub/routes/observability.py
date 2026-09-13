@@ -263,46 +263,92 @@ def register_observability_routes(
     async def handle_antigravity_status(req: HTTPRequest) -> HTTPResponse:
         """GET /antigravity/status: Diagnostics for Antigravity watchdog and stalled sessions."""
         watchdog = getattr(dispatcher, "antigravity_watchdog", None)
+        active_broker = broker or getattr(dispatcher, "broker", None)
         if not watchdog:
             from hub.antigravity.watchdog import AntigravityWatchdog
-            watchdog = AntigravityWatchdog(db=db, config=getattr(config, "antigravity_watchdog", None))
+            watchdog = AntigravityWatchdog(
+                db=db,
+                config=getattr(config, "antigravity_watchdog", None),
+                broker=active_broker,
+            )
+        elif not getattr(watchdog, "broker", None) and active_broker:
+            watchdog.broker = active_broker
         return HTTPResponse.json(watchdog.get_status(), status_code=200)
 
     async def handle_antigravity_pull_up(req: HTTPRequest) -> HTTPResponse:
         """POST /antigravity/pull-up: Trigger automated pull-up / resuscitation."""
+        active_broker = broker or getattr(dispatcher, "broker", None)
         watchdog = getattr(dispatcher, "antigravity_watchdog", None)
         if not watchdog:
             from hub.antigravity.watchdog import AntigravityWatchdog
-            watchdog = AntigravityWatchdog(db=db, config=getattr(config, "antigravity_watchdog", None))
+            watchdog = AntigravityWatchdog(
+                db=db,
+                config=getattr(config, "antigravity_watchdog", None),
+                broker=active_broker,
+            )
+        elif not getattr(watchdog, "broker", None) and active_broker:
+            watchdog.broker = active_broker
 
         body = req.json() if req.body else {}
         convo_id = body.get("conversation_id")
         prompt = body.get("prompt")
 
         if convo_id:
-            from hub.antigravity.watchdog import StalledSessionInfo
-            from hub.antigravity.result_delivery import resolve_transcript_path
-            transcript_path = resolve_transcript_path(convo_id, watchdog._brain_dir)
-            if not transcript_path or not transcript_path.exists():
-                return HTTPResponse.json(
-                    {"success": False, "error": f"Conversation {convo_id} not found"},
-                    status_code=404,
+            stalled = watchdog.scan_stalled_conversations()
+            matched = next((s for s in stalled if s.conversation_id == convo_id), None)
+            if matched:
+                res = await watchdog.resuscitate_session(matched, custom_prompt=prompt)
+            else:
+                from hub.antigravity.watchdog import StalledSessionInfo
+                from hub.antigravity.result_delivery import resolve_transcript_path
+                transcript_path = resolve_transcript_path(convo_id, watchdog._brain_dir)
+                if not transcript_path or not transcript_path.exists():
+                    return HTTPResponse.json(
+                        {"success": False, "error": f"Conversation {convo_id} not found"},
+                        status_code=404,
+                    )
+                info = StalledSessionInfo(
+                    conversation_id=convo_id,
+                    transcript_path=transcript_path,
+                    last_step_index=0,
+                    last_error="api_pull_up_request",
+                    last_error_time=time.time(),
+                    is_subagent=False,
+                    sidecar_slug=watchdog._find_associated_sidecar(convo_id),
+                    attempt_count=db.get_resuscitation_attempts(convo_id) if db else 0,
+                    can_resuscitate=True,
                 )
-            info = StalledSessionInfo(
-                conversation_id=convo_id,
-                transcript_path=transcript_path,
-                last_step_index=0,
-                last_error="api_pull_up_request",
-                last_error_time=time.time(),
-                is_subagent=False,
-                sidecar_slug=watchdog._find_associated_sidecar(convo_id),
-                attempt_count=db.get_resuscitation_attempts(convo_id) if db else 0,
-                can_resuscitate=True,
-            )
-            res = await watchdog.resuscitate_session(info, custom_prompt=prompt)
+                res = await watchdog.resuscitate_session(info, custom_prompt=prompt)
+
+            if active_broker:
+                try:
+                    await active_broker.publish("events", {
+                        "event": "antigravity_resuscitation",
+                        "type": "antigravity_resuscitation",
+                        "action": "pull_up_completed",
+                        "conversation_id": convo_id,
+                        "success": res.get("success", False),
+                        "status": res.get("status", "unknown"),
+                        "timestamp": time.time(),
+                    })
+                except Exception as b_err:
+                    logger.debug("Failed publishing pull-up SSE event: %s", b_err)
+
             return HTTPResponse.json(res, status_code=200 if res.get("success") else 500)
         else:
             results = await watchdog.resuscitate_stalled_sessions()
+            if active_broker:
+                try:
+                    await active_broker.publish("events", {
+                        "event": "antigravity_resuscitation",
+                        "type": "antigravity_resuscitation",
+                        "action": "pull_up_batch_completed",
+                        "resuscitated_count": len(results),
+                        "timestamp": time.time(),
+                    })
+                except Exception as b_err:
+                    logger.debug("Failed publishing batch pull-up SSE event: %s", b_err)
+
             return HTTPResponse.json(
                 {"success": True, "resuscitated_count": len(results), "results": results},
                 status_code=200,
