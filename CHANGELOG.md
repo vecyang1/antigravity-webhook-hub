@@ -8,14 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.9.2] - 2026-09-13
 
 ### Added & Fixed
-- **Dynamic Language Server Credential Discovery (`hub/antigravity/agentapi_client.py`)**:
+- **Dynamic Language Server Credential Discovery & Hardening (`hub/antigravity/agentapi_client.py`)**:
   - Implemented `discover_active_antigravity_credentials` and `validate_antigravity_address` to deterministically discover live ephemeral gRPC port and CSRF token on macOS (~15ms) after Electron restarts.
+  - Hardened process inspection using `ps auxww` and strict binary path matching (`(?:/\S*/)?language_server\s+--standalone`) to prevent false-positive PID collisions from python runners or grep subshells.
   - Added transparent child process inspection (`pgrep -P`, `ps eww`) and `lsof` TCP listening probe fallback.
   - Implemented automatic self-healing retry in `AgentAPIClient._execute_with_retry`: upon `connection refused` or `Unavailable` gRPC transport failures, credentials are dynamically rediscovered and the command retried once before failing.
-- **E2E & Sentinel Observability Preflight (`scripts/verify_e2e.py`)**:
+  - Added dynamic availability recovery in `AgentAPIClient.is_available()` and explicit credential reset on forced discovery failure.
+  - Expanded `is_connection_error` patterns to cover transient gRPC failures (`failed to connect`, `transport is closing`, `deadlineexceeded`, `network is unreachable`).
+- **Domain Directives & Slash Commands (`hub/antigravity/prompt_builder.py`)**:
+  - Added `SCHEDULED_TASK_RESCHEDULER_DIRECTIVE` and support for `/scheduled-task-rescheduler` slash command alongside `/boost`, `/goal`, `/psychological-copywriter`, and `/strategic-compact`.
+- **E2E & Sentinel Observability Preflight (`scripts/verify_e2e.py`, `sidecar.json`, `cadence-commands.md`)**:
   - Added Step 13: Antigravity AgentAPI & language_server live preflight check, enabling early detection of language_server disconnections and graceful fallback handling in headless CI.
+  - Synchronized `webhook-hub-sentinel` sidecar definition and `CAD-20260911-webhook-hub-sentinel` Cadence card with 13-step verification suite.
 - **Unit Test Coverage (`tests/unit/test_antigravity_agent.py`)**:
-  - Added `TestAgentAPIDynamicCredentialsAndSelfHealing` covering address probing, error pattern recognition, multi-step credential discovery, and single-retry self-healing on connection refused.
+  - Added unit test cases covering false-positive PID rejection, dynamic binary recovery, forced credential clearing, `/scheduled-task-rescheduler` extraction, and expanded error matching (26/26 tests passing).
 
 ## [1.9.1] - 2026-09-12
 

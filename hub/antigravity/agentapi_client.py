@@ -48,8 +48,10 @@ def validate_antigravity_address(address: str, timeout: float = 0.3) -> bool:
     if not address:
         return False
     try:
-        clean = address.replace("http://", "").replace("https://", "")
-        host, port = clean.replace("localhost", "127.0.0.1").split(":")
+        clean = address.strip().replace("http://", "").replace("https://", "").rstrip("/")
+        if ":" not in clean:
+            return False
+        host, port = clean.replace("localhost", "127.0.0.1").split(":", 1)
         req = urllib.request.Request(f"http://{host}:{port}/", method="HEAD")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status == 200
@@ -62,8 +64,8 @@ def discover_active_antigravity_credentials(force: bool = False) -> Tuple[Option
     Deterministically discover live Antigravity language_server gRPC address and CSRF token on macOS.
     1. Validate existing environment variables (ANTIGRAVITY_LS_ADDRESS and ANTIGRAVITY_CSRF_TOKEN).
        If force=False and address is valid via HTTP probe, return them immediately (~15ms).
-    2. Read `ps aux` for `language_server --standalone` process:
-       Extract server_pid and --csrf_token argument.
+    2. Read `ps auxww` for `language_server --standalone` process:
+       Extract server_pid and --csrf_token argument, filtering out false-positive runners (python, grep).
     3. Check child processes of server_pid via `pgrep -P <pid>` and `ps eww <child_pid>`
        for ANTIGRAVITY_LS_ADDRESS and ANTIGRAVITY_CSRF_TOKEN.
     4. Fallback: inspect listening TCP ports on server_pid via `lsof -a -p <pid> -iTCP -sTCP:LISTEN -nP`.
@@ -83,18 +85,33 @@ def discover_active_antigravity_credentials(force: bool = False) -> Tuple[Option
 
     # Step 1: Find standalone language_server PID and CSRF token
     try:
-        ps_out = subprocess.check_output(["ps", "aux"], text=True, stderr=subprocess.DEVNULL)
+        try:
+            ps_out = subprocess.check_output(["ps", "auxww"], text=True, stderr=subprocess.DEVNULL)
+        except Exception:
+            ps_out = subprocess.check_output(["ps", "aux"], text=True, stderr=subprocess.DEVNULL)
+
         for line in ps_out.splitlines():
-            if "language_server" in line and "--standalone" in line:
-                parts = line.split()
-                if len(parts) > 1 and parts[1].isdigit():
-                    server_pid = int(parts[1])
-                m_token = re.search(r"--csrf_token(?:=|\s+)([0-9a-fA-F-]+)", line)
-                if m_token:
-                    csrf_token = m_token.group(1)
-                break
+            line_clean = line.strip()
+            if not line_clean:
+                continue
+            if "language_server" not in line_clean or "--standalone" not in line_clean:
+                continue
+            # Avoid matching python runners, test scripts, or shell grep
+            if re.search(r'\b(python\d*|pytest|grep|sh|bash|zsh)\b', line_clean) and "/bin/language_server" not in line_clean:
+                continue
+            # Ensure command path actually looks like language_server executable
+            if not re.search(r'(?:^|\s)(?:/\S*/)?language_server\s+--standalone', line_clean):
+                continue
+
+            parts = line_clean.split()
+            if len(parts) > 1 and parts[1].isdigit():
+                server_pid = int(parts[1])
+            m_token = re.search(r"--csrf_token(?:=|\s+)([0-9a-fA-F-]+)", line_clean)
+            if m_token:
+                csrf_token = m_token.group(1)
+            break
     except Exception as e:
-        logger.debug("Failed to inspect ps aux for language_server: %s", e)
+        logger.debug("Failed to inspect ps for language_server: %s", e)
 
     if server_pid:
         # Step 2: Check child processes for exported environment variables
@@ -178,6 +195,12 @@ def is_connection_error(err_msg: Optional[str]) -> bool:
             "reset by peer",
             "transport: error while dialing",
             "channel is in state transient_failure",
+            "failed to connect",
+            "connection closed",
+            "transport is closing",
+            "deadlineexceeded",
+            "network is unreachable",
+            "no route to host",
         )
     )
 
@@ -195,15 +218,23 @@ class AgentAPIClient:
 
     def is_available(self) -> bool:
         """Check if agentapi binary is accessible and executable."""
+        if not self.executable_path or not (os.path.isfile(self.executable_path) and os.access(self.executable_path, os.X_OK)):
+            resolved = resolve_agentapi_path()
+            if resolved:
+                self.executable_path = resolved
         return bool(self.executable_path and os.path.isfile(self.executable_path) and os.access(self.executable_path, os.X_OK))
 
     def ensure_credentials(self, force: bool = False) -> Tuple[Optional[str], Optional[str]]:
         """Validate current credentials or discover active language_server credentials."""
         addr, token = discover_active_antigravity_credentials(force=force)
-        if addr:
+        if force:
             self.ls_address = addr
-        if token:
             self.csrf_token = token
+        else:
+            if addr:
+                self.ls_address = addr
+            if token:
+                self.csrf_token = token
         return addr, token
 
     def _get_env(self) -> dict[str, str]:

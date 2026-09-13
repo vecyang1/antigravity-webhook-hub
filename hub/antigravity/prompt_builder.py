@@ -43,9 +43,17 @@ TEAMWORK_PREVIEW_DIRECTIVE = """
 梳理多智能体与团队协作边界，输出清晰的责任所有者与就绪证明（Readiness Proof）。
 """.strip()
 
+SCHEDULED_TASK_RESCHEDULER_DIRECTIVE = """
+[技能指令：定时任务编排与治理 / Scheduled Task Rescheduler]
+请遵循定时任务与 Cadence 治理规范：
+1. 唯一事实源（SSOT）：以 cadence-commands.md 与 Cadence Card 为基准，杜绝游离孤儿任务。
+2. 双向对账：变更调度必须同步投射到 Antigravity Sidecars、Claude Scheduled Tasks 或 LaunchAgents。
+3. 闭环验证：调度变更后执行 `cadence_ctl doctor` 确保 0 错误，并对关键链路完成 E2E 试跑验证。
+""".strip()
+
 # Slash command matcher regex
 SLASH_COMMAND_REGEX = re.compile(
-    r'(?:^|(?<=[\s,，。、；;]))/(psychological-copywriter|strategic-compact|boost|goal|teamwork-preview|teamwork|play)\b',
+    r'(?:^|(?<=[\s,，。、；;]))/(psychological-copywriter|strategic-compact|boost|goal|teamwork-preview|teamwork|play|scheduled-task-rescheduler)\b',
     re.IGNORECASE,
 )
 
@@ -86,6 +94,8 @@ def extract_slash_commands(raw_text: str) -> tuple[str, list[str], list[str]]:
             directives.append(GOAL_DIRECTIVE)
         elif cmd == "teamwork-preview":
             directives.append(TEAMWORK_PREVIEW_DIRECTIVE)
+        elif cmd == "scheduled-task-rescheduler":
+            directives.append(SCHEDULED_TASK_RESCHEDULER_DIRECTIVE)
 
     return cleaned_text, found_commands, directives
 
@@ -111,6 +121,8 @@ def build_antigravity_prompt(
         all_directives.append(BOOST_DIRECTIVE)
     if "goal" in all_commands and GOAL_DIRECTIVE not in all_directives:
         all_directives.append(GOAL_DIRECTIVE)
+    if "scheduled-task-rescheduler" in all_commands and SCHEDULED_TASK_RESCHEDULER_DIRECTIVE not in all_directives:
+        all_directives.append(SCHEDULED_TASK_RESCHEDULER_DIRECTIVE)
 
     # Core user intent: text + voice transcript
     prompt_parts: list[str] = []

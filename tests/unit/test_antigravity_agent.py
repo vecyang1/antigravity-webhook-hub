@@ -632,6 +632,84 @@ class TestAgentAPIDynamicCredentialsAndSelfHealing(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_discover_active_antigravity_credentials_filters_false_positives(self):
+        fake_ps = (
+            "USER       PID  %CPU %MEM      VSZ    RSS   TT  STAT STARTED      TIME COMMAND\n"
+            "user      1000   0.5  0.1  1000000  20000   ??  S     8:20AM   0:01.00 "
+            "python3 -c import os; print('language_server --standalone')\n"
+            "user      1001   0.0  0.0   500000   5000   ??  S     8:20AM   0:00.01 "
+            "grep language_server --standalone\n"
+            "user     12115   0.1  0.5  1234567  50000   ??  S     8:24AM   0:10.00 "
+            "/Applications/Antigravity.app/Contents/Resources/bin/language_server --standalone "
+            "--csrf_token cc31d02d-949d-468e-a975-2bb657ac01c5 --app_data_dir antigravity\n"
+        )
+        fake_pgrep = "12187\n"
+        fake_ps_eww = (
+            "12187 ANTIGRAVITY_LS_ADDRESS=localhost:63347 "
+            "ANTIGRAVITY_CSRF_TOKEN=cc31d02d-949d-468e-a975-2bb657ac01c5"
+        )
+
+        def mock_check_output(cmd, **kwargs):
+            cmd_str = " ".join(cmd)
+            if "ps aux" in cmd_str:
+                return fake_ps
+            elif "pgrep -P 12115" in cmd_str:
+                return fake_pgrep
+            elif "ps eww 12187" in cmd_str:
+                return fake_ps_eww
+            return ""
+
+        with patch("subprocess.check_output", side_effect=mock_check_output):
+            with patch("hub.antigravity.agentapi_client.validate_antigravity_address", return_value=True):
+                with patch.dict("os.environ", {}, clear=True):
+                    addr, token = discover_active_antigravity_credentials(force=True)
+                    self.assertEqual(addr, "localhost:63347")
+                    self.assertEqual(token, "cc31d02d-949d-468e-a975-2bb657ac01c5")
+
+    def test_ensure_credentials_force_clears_on_discovery_failure(self):
+        client = AgentAPIClient()
+        client.ls_address = "localhost:56268"
+        client.csrf_token = "stale-token"
+
+        with patch("hub.antigravity.agentapi_client.discover_active_antigravity_credentials", return_value=(None, None)):
+            addr, token = client.ensure_credentials(force=True)
+            self.assertIsNone(addr)
+            self.assertIsNone(token)
+            self.assertIsNone(client.ls_address)
+            self.assertIsNone(client.csrf_token)
+
+    def test_agentapi_client_dynamic_availability_recovery(self):
+        client = AgentAPIClient(executable_path="/nonexistent/path/agentapi")
+        with patch("hub.antigravity.agentapi_client.resolve_agentapi_path", return_value=None):
+            self.assertFalse(client.is_available())
+
+        with patch("hub.antigravity.agentapi_client.resolve_agentapi_path", return_value="/bin/sh"):
+            self.assertTrue(client.is_available())
+            self.assertEqual(client.executable_path, "/bin/sh")
+
+    def test_scheduled_task_rescheduler_slash_command(self):
+        from hub.antigravity.prompt_builder import SCHEDULED_TASK_RESCHEDULER_DIRECTIVE
+        raw = "请检查当前所有 Cadence 卡片 /scheduled-task-rescheduler"
+        clean, cmds, directives = extract_slash_commands(raw)
+        self.assertIn("scheduled-task-rescheduler", cmds)
+        self.assertIn(SCHEDULED_TASK_RESCHEDULER_DIRECTIVE, directives)
+        self.assertNotIn("/scheduled-task-rescheduler", clean)
+        self.assertIn("请检查当前所有 Cadence 卡片", clean)
+
+        payload = AntigravityTaskPayload(text=raw, channel="C0C1B86AMCN", ts="1789200000.100")
+        prompt = build_antigravity_prompt(payload)
+        self.assertIn(SCHEDULED_TASK_RESCHEDULER_DIRECTIVE, prompt)
+
+    def test_is_connection_error_extended_patterns(self):
+        self.assertTrue(is_connection_error("failed to connect to all addresses"))
+        self.assertTrue(is_connection_error("connection closed before server preface received"))
+        self.assertTrue(is_connection_error("rpc error: code = Unavailable desc = transport is closing"))
+        self.assertTrue(is_connection_error("rpc error: code = DeadlineExceeded"))
+        self.assertTrue(is_connection_error("dial tcp 127.0.0.1:63347: connect: network is unreachable"))
+        self.assertTrue(is_connection_error("dial tcp 127.0.0.1:63347: connect: no route to host"))
+        self.assertFalse(is_connection_error("unknown command: foo"))
+        self.assertFalse(is_connection_error(None))
+
 
 if __name__ == "__main__":
     unittest.main()
