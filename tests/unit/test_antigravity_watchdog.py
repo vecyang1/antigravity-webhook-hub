@@ -494,4 +494,38 @@ class TestAntigravityWatchdog:
         sched_updated = db.get_conversation_schedule(convo_id)
         assert sched_updated["last_trigger_at"] > last_trig_time
 
+    def test_checkpoint_compaction_with_quota_text_not_false_positive(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that a compaction CHECKPOINT step mentioning 'Individual quota reached' in its
+        historical summary does NOT trigger false-positive quota quarantine on active sessions.
+        """
+        convo_id = "test-compaction-summary-quota-text"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "How to handle 429?"},
+            {
+                "step_index": 1,
+                "source": "SYSTEM",
+                "type": "CHECKPOINT",
+                "status": "DONE",
+                "content": "# Resuming from a compaction\nSummary: Previously discussed Error Individual quota reached. Resets in 1h54m13s.",
+            },
+            {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "Here is the solution to handle it cleanly.",
+                "tool_calls": [],
+            },
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=5.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=15)
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 0
+        assert db.list_quota_cooldowns() == []
+
+
 

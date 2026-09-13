@@ -432,14 +432,15 @@ class AntigravityWatchdog:
                 active_cd = self.db.get_active_quota_cooldown(convo_id) if self.db else None
                 if active_cd:
                     cd_step = active_cd.get("last_step_index")
-                    if cd_step is not None and last_step_idx > cd_step + 1:
+                    if cd_step is not None and last_step_idx > cd_step:
                         # Session advanced past the recorded cooldown step!
                         active_cd = None
                     else:
                         db_q = inspect_conversation_db_for_quota(convo_id)
                         has_recent_quota = (
                             any(
-                                (s.get("source") in ("SYSTEM", "ERROR") or s.get("status") == "ERROR")
+                                s.get("type") != "CHECKPOINT"
+                                and (s.get("type") in ("ERROR_MESSAGE", "ERROR") or s.get("status") == "ERROR" or (s.get("source") == "SYSTEM" and s.get("type") == "SYSTEM_MESSAGE" and "failed with error" in str(s.get("content") or "").lower()))
                                 and ("individual quota reached" in str(s.get("content") or "").lower() or "resource_exhausted" in str(s.get("content") or "").lower())
                                 for s in parsed_steps[-4:]
                             )
@@ -493,12 +494,15 @@ class AntigravityWatchdog:
                 quota_sec = None
                 quota_ts = None
                 for s in reversed(parsed_steps[-6:]):
-                    # Only check genuine error/system steps, never user prompts or tool output text discussing quota
-                    s_source = s.get("source", "")
+                    # Only check genuine error/system steps; strictly skip compaction checkpoints, user inputs, and model responses
                     s_type = s.get("type", "")
                     s_status = s.get("status", "")
-                    if s_source not in ("SYSTEM", "ERROR") and s_type != "ERROR_MESSAGE" and s_status != "ERROR":
+                    s_source = s.get("source", "")
+                    if s_type == "CHECKPOINT":
                         continue
+                    if s_type not in ("ERROR_MESSAGE", "ERROR") and s_status != "ERROR":
+                        if not (s_source == "SYSTEM" and s_type == "SYSTEM_MESSAGE" and "failed with error" in str(s.get("content") or "").lower()):
+                            continue
                     s_content = str(s.get("content") or "")
                     if "individual quota reached" in s_content.lower() or "resource_exhausted" in s_content.lower():
                         quota_detected = True
