@@ -113,10 +113,32 @@ def _get_darwin_resident_bytes() -> Optional[int]:
     return None
 
 
+def _get_linux_resident_bytes() -> Optional[int]:
+    """Query current process resident set size directly from Linux procfs (/proc/self/statm)."""
+    try:
+        with open("/proc/self/statm", "r") as f:
+            parts = f.read().split()
+            if len(parts) >= 2:
+                pages = int(parts[1])
+                page_size = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
+                return pages * page_size
+    except Exception:
+        pass
+    try:
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) * 1024
+    except Exception:
+        pass
+    return None
+
+
 def get_memory_rss_bytes() -> int:
     """
     Query process resident set size (RSS) in bytes.
-    In dedicated standalone gateway mode, queries Mach kernel task_info (TASK_VM_INFO/MACH_TASK_BASIC_INFO) via ctypes on macOS.
+    In dedicated standalone gateway mode, queries Mach kernel task_info (TASK_VM_INFO/MACH_TASK_BASIC_INFO) via ctypes on macOS,
+    or /proc/self/statm resident pages on Linux.
     In embedded test runner mode (where host test framework like pytest/httpx inflates the outer process),
     measures dynamic runtime memory via tracemalloc + base runtime footprint to reflect gateway subsystem usage.
     """
@@ -135,6 +157,10 @@ def get_memory_rss_bytes() -> int:
 
     if sys.platform == "darwin":
         rss = _get_darwin_resident_bytes()
+        if rss is not None and rss > 0:
+            return rss
+    elif sys.platform.startswith("linux"):
+        rss = _get_linux_resident_bytes()
         if rss is not None and rss > 0:
             return rss
 

@@ -784,31 +784,41 @@ class TaskDispatcher:
                     error_message = f"Process exceeded timeout of {timeout_seconds} seconds"
                     self._record_log(task_id, "system", error_message, execution_id=execution_id)
 
+                    pgid = None
                     try:
                         if hasattr(os, "getpgid") and hasattr(os, "killpg"):
                             pgid = os.getpgid(proc.pid)
+                    except Exception:
+                        pgid = getattr(proc, "pid", None)
+
+                    try:
+                        if pgid is not None and hasattr(os, "killpg"):
                             os.killpg(pgid, signal.SIGTERM)
                         else:
                             proc.terminate()
                     except Exception as kill_err:
                         logger.debug("SIGTERM error: %s", kill_err)
 
-                    # Wait up to 1.5s for process group cleanup
+                    # Wait up to 0.5s for graceful SIGTERM cleanup
                     try:
-                        await asyncio.wait_for(proc.wait(), timeout=1.5)
+                        await asyncio.wait_for(proc.wait(), timeout=0.5)
                     except asyncio.TimeoutError:
+                        pass
+
+                    # Always ensure the process group is decisively killed with SIGKILL to eliminate orphan grandchildren
+                    if pgid is not None and hasattr(os, "killpg"):
                         try:
-                            if hasattr(os, "getpgid") and hasattr(os, "killpg"):
-                                pgid = os.getpgid(proc.pid)
-                                os.killpg(pgid, signal.SIGKILL)
-                            else:
-                                proc.kill()
+                            os.killpg(pgid, signal.SIGKILL)
                         except Exception as sigkill_err:
                             logger.debug("SIGKILL error: %s", sigkill_err)
-                        try:
-                            await proc.wait()
-                        except Exception:
-                            pass
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=1.0)
+                    except Exception:
+                        pass
 
                     exit_code = proc.returncode
                 finally:
