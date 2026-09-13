@@ -1,7 +1,7 @@
 ---
 name: webhook-hub
 description: Control, monitor, and query the local Antigravity Webhook Hub daemon, event dispatcher, and Antigravity Watchdog on macOS.
-version: 1.11.3
+version: 1.12.0
 author: V
 date: 2026-09-13
 source: local repository
@@ -62,6 +62,14 @@ All commands run via `./bin/webhook-hub <subcommand>` or `python3 -m hub <subcom
 ./bin/webhook-hub antigravity pull-up      # Scan and autonomously revive stalled conversations & subagents
 ./bin/webhook-hub antigravity pull-up --dry-run # Preview stalled sessions without sending messages
 ./bin/webhook-hub antigravity pull-up -c <convo_id> # Target specific conversation ID for resuscitation
+
+# Antigravity Quota Sentinel (5-Hour Rolling Window Automated Warmup & Quota SSOT)
+./bin/webhook-hub antigravity quota        # View 5h and weekly quota snapshots, percentages, and reset countdowns
+./bin/webhook-hub antigravity quota --json # Machine-readable quota snapshots for all accounts
+./bin/webhook-hub antigravity quota -a <email> # View quota for specific account
+./bin/webhook-hub antigravity warmup       # Trigger minimal 1-token ping for idle/expired 100% full buckets
+./bin/webhook-hub antigravity warmup --force # Force immediate warmup ping bypassing cooldown
+./bin/webhook-hub antigravity warmup -a <email> -b gemini-5h # Target specific account and bucket
 ```
 
 ## 2. HTTP Ingress & API Contracts
@@ -90,6 +98,8 @@ All commands run via `./bin/webhook-hub <subcommand>` or `python3 -m hub <subcom
 | `GET` | `/tasks/{id}/stream` | SSE stream scoped to specific task | `200 OK` | `404 Not Found` |
 | `GET` | `/antigravity/status` | Antigravity watchdog diagnostics, network health, and stalled sessions | `200 OK` | - |
 | `POST` | `/antigravity/pull-up` | Trigger automated resuscitation / pull-up for stalled sessions & subagents | `200 OK` | `404 Not Found`, `500` |
+| `GET` | `/antigravity/quota` | Retrieve 5h & weekly quota snapshots and countdowns for all accounts (`?account=`) | `200 OK` | - |
+| `POST` | `/antigravity/warmup` | Trigger on-demand token ping warmup (`{"account": "", "bucket": "", "force": bool}`) | `200 OK` | `500` |
 
 ### Webhook Ingress Payload (`POST /webhook`)
 

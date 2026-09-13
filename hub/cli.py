@@ -1819,13 +1819,28 @@ def _add_antigravity_args(parser: argparse.ArgumentParser) -> None:
         "action",
         nargs="?",
         default="doctor",
-        choices=["doctor", "status", "health", "pull-up", "resuscitate", "wake"],
-        help="Antigravity command: 'doctor' (diagnose IPC & stalled sessions), 'pull-up' (revive stalled sessions/subagents)",
+        choices=["doctor", "status", "health", "pull-up", "resuscitate", "wake", "quota", "warmup"],
+        help="Antigravity command: 'doctor' (diagnostics), 'quota' (5h/weekly quota monitor), 'warmup' (ping 1-token refresh), 'pull-up' (revive stalled sessions)",
     )
     parser.add_argument(
         "--conversation", "-c",
         default=None,
         help="Target specific conversation ID for resuscitation",
+    )
+    parser.add_argument(
+        "--account", "-a",
+        default=None,
+        help="Target specific account email for quota or warmup",
+    )
+    parser.add_argument(
+        "--bucket", "-b",
+        default=None,
+        help="Target specific bucket ID (e.g. gemini-5h, 3p-5h, gemini-weekly, 3p-weekly)",
+    )
+    parser.add_argument(
+        "--force", "-f",
+        action="store_true",
+        help="Force warmup immediately, ignoring 100%% threshold or cooldown timer",
     )
     parser.add_argument(
         "--prompt",
@@ -1922,6 +1937,11 @@ def cmd_antigravity(args: Any) -> int:
         print(f"• AgentAPI CLI 可用性:            {agentapi_icon} {'已就绪 (' + (watchdog.agentapi.executable_path or '') + ')' if status_info['agentapi_available'] else '未找到可执行文件'}")
         print(f"• Language Server gRPC 通道:      {ls_icon} {status_info['language_server_address'] or '未发现活跃通道'}")
         print(f"• 后台守护轮询状态:               {'✅ 开启' if status_info['watchdog_enabled'] else '⏸️ 禁用'} (周期: {status_info['interval_seconds']}s, 自动拉起: {status_info['auto_resuscitate']})")
+        try:
+            q_stats = db.get_quota_summary_stats()
+            print(f"• 5小时滚动配额哨兵:             {'✅ 开启' if cfg.antigravity_quota.enabled else '⏸️ 禁用'} (追踪: {q_stats['total_accounts']} 账号, {q_stats['total_5h_buckets']} 配额池, 成功微Ping: {q_stats['successful_warmups']} 次)")
+        except Exception:
+            pass
 
         stalled = status_info["stalled_sessions"]
         print("-" * 65)
@@ -2052,6 +2072,83 @@ def cmd_antigravity(args: Any) -> int:
             for r in results:
                 st_icon = "✅" if r.get("success") else "❌"
                 print(f"  {st_icon} 会话 {r.get('conversation_id')}: 状态={r.get('status')}")
+        return 0
+
+    elif action == "quota":
+        from hub.antigravity.quota_sentinel import AntigravityQuotaSentinel
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        # Refresh and sync
+        profiles = sentinel.scan_accounts()
+        sentinel.sync_quotas_to_db(profiles)
+        overview = sentinel.get_quota_overview(account_email=getattr(args, "account", None))
+
+        if is_json:
+            print(json.dumps(overview, indent=2, ensure_ascii=False))
+            return 0
+
+        stats = overview.get("stats", {})
+        accounts = overview.get("accounts", [])
+        print("=" * 70)
+        print("⚡ Google Antigravity 5小时滚动配额哨兵与账号状态 (Quota Sentinel)")
+        print("=" * 70)
+        print(f"• 追踪账号总数: {stats.get('total_accounts', len(accounts))} 个 | 活跃账号: {stats.get('active_accounts', 1)} 个")
+        print(f"• 5小时滚动配额池: {stats.get('total_5h_buckets', 0)} 个 (就绪可触发: {stats.get('ready_5h_buckets', 0)} 个)")
+        print(f"• 历史成功预热保活: {stats.get('successful_warmups', 0)} 次")
+        print("-" * 70)
+
+        for acc in accounts:
+            active_marker = "🌟 [当前IDE活跃账号]" if acc["is_active_account"] else "  [备用账号]"
+            tier = acc.get("subscription_tier") or "Standard"
+            print(f"{active_marker} {acc['email']} ({tier})")
+            for b in acc.get("buckets", []):
+                window = b["window_type"].upper()
+                pct = b["remaining_percent"]
+                bar_len = int(pct / 10)
+                bar = "█" * bar_len + "░" * (10 - bar_len)
+                countdown = b["human_countdown"]
+                print(f"    ├─ [{window:<6}] {b['bucket_id']:<15} {bar} {pct:>5.1f}% | 重置倒计时: {countdown}")
+            print()
+
+        recent_warmups = overview.get("recent_warmups", [])
+        if recent_warmups:
+            print("-" * 70)
+            print(f"📜 最近滚动保活微Ping触发记录 (最近 {len(recent_warmups)} 条):")
+            for w in recent_warmups[:5]:
+                st_icon = "✅" if w.get("status") == "success" else "❌"
+                print(f"  • {w.get('created_at')} [{st_icon} {w.get('status')}] {w.get('account_email')} | {w.get('bucket_id')} ({w.get('model_name')}) - {w.get('duration_ms')}ms")
+        print("=" * 70)
+        return 0
+
+    elif action == "warmup":
+        from hub.antigravity.quota_sentinel import AntigravityQuotaSentinel
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        account_email = getattr(args, "account", None)
+        bucket_id = getattr(args, "bucket", None)
+        force = getattr(args, "force", False)
+
+        if not is_json:
+            print(f"🚀 正在为 Antigravity 执行滚动配额最小Token保活 (Force={force}, Account={account_email or '全部就绪账号'}, Bucket={bucket_id or '全部就绪池'})...")
+
+        res = asyncio.run(sentinel.sweep_and_warmup(
+            reason="cli_manual_warmup",
+            account_email=account_email,
+            bucket_id=bucket_id,
+            force=force,
+        ))
+
+        if is_json:
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+            return 0
+
+        warmups = res.get("warmup_results", [])
+        if not warmups:
+            print(f"ℹ️ 未发现需要保活的配额池（当前配额可能正在消耗倒计时中，或处于 4h55m 冷却期内）。")
+            print(f"   提示: 可使用 `--force` 参数强制触发最小Token微Ping测试。")
+        else:
+            print(f"✅ 成功执行 {len(warmups)} 次滚动保活微Ping:")
+            for w in warmups:
+                st_icon = "✅" if w.get("status") == "success" else "❌"
+                print(f"  {st_icon} {w.get('account_email')} | {w.get('bucket_id')} -> 模型: {w.get('model_name')} ({w.get('duration_ms')}ms)")
         return 0
 
     return 0

@@ -354,6 +354,46 @@ def register_observability_routes(
                 status_code=200,
             )
 
+    async def handle_antigravity_quota(req: HTTPRequest) -> HTTPResponse:
+        """GET /antigravity/quota: Retrieve 5h & weekly quota snapshots and countdowns for all accounts."""
+        active_broker = broker or getattr(dispatcher, "broker", None)
+        sentinel = getattr(dispatcher, "antigravity_quota", None)
+        if not sentinel:
+            from hub.antigravity.quota_sentinel import AntigravityQuotaSentinel
+            sentinel = AntigravityQuotaSentinel(
+                config=config,
+                db=db,
+                broker=active_broker,
+            )
+        email_filter = req.query_params.get("account") or req.query_params.get("email")
+        overview = sentinel.get_quota_overview(account_email=email_filter)
+        return HTTPResponse.json(overview, status_code=200)
+
+    async def handle_antigravity_warmup(req: HTTPRequest) -> HTTPResponse:
+        """POST /antigravity/warmup: Trigger on-demand token ping warmup for 5h/weekly quotas."""
+        active_broker = broker or getattr(dispatcher, "broker", None)
+        sentinel = getattr(dispatcher, "antigravity_quota", None)
+        if not sentinel:
+            from hub.antigravity.quota_sentinel import AntigravityQuotaSentinel
+            sentinel = AntigravityQuotaSentinel(
+                config=config,
+                db=db,
+                broker=active_broker,
+            )
+        body = req.json() if req.body else {}
+        email = body.get("account") or body.get("email")
+        bucket = body.get("bucket") or body.get("bucket_id")
+        force = bool(body.get("force", False))
+        reason = body.get("reason", "api_manual_trigger")
+
+        res = await sentinel.sweep_and_warmup(
+            reason=reason,
+            account_email=email,
+            bucket_id=bucket,
+            force=force,
+        )
+        return HTTPResponse.json(res, status_code=200)
+
     async def handle_dashboard(req: HTTPRequest) -> HTTPResponse:
         """GET /dashboard & GET /ui: Render Observable Activities Web Dashboard."""
         try:
@@ -400,3 +440,5 @@ def register_observability_routes(
     server.add_route("GET", "/antigravity/status", handle_antigravity_status)
     server.add_route("GET", "/antigravity/watchdog", handle_antigravity_status)
     server.add_route("POST", "/antigravity/pull-up", handle_antigravity_pull_up)
+    server.add_route("GET", "/antigravity/quota", handle_antigravity_quota)
+    server.add_route("POST", "/antigravity/warmup", handle_antigravity_warmup)

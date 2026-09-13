@@ -8,6 +8,7 @@ from typing import Any
 
 __all__ = [
     "AgentAPIClient",
+    "AntigravityQuotaSentinel",
     "AntigravityTaskPayload",
     "AntigravityWatchdog",
     "SessionThreadRecord",
@@ -29,6 +30,7 @@ __all__ = [
 
 _LAZY_MODULES: dict[str, tuple[str, str]] = {
     "AgentAPIClient": ("hub.antigravity.agentapi_client", "AgentAPIClient"),
+    "AntigravityQuotaSentinel": ("hub.antigravity.quota_sentinel", "AntigravityQuotaSentinel"),
     "discover_active_antigravity_credentials": ("hub.antigravity.agentapi_client", "discover_active_antigravity_credentials"),
     "resolve_agentapi_path": ("hub.antigravity.agentapi_client", "resolve_agentapi_path"),
     "validate_antigravity_address": ("hub.antigravity.agentapi_client", "validate_antigravity_address"),

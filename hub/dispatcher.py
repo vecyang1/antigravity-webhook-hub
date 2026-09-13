@@ -78,6 +78,15 @@ class TaskDispatcher:
             except Exception as aw_err:
                 logger.debug("AntigravityWatchdog init skipped: %s", aw_err)
 
+        aq_cfg = getattr(self.config, "antigravity_quota", None) if self.config else None
+        self.antigravity_quota: Optional[Any] = None
+        if self.db and (aq_cfg is None or getattr(aq_cfg, "enabled", True)):
+            try:
+                from hub.antigravity.quota_sentinel import AntigravityQuotaSentinel
+                self.antigravity_quota = AntigravityQuotaSentinel(config=self.config, db=self.db, broker=self.broker)
+            except Exception as aq_err:
+                logger.debug("AntigravityQuotaSentinel init skipped: %s", aq_err)
+
     async def start(self) -> None:
         """Start background task dispatcher workers, recover orphaned tasks, and launch unprocessed sweeper."""
         if hasattr(self.db, "recover_orphaned_tasks"):
@@ -95,6 +104,13 @@ class TaskDispatcher:
             await self.sweep_unprocessed_tasks(reason="boot_startup")
         except Exception as e:
             logger.warning("Initial boot-time sweep failed: %s", e)
+
+        # Initial Antigravity quota scan and SSOT sync on startup
+        if self.antigravity_quota and getattr(self.antigravity_quota, "is_enabled", True):
+            try:
+                await self.antigravity_quota.sweep_and_warmup(reason="boot_startup")
+            except Exception as e:
+                logger.debug("Initial boot-time Antigravity quota sync skipped: %s", e)
 
         # Rehydrate any remaining queued tasks into in-memory dispatch queue
         try:
@@ -307,13 +323,18 @@ class TaskDispatcher:
         tick_seconds = min(5.0, max(1.0, float(interval) / 6.0))
         last_periodic_sweep = time.time()
         last_watchdog_sweep = time.time()
+        last_quota_sweep = time.time()
         watchdog_interval = 30
         if self.antigravity_watchdog and hasattr(self.antigravity_watchdog, "config"):
             watchdog_interval = max(5, int(getattr(self.antigravity_watchdog.config, "interval_seconds", 30)))
 
+        quota_interval = 120
+        if self.antigravity_quota and hasattr(self.antigravity_quota, "quota_cfg") and self.antigravity_quota.quota_cfg:
+            quota_interval = max(10, int(getattr(self.antigravity_quota.quota_cfg, "scan_interval_seconds", 120)))
+
         logger.info(
-            "Unprocessed message sweeper loop active (interval: %ds, sleep_threshold: %ds, watchdog_interval: %ds)",
-            interval, drift_threshold, watchdog_interval
+            "Unprocessed message sweeper loop active (interval: %ds, sleep_threshold: %ds, watchdog_interval: %ds, quota_interval: %ds)",
+            interval, drift_threshold, watchdog_interval, quota_interval
         )
 
         while self._is_running:
@@ -369,6 +390,18 @@ class TaskDispatcher:
                     except Exception as e:
                         logger.error("Error during sleep recovery Antigravity watchdog sweep: %s", e)
 
+                if self.antigravity_quota and getattr(self.antigravity_quota, "is_enabled", True):
+                    try:
+                        q_res = await self.antigravity_quota.sweep_and_warmup(reason="sleep_wake_recovery")
+                        if q_res.get("warmups_executed", 0) > 0:
+                            logger.info(
+                                "Antigravity Quota Sentinel: Dispatched %d warmups after sleep/wake",
+                                q_res["warmups_executed"],
+                            )
+                        last_quota_sweep = time.time()
+                    except Exception as q_err:
+                        logger.error("Error during sleep recovery Antigravity quota sweep: %s", q_err)
+
             else:
                 if (time.time() - last_periodic_sweep) >= interval:
                     try:
@@ -399,6 +432,22 @@ class TaskDispatcher:
                         last_watchdog_sweep = time.time()
                     except Exception as e:
                         logger.error("Error during periodic Antigravity watchdog sweep: %s", e)
+
+                if (
+                    self.antigravity_quota
+                    and getattr(self.antigravity_quota, "is_enabled", True)
+                    and (time.time() - last_quota_sweep) >= quota_interval
+                ):
+                    try:
+                        q_res = await self.antigravity_quota.sweep_and_warmup(reason="periodic_sweep")
+                        if q_res.get("warmups_executed", 0) > 0:
+                            logger.info(
+                                "Antigravity Quota Sentinel: Dispatched %d warmups in periodic sweep",
+                                q_res["warmups_executed"],
+                            )
+                        last_quota_sweep = time.time()
+                    except Exception as q_err:
+                        logger.error("Error during periodic Antigravity quota sweep: %s", q_err)
 
                 await asyncio.sleep(0.1)
 

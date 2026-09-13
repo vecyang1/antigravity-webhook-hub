@@ -75,6 +75,7 @@ class DatabaseManager:
         )
         self._conn.row_factory = sqlite3.Row
         self._apply_pragmas(self._conn)
+        self.init_schema()
         self.shrink_memory()
 
     def _apply_pragmas(self, conn: sqlite3.Connection) -> None:
@@ -337,6 +338,69 @@ class DatabaseManager:
                 """
                 CREATE INDEX IF NOT EXISTS idx_conversation_schedules_status
                     ON conversation_schedules (status);
+                """
+            )
+
+            # 8. Antigravity Quota Snapshots Table (5h & Weekly Rolling Quota SSOT)
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS antigravity_quota_snapshots (
+                    account_email TEXT NOT NULL,
+                    bucket_id TEXT NOT NULL,
+                    model_group TEXT NOT NULL,
+                    window_type TEXT NOT NULL,
+                    remaining_fraction REAL NOT NULL,
+                    reset_time TEXT,
+                    reset_timestamp REAL,
+                    subscription_tier TEXT,
+                    is_active_account INTEGER NOT NULL DEFAULT 0,
+                    project_id TEXT,
+                    raw_summary_json TEXT,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (account_email, bucket_id)
+                );
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_antigravity_quota_snapshots_email
+                    ON antigravity_quota_snapshots (account_email);
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_antigravity_quota_snapshots_window
+                    ON antigravity_quota_snapshots (window_type, remaining_fraction);
+                """
+            )
+
+            # 9. Antigravity Warmup Logs Table (Ping Audit History)
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS antigravity_warmup_logs (
+                    warmup_id TEXT PRIMARY KEY,
+                    account_email TEXT NOT NULL,
+                    bucket_id TEXT NOT NULL,
+                    model_name TEXT NOT NULL,
+                    trigger_reason TEXT NOT NULL,
+                    route_used TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    error_message TEXT,
+                    duration_ms INTEGER DEFAULT 0,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_antigravity_warmup_logs_account
+                    ON antigravity_warmup_logs (account_email, created_at DESC);
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_antigravity_warmup_logs_bucket
+                    ON antigravity_warmup_logs (account_email, bucket_id, created_at DESC);
                 """
             )
 
@@ -1775,6 +1839,237 @@ class DatabaseManager:
                 }
             finally:
                 cur.close()
+
+    # --- Antigravity Quota Sentinel & 5h Warmup SSOT ---
+
+    def upsert_quota_snapshot(
+        self,
+        account_email: str,
+        bucket_id: str,
+        model_group: str,
+        window_type: str,
+        remaining_fraction: float,
+        reset_time: Optional[str] = None,
+        reset_timestamp: Optional[float] = None,
+        subscription_tier: Optional[str] = None,
+        is_active_account: bool = False,
+        project_id: Optional[str] = None,
+        raw_summary_json: Optional[str] = None,
+    ) -> None:
+        """Upsert a quota snapshot for an account bucket into SQLite SSOT."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO antigravity_quota_snapshots (
+                        account_email, bucket_id, model_group, window_type,
+                        remaining_fraction, reset_time, reset_timestamp,
+                        subscription_tier, is_active_account, project_id,
+                        raw_summary_json, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(account_email, bucket_id) DO UPDATE SET
+                        model_group = excluded.model_group,
+                        window_type = excluded.window_type,
+                        remaining_fraction = excluded.remaining_fraction,
+                        reset_time = excluded.reset_time,
+                        reset_timestamp = excluded.reset_timestamp,
+                        subscription_tier = excluded.subscription_tier,
+                        is_active_account = excluded.is_active_account,
+                        project_id = excluded.project_id,
+                        raw_summary_json = excluded.raw_summary_json,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        account_email,
+                        bucket_id,
+                        model_group,
+                        window_type,
+                        float(remaining_fraction),
+                        reset_time,
+                        float(reset_timestamp) if reset_timestamp is not None else None,
+                        subscription_tier,
+                        1 if is_active_account else 0,
+                        project_id,
+                        raw_summary_json,
+                    ),
+                )
+                self._commit_and_shrink()
+            except Exception as e:
+                logger.error("Failed to upsert quota snapshot for %s/%s: %s", account_email, bucket_id, e)
+                raise
+            finally:
+                cur.close()
+
+    def get_quota_snapshots(self, account_email: Optional[str] = None) -> list[dict[str, Any]]:
+        """Retrieve quota snapshots from SQLite SSOT, ordered by active account and email."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                if account_email:
+                    cur.execute(
+                        """
+                        SELECT * FROM antigravity_quota_snapshots
+                        WHERE account_email = ?
+                        ORDER BY bucket_id ASC
+                        """,
+                        (account_email,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT * FROM antigravity_quota_snapshots
+                        ORDER BY is_active_account DESC, account_email ASC, bucket_id ASC
+                        """
+                    )
+                return [dict(row) for row in cur.fetchall()]
+            finally:
+                cur.close()
+
+    def record_warmup_log(
+        self,
+        account_email: str,
+        bucket_id: str,
+        model_name: str,
+        trigger_reason: str,
+        route_used: str,
+        status: str,
+        error_message: Optional[str] = None,
+        duration_ms: int = 0,
+    ) -> dict[str, Any]:
+        """Record an autonomous token ping warmup event in SQLite SSOT."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                warmup_id = f"wrm_{uuid.uuid4().hex[:12]}"
+                cur.execute(
+                    """
+                    INSERT INTO antigravity_warmup_logs (
+                        warmup_id, account_email, bucket_id, model_name,
+                        trigger_reason, route_used, status, error_message,
+                        duration_ms, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        warmup_id,
+                        account_email,
+                        bucket_id,
+                        model_name,
+                        trigger_reason,
+                        route_used,
+                        status,
+                        error_message,
+                        duration_ms,
+                    ),
+                )
+                self._commit_and_shrink()
+                return {
+                    "warmup_id": warmup_id,
+                    "account_email": account_email,
+                    "bucket_id": bucket_id,
+                    "model_name": model_name,
+                    "trigger_reason": trigger_reason,
+                    "route_used": route_used,
+                    "status": status,
+                    "error_message": error_message,
+                    "duration_ms": duration_ms,
+                }
+            except Exception as e:
+                logger.error("Failed to record warmup log for %s/%s: %s", account_email, bucket_id, e)
+                raise
+            finally:
+                cur.close()
+
+    def get_latest_warmup(self, account_email: str, bucket_id: str) -> Optional[dict[str, Any]]:
+        """Get the most recent warmup log for an account bucket."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT * FROM antigravity_warmup_logs
+                    WHERE account_email = ? AND bucket_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (account_email, bucket_id),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else None
+            finally:
+                cur.close()
+
+    def get_warmup_logs(
+        self,
+        account_email: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Retrieve recent warmup audit logs."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                if account_email:
+                    cur.execute(
+                        """
+                        SELECT * FROM antigravity_warmup_logs
+                        WHERE account_email = ?
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                        """,
+                        (account_email, limit),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT * FROM antigravity_warmup_logs
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                        """,
+                        (limit,),
+                    )
+                return [dict(row) for row in cur.fetchall()]
+            finally:
+                cur.close()
+
+    def get_quota_summary_stats(self) -> dict[str, Any]:
+        """Summary metrics across all tracked Antigravity accounts and buckets."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute("SELECT COUNT(DISTINCT account_email) FROM antigravity_quota_snapshots")
+                total_accounts = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(DISTINCT account_email) FROM antigravity_quota_snapshots WHERE is_active_account = 1")
+                active_accounts = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM antigravity_quota_snapshots WHERE window_type = '5h'")
+                total_5h_buckets = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM antigravity_quota_snapshots WHERE window_type = '5h' AND remaining_fraction >= 0.999")
+                ready_5h_buckets = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM antigravity_warmup_logs WHERE status = 'success'")
+                successful_warmups = cur.fetchone()[0]
+
+                return {
+                    "total_accounts": total_accounts,
+                    "active_accounts": active_accounts,
+                    "total_5h_buckets": total_5h_buckets,
+                    "ready_5h_buckets": ready_5h_buckets,
+                    "successful_warmups": successful_warmups,
+                }
+            except Exception as e:
+                logger.error("Failed to get quota summary stats: %s", e)
+                return {
+                    "total_accounts": 0,
+                    "active_accounts": 0,
+                    "total_5h_buckets": 0,
+                    "ready_5h_buckets": 0,
+                    "successful_warmups": 0,
+                }
+            finally:
+                cur.close()
+
 
 
 

@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-09-13
+
+### Added & Hardened
+- **Antigravity Quota Sentinel & 5-Hour Rolling Window Automated Warmup Engine**:
+  - **The Passive Countdown Trap Resolved**:
+    - Discovered and addressed Google Cloud Code PA's lazy-start rolling window mechanism: 5-hour quota countdown timers freeze when quota resets to 100% idle, causing user work to experience a full 5-hour delay if initiated late.
+    - Designed and implemented `AntigravityQuotaSentinel` (`hub/antigravity/quota_sentinel.py`) to continuously monitor quota buckets, detect idle/reset 100% full buckets, and autonomously dispatch minimal token pings (1–10 tokens via `gemini-3-flash` or `claude-sonnet-4-6`) to immediately restart the 5-hour rolling refresh countdown.
+  - **Multi-Account & Dual-Group Quota Tracking**:
+    - Scans `~/.antigravity_tools/accounts/*.json` across all accounts, discovering active account, Google AI subscription tier (`Google AI Ultra`, `Google AI Pro`, `Starter`), access tokens, and project IDs.
+    - Tracks both `Gemini Models` and `Claude and GPT models` across `5h` and `weekly` rolling buckets.
+  - **SQLite Single Source of Truth (SSOT) Persistence**:
+    - Added tables `antigravity_quota_snapshots` and `antigravity_warmup_logs` in SQLite database (`data/webhook_hub.db`).
+    - Enforced atomic upserts, query APIs, and full audit logging of every token warmup ping.
+  - **Cooldown & Rate-Limiting Protection**:
+    - Strict 4h55m cooldown (`warmup_cooldown_seconds = 17700`) per bucket to prevent repeated ping loops within a single 5-hour window.
+    - Configurable overrides via YAML (`antigravity_quota`) and environment variables (`ANTIGRAVITY_QUOTA_*`).
+  - **macOS Sleep/Wake & Periodic Sweeper Integration**:
+    - Embedded into `TaskDispatcher` sweeper loop (`hub/dispatcher.py`).
+    - Detects macOS monotonic sleep/wake leaps (`mach_continuous_time`) and immediately checks and warms up reset quotas upon machine wake.
+    - Runs periodic background sweeps every 120 seconds.
+  - **CLI & HTTP Operations**:
+    - CLI: `./bin/webhook-hub antigravity quota` (terminal progress bars, countdown timers, active account indicators) and `./bin/webhook-hub antigravity warmup` (supporting `--account`, `--bucket`, and `--force`).
+    - HTTP REST API: `GET /antigravity/quota` and `POST /antigravity/warmup` with SSE broadcasting (`antigravity_quota_warmup`).
+    - Integrated quota sentinel telemetry into `./bin/webhook-hub antigravity doctor`.
+  - **TDD Test Suite & Zero-Regression Verification**:
+    - Added 9 comprehensive unit tests in `tests/unit/test_antigravity_quota_sentinel.py` verifying positive paths, adversarial bounds, cooldown enforcement, and HTTP error resilience.
+
 ## [1.12.0] - 2026-09-13
 
 ### Added & Hardened

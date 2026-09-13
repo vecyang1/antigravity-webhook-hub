@@ -108,6 +108,21 @@ class AntigravityWatchdogConfig:
 
 
 @dataclass(slots=True)
+class AntigravityQuotaConfig:
+    enabled: bool = True
+    scan_interval_seconds: int = 120
+    auto_warmup_5h: bool = True
+    auto_warmup_weekly: bool = False
+    warmup_cooldown_seconds: int = 17700  # 4h 55m cooldown to avoid duplicate warmup within 5h cycle
+    tools_api_host: str = "127.0.0.1"
+    tools_api_port: int = 8045
+    tools_api_timeout_seconds: float = 15.0
+    default_gemini_model: str = "gemini-3-flash"
+    default_3p_model: str = "claude-sonnet-4-6"
+    accounts_dir: Optional[str] = None
+
+
+@dataclass(slots=True)
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
@@ -118,6 +133,7 @@ class AppConfig:
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     antigravity_watchdog: AntigravityWatchdogConfig = field(default_factory=AntigravityWatchdogConfig)
+    antigravity_quota: AntigravityQuotaConfig = field(default_factory=AntigravityQuotaConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -191,6 +207,19 @@ class AppConfig:
                 "probe_timeout_seconds": self.antigravity_watchdog.probe_timeout_seconds,
                 "brain_dir": self.antigravity_watchdog.brain_dir,
                 "sidecar_data_dir": self.antigravity_watchdog.sidecar_data_dir,
+            },
+            "antigravity_quota": {
+                "enabled": self.antigravity_quota.enabled,
+                "scan_interval_seconds": self.antigravity_quota.scan_interval_seconds,
+                "auto_warmup_5h": self.antigravity_quota.auto_warmup_5h,
+                "auto_warmup_weekly": self.antigravity_quota.auto_warmup_weekly,
+                "warmup_cooldown_seconds": self.antigravity_quota.warmup_cooldown_seconds,
+                "tools_api_host": self.antigravity_quota.tools_api_host,
+                "tools_api_port": self.antigravity_quota.tools_api_port,
+                "tools_api_timeout_seconds": self.antigravity_quota.tools_api_timeout_seconds,
+                "default_gemini_model": self.antigravity_quota.default_gemini_model,
+                "default_3p_model": self.antigravity_quota.default_3p_model,
+                "accounts_dir": self.antigravity_quota.accounts_dir,
             },
         }
 
@@ -433,6 +462,41 @@ def load_config(
         if "sidecar_data_dir" in aw:
             cfg.antigravity_watchdog.sidecar_data_dir = str(aw["sidecar_data_dir"])
 
+    # Antigravity Quota Sentinel & 5h Warmup
+    if "antigravity_quota" in yaml_data and isinstance(yaml_data["antigravity_quota"], dict):
+        aq = yaml_data["antigravity_quota"]
+        if "enabled" in aq:
+            cfg.antigravity_quota.enabled = _to_bool(aq["enabled"])
+        if "scan_interval_seconds" in aq:
+            cfg.antigravity_quota.scan_interval_seconds = _to_int(
+                aq["scan_interval_seconds"], cfg.antigravity_quota.scan_interval_seconds
+            )
+        if "auto_warmup_5h" in aq:
+            cfg.antigravity_quota.auto_warmup_5h = _to_bool(aq["auto_warmup_5h"])
+        if "auto_warmup_weekly" in aq:
+            cfg.antigravity_quota.auto_warmup_weekly = _to_bool(aq["auto_warmup_weekly"])
+        if "warmup_cooldown_seconds" in aq:
+            cfg.antigravity_quota.warmup_cooldown_seconds = _to_int(
+                aq["warmup_cooldown_seconds"], cfg.antigravity_quota.warmup_cooldown_seconds
+            )
+        if "tools_api_host" in aq:
+            cfg.antigravity_quota.tools_api_host = str(aq["tools_api_host"])
+        if "tools_api_port" in aq:
+            cfg.antigravity_quota.tools_api_port = _to_int(
+                aq["tools_api_port"], cfg.antigravity_quota.tools_api_port
+            )
+        if "tools_api_timeout_seconds" in aq:
+            try:
+                cfg.antigravity_quota.tools_api_timeout_seconds = float(aq["tools_api_timeout_seconds"])
+            except (ValueError, TypeError):
+                pass
+        if "default_gemini_model" in aq:
+            cfg.antigravity_quota.default_gemini_model = str(aq["default_gemini_model"])
+        if "default_3p_model" in aq:
+            cfg.antigravity_quota.default_3p_model = str(aq["default_3p_model"])
+        if "accounts_dir" in aq:
+            cfg.antigravity_quota.accounts_dir = str(aq["accounts_dir"])
+
     # 4. Apply environment variables over YAML
     # Server
     if "HOST" in combined_env:
@@ -596,6 +660,41 @@ def load_config(
     if "ANTIGRAVITY_WATCHDOG_SIDECAR_DATA_DIR" in combined_env:
         cfg.antigravity_watchdog.sidecar_data_dir = str(combined_env["ANTIGRAVITY_WATCHDOG_SIDECAR_DATA_DIR"])
 
+    # Antigravity Quota Sentinel
+    if "ANTIGRAVITY_QUOTA_ENABLED" in combined_env:
+        cfg.antigravity_quota.enabled = _to_bool(combined_env["ANTIGRAVITY_QUOTA_ENABLED"])
+    if "ANTIGRAVITY_QUOTA_SCAN_INTERVAL_SECONDS" in combined_env:
+        cfg.antigravity_quota.scan_interval_seconds = _to_int(
+            combined_env["ANTIGRAVITY_QUOTA_SCAN_INTERVAL_SECONDS"], cfg.antigravity_quota.scan_interval_seconds
+        )
+    if "ANTIGRAVITY_QUOTA_AUTO_WARMUP_5H" in combined_env:
+        cfg.antigravity_quota.auto_warmup_5h = _to_bool(combined_env["ANTIGRAVITY_QUOTA_AUTO_WARMUP_5H"])
+    if "ANTIGRAVITY_QUOTA_AUTO_WARMUP_WEEKLY" in combined_env:
+        cfg.antigravity_quota.auto_warmup_weekly = _to_bool(combined_env["ANTIGRAVITY_QUOTA_AUTO_WARMUP_WEEKLY"])
+    if "ANTIGRAVITY_QUOTA_WARMUP_COOLDOWN_SECONDS" in combined_env:
+        cfg.antigravity_quota.warmup_cooldown_seconds = _to_int(
+            combined_env["ANTIGRAVITY_QUOTA_WARMUP_COOLDOWN_SECONDS"], cfg.antigravity_quota.warmup_cooldown_seconds
+        )
+    if "ANTIGRAVITY_QUOTA_TOOLS_API_HOST" in combined_env:
+        cfg.antigravity_quota.tools_api_host = str(combined_env["ANTIGRAVITY_QUOTA_TOOLS_API_HOST"])
+    if "ANTIGRAVITY_QUOTA_TOOLS_API_PORT" in combined_env:
+        cfg.antigravity_quota.tools_api_port = _to_int(
+            combined_env["ANTIGRAVITY_QUOTA_TOOLS_API_PORT"], cfg.antigravity_quota.tools_api_port
+        )
+    if "ANTIGRAVITY_QUOTA_TOOLS_API_TIMEOUT_SECONDS" in combined_env:
+        try:
+            cfg.antigravity_quota.tools_api_timeout_seconds = float(
+                combined_env["ANTIGRAVITY_QUOTA_TOOLS_API_TIMEOUT_SECONDS"]
+            )
+        except (ValueError, TypeError):
+            pass
+    if "ANTIGRAVITY_QUOTA_DEFAULT_GEMINI_MODEL" in combined_env:
+        cfg.antigravity_quota.default_gemini_model = str(combined_env["ANTIGRAVITY_QUOTA_DEFAULT_GEMINI_MODEL"])
+    if "ANTIGRAVITY_QUOTA_DEFAULT_3P_MODEL" in combined_env:
+        cfg.antigravity_quota.default_3p_model = str(combined_env["ANTIGRAVITY_QUOTA_DEFAULT_3P_MODEL"])
+    if "ANTIGRAVITY_QUOTA_ACCOUNTS_DIR" in combined_env:
+        cfg.antigravity_quota.accounts_dir = str(combined_env["ANTIGRAVITY_QUOTA_ACCOUNTS_DIR"])
+
     # 5. Apply CLI / Explicit overrides (highest precedence)
     if cli_overrides:
         for k, v in cli_overrides.items():
@@ -653,6 +752,22 @@ def load_config(
                         setattr(cfg.dashboard, k, [x.strip() for x in v.split(",") if x.strip()])
                     else:
                         setattr(cfg.dashboard, k, v)
+                elif hasattr(cfg.antigravity_watchdog, k):
+                    curr = getattr(cfg.antigravity_watchdog, k)
+                    if isinstance(curr, bool):
+                        setattr(cfg.antigravity_watchdog, k, _to_bool(v))
+                    elif isinstance(curr, int):
+                        setattr(cfg.antigravity_watchdog, k, int(v))
+                    else:
+                        setattr(cfg.antigravity_watchdog, k, v)
+                elif hasattr(cfg.antigravity_quota, k):
+                    curr = getattr(cfg.antigravity_quota, k)
+                    if isinstance(curr, bool):
+                        setattr(cfg.antigravity_quota, k, _to_bool(v))
+                    elif isinstance(curr, int):
+                        setattr(cfg.antigravity_quota, k, int(v))
+                    else:
+                        setattr(cfg.antigravity_quota, k, v)
 
     return cfg
 

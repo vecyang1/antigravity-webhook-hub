@@ -1,0 +1,404 @@
+"""
+Unit Tests for Antigravity Quota Sentinel & 5h Rolling Window Warmup Engine
+Verifies both sides of truth:
+1. Positive path: detecting idle 100% buckets, expired windows, successful 1-token warmup dispatch,
+   SQLite SSOT persistence, and broker SSE publishing.
+2. Adversarial path: active countdown buckets (<100%) skipped, unexpired future windows skipped,
+   disabled accounts ignored, 4h55m cooldown enforced, and HTTP connection failures gracefully recorded.
+"""
+
+import asyncio
+import io
+import json
+import os
+import shutil
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from hub.antigravity.quota_sentinel import (
+    AccountQuotaProfile,
+    AntigravityQuotaSentinel,
+    QuotaBucketInfo,
+    parse_iso_timestamp,
+)
+from hub.config import AntigravityQuotaConfig, AppConfig
+from hub.db import DatabaseManager
+
+
+@pytest.fixture
+def temp_dir():
+    d = tempfile.mkdtemp(prefix="test_quota_sentinel_")
+    yield Path(d)
+    shutil.rmtree(d, ignore_errors=True)
+
+
+@pytest.fixture
+def db(temp_dir):
+    db_file = temp_dir / "test_hub.db"
+    manager = DatabaseManager(str(db_file))
+    manager.init_schema()
+    return manager
+
+
+@pytest.fixture
+def fake_accounts_dir(temp_dir):
+    accounts_dir = temp_dir / "accounts"
+    accounts_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Active account: viinam33@gmail.com
+    acc1_id = "acc-active-001"
+    acc1 = {
+        "id": acc1_id,
+        "email": "viinam33@gmail.com",
+        "name": "Viinam",
+        "disabled": False,
+        "proxy_disabled": False,
+        "token": {
+            "access_token": "fake_token_viinam",
+            "project_id": "aicode-consumers",
+            "expiry_timestamp": time.time() + 3600,
+        },
+        "quota": {
+            "subscription_tier": "Google AI Ultra",
+            "last_updated": int(time.time()),
+            "quota_groups": [
+                {
+                    "name": "group_gemini",
+                    "buckets": [
+                        {
+                            "bucket_id": "gemini-5h",
+                            "window": "5h",
+                            "remaining_fraction": 1.0,
+                            "reset_time": "2026-09-13T10:00:00Z",  # In the past
+                        },
+                        {
+                            "bucket_id": "gemini-weekly",
+                            "window": "weekly",
+                            "remaining_fraction": 0.5,
+                            "reset_time": "2026-09-20T10:00:00Z",
+                        },
+                    ],
+                },
+                {
+                    "name": "group_3p",
+                    "buckets": [
+                        {
+                            "bucket_id": "3p-5h",
+                            "window": "5h",
+                            "remaining_fraction": 0.75,  # Active timer running
+                            "reset_time": "2026-09-13T20:00:00Z",  # In the future
+                        },
+                    ],
+                },
+            ],
+        },
+    }
+    with open(accounts_dir / f"{acc1_id}.json", "w", encoding="utf-8") as f:
+        json.dump(acc1, f)
+
+    # 2. Inactive account: standby@gmail.com
+    acc2_id = "acc-standby-002"
+    acc2 = {
+        "id": acc2_id,
+        "email": "standby@gmail.com",
+        "disabled": False,
+        "token": {
+            "access_token": "fake_token_standby",
+            "project_id": "aicode-consumers",
+        },
+        "quota": {
+            "subscription_tier": "Google AI Pro",
+            "quota_groups": [
+                {
+                    "buckets": [
+                        {
+                            "bucket_id": "3p-5h",
+                            "window": "5h",
+                            "remaining_fraction": 1.0,
+                            "reset_time": "2026-09-13T09:00:00Z",  # Expired
+                        }
+                    ]
+                }
+            ],
+        },
+    }
+    with open(accounts_dir / f"{acc2_id}.json", "w", encoding="utf-8") as f:
+        json.dump(acc2, f)
+
+    # 3. Disabled account: disabled@gmail.com
+    acc3_id = "acc-disabled-003"
+    acc3 = {
+        "id": acc3_id,
+        "email": "disabled@gmail.com",
+        "disabled": True,
+        "token": {"access_token": "tok_disabled"},
+        "quota": {
+            "quota_groups": [
+                {
+                    "buckets": [
+                        {
+                            "bucket_id": "gemini-5h",
+                            "window": "5h",
+                            "remaining_fraction": 1.0,
+                            "reset_time": "2026-09-13T08:00:00Z",
+                        }
+                    ]
+                }
+            ]
+        },
+    }
+    with open(accounts_dir / f"{acc3_id}.json", "w", encoding="utf-8") as f:
+        json.dump(acc3, f)
+
+    # Create accounts.json pointing to acc1_id as active
+    accounts_json = temp_dir / "accounts.json"
+    with open(accounts_json, "w", encoding="utf-8") as f:
+        json.dump({"current_account_id": acc1_id}, f)
+
+    return temp_dir
+
+
+def test_parse_iso_timestamp():
+    # Valid RFC3339 UTC
+    ts1 = parse_iso_timestamp("2026-09-13T21:03:47Z")
+    assert ts1 is not None
+    assert ts1 > 0
+
+    # Valid with timezone offset
+    ts2 = parse_iso_timestamp("2026-09-13T21:03:47+00:00")
+    assert ts1 == ts2
+
+    # Invalid string and None
+    assert parse_iso_timestamp("invalid-date") is None
+    assert parse_iso_timestamp(None) is None
+
+
+def test_scan_accounts_discovery(fake_accounts_dir, db):
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    # Patch accounts.json path
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        profiles = sentinel.scan_accounts()
+
+    assert len(profiles) == 3
+
+    # Active account is sorted first
+    assert profiles[0].email == "viinam33@gmail.com"
+    assert profiles[0].is_active is True
+    assert profiles[0].subscription_tier == "Google AI Ultra"
+    assert len(profiles[0].buckets) == 3
+
+    # Check model groups deduced properly
+    b_map = {b.bucket_id: b for b in profiles[0].buckets}
+    assert b_map["gemini-5h"].model_group == "Gemini Models"
+    assert b_map["3p-5h"].model_group == "Claude and GPT models"
+
+
+def test_sync_quotas_to_db_ssot(fake_accounts_dir, db):
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        upserted = sentinel.sync_quotas_to_db()
+
+    assert upserted == 5  # 3 from acc1, 1 from acc2, 1 from acc3
+
+    # Retrieve from DB
+    snaps = db.get_quota_snapshots()
+    assert len(snaps) == 5
+
+    # Filter by active account
+    acc1_snaps = db.get_quota_snapshots("viinam33@gmail.com")
+    assert len(acc1_snaps) == 3
+
+    # Verify idempotency: syncing twice doesn't duplicate rows
+    upserted2 = sentinel.sync_quotas_to_db()
+    assert upserted2 == 5
+    assert len(db.get_quota_snapshots()) == 5
+
+
+def test_evaluate_warmup_candidates_both_halves(fake_accounts_dir, db):
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+    cfg.antigravity_quota.auto_warmup_5h = True
+    cfg.antigravity_quota.auto_warmup_weekly = False
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        profiles = sentinel.scan_accounts()
+
+        # Evaluation without force:
+        # - viinam33 gemini-5h: rem=1.0, reset in past -> ELIGIBLE
+        # - viinam33 gemini-weekly: weekly bucket (auto_warmup_weekly=False) -> SKIPPED
+        # - viinam33 3p-5h: rem=0.75 (timer active) -> SKIPPED
+        # - standby 3p-5h: rem=1.0, reset in past -> ELIGIBLE
+        # - disabled gemini-5h: account disabled -> SKIPPED
+        candidates = sentinel.evaluate_warmup_candidates(profiles, force=False)
+        assert len(candidates) == 2
+
+        cand_keys = {(c["account_email"], c["bucket_id"]) for c in candidates}
+        assert ("viinam33@gmail.com", "gemini-5h") in cand_keys
+        assert ("standby@gmail.com", "3p-5h") in cand_keys
+
+        # Check model selection
+        for c in candidates:
+            if c["bucket_id"] == "gemini-5h":
+                assert c["model_name"] == "gemini-3-flash"
+            elif c["bucket_id"] == "3p-5h":
+                assert c["model_name"] == "claude-sonnet-4-6"
+
+
+def test_cooldown_enforcement(fake_accounts_dir, db):
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+    cfg.antigravity_quota.warmup_cooldown_seconds = 17700  # 4h 55m
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        profiles = sentinel.scan_accounts()
+
+        # First evaluation: 2 candidates
+        candidates = sentinel.evaluate_warmup_candidates(profiles, force=False)
+        assert len(candidates) == 2
+
+        # Record a successful warmup for viinam33 gemini-5h
+        db.record_warmup_log(
+            account_email="viinam33@gmail.com",
+            bucket_id="gemini-5h",
+            model_name="gemini-3-flash",
+            trigger_reason="test",
+            route_used="tools_api_8045",
+            status="success",
+        )
+
+        # Second evaluation: viinam33 gemini-5h must now be skipped due to cooldown!
+        candidates_after = sentinel.evaluate_warmup_candidates(profiles, force=False)
+        assert len(candidates_after) == 1
+        assert candidates_after[0]["account_email"] == "standby@gmail.com"
+
+        # When force=True, cooldown is bypassed
+        candidates_forced = sentinel.evaluate_warmup_candidates(profiles, force=True)
+        assert len(candidates_forced) == 4  # All non-disabled buckets
+
+
+def test_execute_warmup_success_8045(db):
+    cfg = AppConfig()
+    sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+
+    candidate = {
+        "account_email": "test@gmail.com",
+        "bucket_id": "gemini-5h",
+        "model_name": "gemini-3-flash",
+        "access_token": "valid_token_xyz",
+        "project_id": "aicode-consumers",
+    }
+
+    fake_response = io.BytesIO(json.dumps({"success": True, "message": "Warmup triggered"}).encode("utf-8"))
+    fake_response.status = 200
+
+    with patch("urllib.request.urlopen", return_value=fake_response):
+        res = sentinel.execute_warmup_sync(candidate, trigger_reason="unit_test")
+
+    assert res["status"] == "success"
+    assert res["account_email"] == "test@gmail.com"
+    assert res["bucket_id"] == "gemini-5h"
+    assert res["route_used"] == "tools_api_8045"
+
+    # Verify audit log in SQLite SSOT
+    logs = db.get_warmup_logs("test@gmail.com")
+    assert len(logs) == 1
+    assert logs[0]["status"] == "success"
+    assert logs[0]["model_name"] == "gemini-3-flash"
+
+
+def test_execute_warmup_http_error_resilience(db):
+    cfg = AppConfig()
+    sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+
+    candidate = {
+        "account_email": "fail@gmail.com",
+        "bucket_id": "3p-5h",
+        "model_name": "claude-sonnet-4-6",
+        "access_token": "expired_token",
+        "project_id": "aicode-consumers",
+    }
+
+    # Simulate HTTP 401 Unauthorized
+    err = urllib.error.HTTPError(
+        url="http://127.0.0.1:8045/internal/warmup",
+        code=401,
+        msg="Unauthorized",
+        hdrs={},
+        fp=io.BytesIO(b'{"error": "invalid_grant"}'),
+    )
+
+    with patch("urllib.request.urlopen", side_effect=err):
+        res = sentinel.execute_warmup_sync(candidate, trigger_reason="unit_test")
+
+    assert res["status"] == "failed"
+    assert "HTTP 401" in res["error_message"]
+
+    # Verify recorded to DB as failed attempt without crashing
+    logs = db.get_warmup_logs("fail@gmail.com")
+    assert len(logs) == 1
+    assert logs[0]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_sweep_and_warmup_e2e_with_broker(fake_accounts_dir, db):
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    mock_broker = MagicMock()
+    mock_broker.publish = AsyncMock()
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db, broker=mock_broker)
+
+        # Mock successful HTTP call
+        fake_response = io.BytesIO(json.dumps({"success": True}).encode("utf-8"))
+        fake_response.status = 200
+
+        with patch("urllib.request.urlopen", return_value=fake_response):
+            summary = await sentinel.sweep_and_warmup(reason="test_cycle", force=False)
+
+    assert summary["accounts_scanned"] == 3
+    assert summary["candidates_found"] == 2
+    assert summary["warmups_executed"] == 2
+
+    # Verify SSE events were published
+    assert mock_broker.publish.call_count == 2
+    published_events = [call.args[1]["event"] for call in mock_broker.publish.call_args_list]
+    assert all(e == "antigravity_quota_warmup" for e in published_events)
+
+
+def test_get_quota_overview_formatting(fake_accounts_dir, db):
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        sentinel.sync_quotas_to_db()
+        overview = sentinel.get_quota_overview()
+
+    assert overview["accounts_count"] == 3
+    assert "stats" in overview
+    assert overview["stats"]["total_5h_buckets"] == 4
+
+    # Check formatting of accounts and countdowns
+    viinam = next(a for a in overview["accounts"] if a["email"] == "viinam33@gmail.com")
+    assert viinam["is_active_account"] is True
+    assert len(viinam["buckets"]) == 3
+
+    b_gemini = next(b for b in viinam["buckets"] if b["bucket_id"] == "gemini-5h")
+    assert b_gemini["remaining_percent"] == 100.0
+    assert "Ready to Warmup" in b_gemini["human_countdown"]
