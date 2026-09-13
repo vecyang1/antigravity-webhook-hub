@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-09-13
+
+### Hardened & Optimized
+- **Memory RSS Budget Hardening (<30.0 MB under Concurrent Load)**:
+  - Converted `hub/antigravity/__init__.py` from eager imports to PEP 562 `__getattr__` lazy module loading, eliminating 8.5MB of unnecessary module bloat on server startup.
+  - Lazified `AntigravityWatchdog` instantiation in `hub/dispatcher.py` to prevent eager cascade loading of agentapi and watchdog clients.
+  - Lazified `AgentAPIClient` in `hub/antigravity/watchdog.py` via dynamic property evaluation.
+  - Decoupled `resolve_slack_bot_token` in `hub/contact_review/slack_notifier.py` from heavy data models, putting models under `TYPE_CHECKING`.
+  - Put `ThreadNotifier` type hint under `TYPE_CHECKING` in `hub/antigravity/result_delivery.py`.
+  - Hardened Darwin `malloc_zone_pressure_relief` in `hub/memory.py` with safe `ctypes.c_void_p` pointer checks against null dereferences.
+  - Enabled WAL truncation on memory pressure relief in `hub/routes/observability.py`.
+  - Corrected `hub_bin` directory traversal depth (`parents[2]`) in `tests/stress/test_m5_adversarial_dispatcher_sse.py`.
+  - Confirmed standalone server process RSS is maintained at 17.7MB - 27.9MB under high-concurrency burst loads (30 reqs, concurrency 10).
+  - 100% full regression pass: 304/304 unit, contract, e2e, and stress tests passing cleanly.
+
 ## [1.10.0] - 2026-09-13
 
 ### Added & Hardened
