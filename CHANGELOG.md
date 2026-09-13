@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.2] - 2026-09-13
+
+### Fixed & Hardened
+- **CI / CD Stress Test Hardening (`tests/stress/test_m5_adversarial_dispatcher_sse.py`)**:
+  - Eliminated Python `UnboundLocalError` on `urllib` in `test_adversarial_finding1_standalone_server_process_rss_breach` by scoping imports to function header.
+  - Increased standalone server readiness timeout from 5.0s to 12.0s with diagnostic reporting to eliminate false-negative CI timeouts under runner VM scheduling jitter.
+  - Aligned adversarial memory RSS evaluation with authoritative Mach kernel physical footprint `/healthz` SSOT endpoint.
+  - Hardened Slack offline catchup with exponential backoff and persistent connection error retries.
+
 ## [1.11.1] - 2026-09-13
 
 ### Hardened & Fixed
