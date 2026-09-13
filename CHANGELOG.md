@@ -694,3 +694,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HTTP Request Smuggling protection rejecting conflicting `Content-Length` and `Transfer-Encoding` headers (RFC 7230 / RFC 9112).
 - Hard payload size limits (`max_body_bytes: 1MB`) guarding against unbounded memory exhaustion denial-of-service attacks.
 - Subprocess process group isolation (`os.setsid`) preventing child process leaks upon task cancellation or timeout.
+- [Added] Created notion markdown rich_text 2000 character chunker at `hub/notion/markdown.py` to decouple n8n and Notion API limitations.

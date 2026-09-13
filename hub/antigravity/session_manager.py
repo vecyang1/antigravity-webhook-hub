@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Any, Callable, Optional
 
@@ -235,10 +236,17 @@ async def execute_antigravity_task(
 
     orig_model = payload.model_tier
     log(f"Launching Antigravity conversation (model: {payload.model_tier}, commands: {all_cmds})...")
+    workspace_dir = (
+        payload.metadata.get("workspace")
+        or payload.metadata.get("cwd")
+        or os.environ.get("ANTIGRAVITY_DEFAULT_WORKSPACE")
+        or "/Users/vecsatfoxmailcom/Documents/Cowork/Antigravity Cowork"
+    )
     success, convo_id, err_msg = await client.new_conversation(
         prompt=prompt,
         model=payload.model_tier,
         title=task_title,
+        cwd=workspace_dir,
     )
 
     # Quota exhaustion & 429 self-healing auto-downgrade to flash_lite
