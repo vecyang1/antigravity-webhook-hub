@@ -16,6 +16,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -549,4 +550,123 @@ def test_fleet_wide_prioritization_order(fake_accounts_dir, db):
         assert candidates[0]["account_email"] == "viinam33@gmail.com"
         # Within active account, Gemini MUST come first
         assert "gemini" in candidates[0]["bucket_id"].lower()
+
+
+def test_remaining_fraction_null_safety(fake_accounts_dir, db):
+    """Test that Google API returning null remainingFraction does not crash and defaults safely to 1.0."""
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+
+        # Mock urllib response with null remainingFraction
+        mock_resp_data = {
+            "groups": [{
+                "displayName": "Gemini Models",
+                "buckets": [{
+                    "bucketId": "gemini-5h",
+                    "window": "5h",
+                    "remainingFraction": None,
+                    "resetTime": "2026-09-14T15:00:00Z",
+                }]
+            }]
+        }
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_ctx = MagicMock()
+            mock_ctx.status = 200
+            mock_ctx.read.return_value = json.dumps(mock_resp_data).encode("utf-8")
+            mock_ctx.__enter__.return_value = mock_ctx
+            mock_ctx.__exit__.return_value = False
+            mock_urlopen.return_value = mock_ctx
+
+            buckets = sentinel.fetch_live_quota("mock_token")
+            assert buckets is not None
+            assert len(buckets) == 1
+            assert buckets[0].remaining_fraction == 1.0
+
+
+def test_weekly_window_cooldown_7d(fake_accounts_dir, db):
+    """Test that weekly buckets enforce a 7-day cooldown rather than 4h55m in SQLite."""
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+    cfg.antigravity_quota.auto_warmup_weekly = True
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        profiles = sentinel.scan_accounts()
+
+        for p in profiles:
+            for b in p.buckets:
+                b.remaining_fraction = 1.0
+                b.reset_timestamp = None
+
+        # Simulate warmup 1 day ago (86400s ago)
+        # 1 day > 4h55m (17700s), but < 7 days (604800s)
+        yesterday_iso = datetime.now(timezone.utc) - timedelta(days=1)
+        yesterday_str = yesterday_iso.strftime("%Y-%m-%d %H:%M:%S")
+
+        db.record_warmup_log(
+            account_email="viinam33@gmail.com",
+            bucket_id="gemini-weekly",
+            model_name="gemini-3-flash",
+            trigger_reason="weekly_test",
+            route_used="tools_api_8045",
+            status="success",
+        )
+        # Manually update created_at to 1 day ago
+        with db._lock:
+            db._conn.execute(
+                "UPDATE antigravity_warmup_logs SET created_at = ? WHERE account_email = 'viinam33@gmail.com' AND bucket_id = 'gemini-weekly'",
+                (yesterday_str,)
+            )
+            db._conn.commit()
+
+        cands = sentinel.evaluate_warmup_candidates(profiles)
+        viinam_weekly = next(
+            (c for c in cands if c["account_email"] == "viinam33@gmail.com" and c["bucket_id"] == "gemini-weekly"),
+            None
+        )
+        assert viinam_weekly is None, "Weekly bucket warmed up 1 day ago must still be in cooldown"
+
+
+@pytest.mark.asyncio
+async def test_sweep_and_warmup_dry_run(fake_accounts_dir, db):
+    """Test that sweep_and_warmup with dry_run=True evaluates candidates without dispatching pings."""
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+
+        with patch.object(sentinel, "execute_warmup") as mock_warmup:
+            res = await sentinel.sweep_and_warmup(
+                reason="dry_run_test",
+                force=True,
+                live=False,
+                dry_run=True,
+            )
+            assert res["dry_run"] is True
+            assert res["warmups_executed"] == 0
+            assert len(res["warmup_candidates"]) > 0
+            assert mock_warmup.call_count == 0
+
+
+def test_get_quota_overview_account_sorting(fake_accounts_dir, db):
+    """Test that get_quota_overview always guarantees active account is at index 0."""
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        profiles = sentinel.scan_accounts()
+        sentinel.sync_quotas_to_db(profiles)
+
+        overview = sentinel.get_quota_overview()
+        accounts = overview["all_accounts"]
+        assert len(accounts) >= 2
+        assert accounts[0]["is_active_account"] is True
+        assert accounts[0]["email"] == "viinam33@gmail.com"
+
 

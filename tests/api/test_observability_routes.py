@@ -332,3 +332,32 @@ async def test_antigravity_quota_endpoints(obs_server: Any):
         assert "all_accounts" in quota_data
         assert "stats" in quota_data
 
+
+async def test_antigravity_warmup_endpoints(obs_server: Any):
+    """Verify POST and GET /antigravity/warmup routes with dry_run and query params."""
+    base_url, server, db = obs_server
+
+    async with httpx.AsyncClient() as client:
+        # 1. POST /antigravity/warmup with JSON body dry_run=True
+        resp_post = await client.post(
+            f"{base_url}/antigravity/warmup",
+            json={"dry_run": True, "force": True, "all_accounts": True, "reason": "test_post_warmup"},
+        )
+        assert resp_post.status_code == 200
+        post_data = resp_post.json()
+        assert post_data.get("dry_run") is True
+        assert post_data.get("reason") == "test_post_warmup"
+        assert post_data.get("warmups_executed") == 0
+        assert "accounts_scanned" in post_data
+
+        # 2. GET /antigravity/warmup with query parameters
+        resp_get = await client.get(
+            f"{base_url}/antigravity/warmup?dry_run=true&force=true&all_accounts=true&reason=test_get_warmup"
+        )
+        assert resp_get.status_code == 200
+        get_data = resp_get.json()
+        assert get_data.get("dry_run") is True
+        assert get_data.get("reason") == "test_get_warmup"
+        assert get_data.get("warmups_executed") == 0
+
+

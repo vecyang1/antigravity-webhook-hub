@@ -2146,6 +2146,7 @@ def cmd_antigravity(args: Any) -> int:
         account_email = getattr(args, "account", None)
         bucket_id = getattr(args, "bucket", None)
         force = getattr(args, "force", False)
+        dry_run = getattr(args, "dry_run", False)
 
         all_accounts = None
         if getattr(args, "active_only", False):
@@ -2155,7 +2156,8 @@ def cmd_antigravity(args: Any) -> int:
 
         target_desc = account_email or ("当前活跃账号" if all_accounts is False else "全舰队就绪账号")
         if not is_json:
-            print(f"🚀 正在为 Antigravity 执行滚动配额最小Token保活 (Force={force}, Target={target_desc}, Bucket={bucket_id or '全部就绪池'})...")
+            prefix = "🔍 [DRY-RUN] " if dry_run else "🚀 "
+            print(f"{prefix}正在为 Antigravity 执行滚动配额最小Token保活 (Force={force}, Target={target_desc}, Bucket={bucket_id or '全部就绪池'})...")
 
         res = asyncio.run(sentinel.sweep_and_warmup(
             reason="cli_manual_warmup",
@@ -2163,10 +2165,22 @@ def cmd_antigravity(args: Any) -> int:
             bucket_id=bucket_id,
             force=force,
             all_accounts=all_accounts,
+            dry_run=dry_run,
         ))
 
         if is_json:
             print(json.dumps(res, indent=2, ensure_ascii=False))
+            return 0
+
+        if dry_run:
+            cands = res.get("warmup_candidates", [])
+            if not cands:
+                print(f"ℹ️ [DRY-RUN] 未发现需要保活的候选配额池（当前配额可能正在消耗倒计时中，或处于冷却期内）。")
+            else:
+                print(f"🔍 [DRY-RUN] 发现 {len(cands)} 个满足自主保活条件的候选配额池（未实际发送网络请求）:")
+                for c in cands:
+                    act_tag = " [活跃]" if c.get("is_active") else " [备用]"
+                    print(f"  • {c.get('account_email')}{act_tag} | {c.get('bucket_id')} ({c.get('window_type')}) -> 拟调用: {c.get('model_name')}")
             return 0
 
         warmups = res.get("warmup_results", [])

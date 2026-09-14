@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.1] - 2026-09-14
+
+### Fixed & Hardened
+- **Null Safety in Quota Parsing**:
+  - Fixed unhandled `TypeError: float() argument must be a string or a real number, not 'NoneType'` in `fetch_live_quota` and `scan_accounts` when Google PA API returns `"remainingFraction": null`.
+- **Weekly Window Cooldown Isolation in SQLite**:
+  - Corrected SQLite SSOT cooldown calculation for weekly buckets (`window_type == 'weekly'`) to enforce ~7-day window cooldown (`604500s`) instead of erroneously applying the 5-hour window's 4h55m cooldown (`17700s`).
+- **Threadpool Concurrency Resilience**:
+  - Wrapped `_fetch_profile_live` in `scan_accounts()` in defensive try-except blocks so network timeouts or malformed payloads on a single standby account cannot crash concurrent scanning across the fleet.
+- **Dry-Run Mode Support Across CLI & API**:
+  - Enabled `--dry-run` flag in CLI `antigravity warmup` to preview candidate evaluation without executing real HTTP 8045 pings.
+  - Added `dry_run: bool = False` support in `sweep_and_warmup` and the `/antigravity/warmup` HTTP handler.
+- **REST Route Parity**:
+  - Registered `GET /antigravity/warmup` route alongside `POST` to ensure query parameters (`?dry_run=true&all_accounts=true&force=true`) are fully functional and return 200 rather than 404/405.
+- **Fleet Overview Account Sorting**:
+  - Explicitly guaranteed in `get_quota_overview()` that the active account is at index 0 of `all_accounts`, followed by standby accounts in stable alphabetical order.
+- **Test Coverage Expansion**:
+  - Added 4 new unit tests in `tests/unit/test_antigravity_quota_sentinel.py` (total 18/18 pass).
+  - Added API route test in `tests/api/test_observability_routes.py` covering both POST and GET `/antigravity/warmup` with dry-run verification.
+
 ## [1.16.0] - 2026-09-14
 
 ### Added & Hardened

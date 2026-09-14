@@ -413,6 +413,7 @@ def register_observability_routes(
         all_accounts_val = body.get("all_accounts")
         if all_accounts_val is None and "all_accounts" in req.query_params:
             all_accounts_val = req.query_params.get("all_accounts") in ("true", "1", "yes")
+        dry_run = bool(body.get("dry_run", False) or req.query_params.get("dry_run") in ("true", "1", "yes"))
 
         res = await sentinel.sweep_and_warmup(
             reason=reason,
@@ -421,6 +422,7 @@ def register_observability_routes(
             force=force,
             live=True,
             all_accounts=all_accounts_val,
+            dry_run=dry_run,
         )
         return HTTPResponse.json(res, status_code=200)
 
@@ -473,3 +475,4 @@ def register_observability_routes(
     server.add_route("GET", "/antigravity/quota", handle_antigravity_quota)
     server.add_route("GET", "/antigravity/quota/health", handle_antigravity_quota_health)
     server.add_route("POST", "/antigravity/warmup", handle_antigravity_warmup)
+    server.add_route("GET", "/antigravity/warmup", handle_antigravity_warmup)

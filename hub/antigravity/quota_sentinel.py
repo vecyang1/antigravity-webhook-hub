@@ -187,7 +187,8 @@ class AntigravityQuotaSentinel:
                 if not b_id:
                     continue
                 window = str(b.get("window") or "5h").lower()
-                rem_frac = float(b.get("remainingFraction", 1.0))
+                rem_raw = b.get("remainingFraction") if b.get("remainingFraction") is not None else b.get("remaining_fraction")
+                rem_frac = float(rem_raw) if rem_raw is not None else 1.0
                 reset_time_str = b.get("resetTime")
                 reset_ts = parse_iso_timestamp(reset_time_str)
                 d_name = b.get("displayName")
@@ -262,7 +263,8 @@ class AntigravityQuotaSentinel:
                     if not bucket_id:
                         continue
                     window = str(b.get("window") or "5h").lower()
-                    rem_frac = float(b.get("remainingFraction", b.get("remaining_fraction", 1.0)))
+                    rem_raw = b.get("remainingFraction") if b.get("remainingFraction") is not None else b.get("remaining_fraction")
+                    rem_frac = float(rem_raw) if rem_raw is not None else 1.0
                     reset_time_str = b.get("resetTime") or b.get("reset_time")
                     reset_ts = parse_iso_timestamp(reset_time_str)
                     display_name = b.get("displayName") or b.get("display_name")
@@ -318,16 +320,19 @@ class AntigravityQuotaSentinel:
             import concurrent.futures
 
             def _fetch_profile_live(prof: AccountQuotaProfile) -> None:
-                if not prof.access_token or prof.disabled:
-                    return
-                is_expired = bool(prof.token_expiry and prof.token_expiry < time.time())
-                if prof.is_active or not is_expired:
-                    timeout_val = 3.5 if prof.is_active else 2.0
-                    live_b = self.fetch_live_quota(prof.access_token, timeout=timeout_val)
-                    if live_b:
-                        prof.buckets = live_b
-                        prof.live_fetched = True
-                        prof.last_updated = time.time()
+                try:
+                    if not prof.access_token or prof.disabled:
+                        return
+                    is_expired = bool(prof.token_expiry and prof.token_expiry < time.time())
+                    if prof.is_active or not is_expired:
+                        timeout_val = 3.5 if prof.is_active else 2.0
+                        live_b = self.fetch_live_quota(prof.access_token, timeout=timeout_val)
+                        if live_b:
+                            prof.buckets = live_b
+                            prof.live_fetched = True
+                            prof.last_updated = time.time()
+                except Exception as e:
+                    logger.debug("Failed live quota fetch for %s: %s", prof.email, e)
 
             max_workers = min(8, max(1, len(profiles)))
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -439,16 +444,17 @@ class AntigravityQuotaSentinel:
                     # Timer is already running and has consumed quota, skip
                     continue
 
-                # 3. Cooldown check against SQLite SSOT (strict 4h55m cooldown per account/bucket)
+                # 3. Cooldown check against SQLite SSOT (strict 4h55m cooldown for 5h, ~7d for weekly)
+                effective_cooldown = cooldown_sec if b.window_type == "5h" else max(cooldown_sec, 604500)
                 if not force and self.db:
                     latest = self.db.get_latest_warmup(p.email, b.bucket_id)
                     if latest and latest.get("status") == "success":
                         created_at = latest.get("created_at")
                         warmup_ts = parse_iso_timestamp(created_at) if isinstance(created_at, str) else None
-                        if warmup_ts and (now - warmup_ts) < cooldown_sec:
+                        if warmup_ts and (now - warmup_ts) < effective_cooldown:
                             logger.debug(
                                 "Bucket %s/%s cooldown active (elapsed %.0fs < %ds), skipping",
-                                p.email, b.bucket_id, now - warmup_ts, cooldown_sec
+                                p.email, b.bucket_id, now - warmup_ts, effective_cooldown
                             )
                             continue
 
@@ -643,13 +649,14 @@ class AntigravityQuotaSentinel:
         force: bool = False,
         live: bool = True,
         all_accounts: Optional[bool] = None,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
         """
         Main execution loop for Sentinel:
         1. Scans account profiles (authoritative live query when live=True).
         2. Syncs quotas to SQLite SSOT.
         3. Evaluates warmup candidates across fleet (Gemini models prioritized).
-        4. Dispatches warmup pings.
+        4. Dispatches warmup pings (skipped when dry_run=True).
         5. Emits SSE real-time push events.
         6. Returns structured summary.
         """
@@ -666,20 +673,23 @@ class AntigravityQuotaSentinel:
             )
 
             warmup_results: list[dict[str, Any]] = []
-            for cand in candidates:
-                res = await self.execute_warmup(cand, trigger_reason=reason)
-                warmup_results.append(res)
-                # Small yield between multiple account pings
-                await asyncio.sleep(0.05)
+            if not dry_run:
+                for cand in candidates:
+                    res = await self.execute_warmup(cand, trigger_reason=reason)
+                    warmup_results.append(res)
+                    # Small yield between multiple account pings
+                    await asyncio.sleep(0.05)
 
             self._last_sweep_time = time.time()
             total_duration_ms = int((self._last_sweep_time - t0) * 1000)
 
             summary = {
                 "reason": reason,
+                "dry_run": dry_run,
                 "accounts_scanned": len(profiles),
                 "snapshots_upserted": upserted,
                 "candidates_found": len(candidates),
+                "warmup_candidates": candidates if dry_run else [],
                 "warmups_executed": len(warmup_results),
                 "warmup_results": warmup_results,
                 "duration_ms": total_duration_ms,
@@ -794,6 +804,7 @@ class AntigravityQuotaSentinel:
             )
 
         acc_list = list(accounts_map.values())
+        acc_list.sort(key=lambda a: (not a.get("is_active_account"), a.get("email", "")))
         active_acc = next((a for a in acc_list if a.get("is_active_account")), None)
         if not active_acc and acc_list:
             active_acc = acc_list[0]
