@@ -9,17 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added & Hardened
 - **Dynamic Multi-Account Lifecycle & Stale Account Pruning (Ghost Account Prevention)**:
-  - **Dynamic Ingestion on Account Addition**:
+  - **Dynamic Ingestion & Deduplication on Account Addition**:
     - `scan_accounts()` dynamically parses all account JSON files from `~/.antigravity_tools/accounts/*.json` fresh on every periodic sweep (120s interval) without caching file lists.
+    - Added deterministic email deduplication in `scan_accounts()` favoring the active account, then enabled accounts, then the newest `last_updated` timestamp, eliminating duplicate warmup dispatch caused by backup or duplicate JSON files.
     - Newly added accounts are immediately scanned, their live quota snapshots persisted into SQLite SSOT (`antigravity_quota_snapshots`), and eligible 100% full buckets included in autonomous warmup candidate evaluation without requiring a server restart.
-  - **Dynamic Pruning on Account Removal**:
-    - Implemented `prune_stale_quota_snapshots(current_emails: Optional[Collection[str]]) -> int` in `hub/db.py` (`DatabaseManager`).
+  - **Dynamic Pruning on Account Removal & Flapping Protection**:
+    - Implemented `prune_stale_quota_snapshots(current_emails: Optional[Collection[str]]) -> int` in `hub/db.py` (`DatabaseManager`) with 500-item chunked parameter batching and automatic cleanup of corrupt blank/whitespace records.
     - Implemented `prune_stale_accounts(current_emails: Optional[set[str]]) -> int` and integrated automated stale account pruning into `sync_quotas_to_db(prune_stale=True)` in `hub/antigravity/quota_sentinel.py`.
+    - **Partial Sync Defense**: `sync_quotas_to_db()` verifies all accounts on disk before pruning, preventing accidental deletion of disk accounts when only a subset of profiles is passed.
+    - **Transient Parse Error Defense**: If an account file fails to parse during file write/I/O, `_last_scan_error_count` skips pruning for that cycle, preventing state flapping and premature purge of existing records.
     - When an account JSON is deleted or unlinked from `~/.antigravity_tools/accounts/`, the sentinel detects the removal, purges its stale snapshot rows from SQLite SSOT, and prevents ghost account rows in the Web dashboard, CLI matrix, and Uptime Kuma health probe.
   - **Cadence Contract & Sidecar Prompt Synchronization**:
     - Synchronized Cadence Card `CAD-20260911-webhook-hub-sentinel` in 2nd Brain and Antigravity sidecar `webhook-hub-sentinel` in `~/.gemini/config/sidecars/` to reflect dynamic multi-account and quota pool monitoring without static hardcoded counts.
   - **TDD Test Suite Expansion**:
-    - Added 4 new unit tests in `tests/unit/test_antigravity_quota_sentinel.py` covering direct database pruning, dynamic account addition, dynamic account removal/pruning, and sentinel helper verification (22/22 pass; 313/313 full suite pass).
+    - Added comprehensive unit tests in `tests/unit/test_antigravity_quota_sentinel.py` covering direct database pruning, dynamic account addition, dynamic account removal/pruning, partial sync safety, transient parse error defense, email deduplication, special filename characters, and multi-threaded concurrency (27/27 pass; 318/318 full suite pass).
 
 ## [1.16.3] - 2026-09-14
 

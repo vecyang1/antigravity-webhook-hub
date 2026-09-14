@@ -865,4 +865,180 @@ def test_prune_stale_accounts_sentinel_helper(fake_accounts_dir, db):
         assert db.get_quota_summary_stats()["total_accounts"] == 3
 
 
+def test_sync_quotas_to_db_partial_profiles_preserves_disk_accounts(fake_accounts_dir, db):
+    """
+    Verify that calling sync_quotas_to_db with a subset of profiles
+    (e.g., after updating only one account) does NOT prune other valid accounts on disk.
+    """
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        # Initial full sync has 3 accounts
+        sentinel.sync_quotas_to_db()
+        assert db.get_quota_summary_stats()["total_accounts"] == 3
+
+        # Partial sync: only pass 1 profile
+        profiles = sentinel.scan_accounts()
+        p1 = [p for p in profiles if p.email == "viinam33@gmail.com"]
+        assert len(p1) == 1
+        sentinel.sync_quotas_to_db(p1, prune_stale=True)
+
+        # All 3 disk accounts must still be present in SQLite SSOT!
+        assert db.get_quota_summary_stats()["total_accounts"] == 3
+        emails = {r["account_email"] for r in db.get_quota_snapshots()}
+        assert "viinam33@gmail.com" in emails
+        assert "standby@gmail.com" in emails
+        assert "disabled@gmail.com" in emails
+
+
+def test_transient_parse_error_skips_pruning_preventing_flapping(fake_accounts_dir, db):
+    """
+    Verify that if an account JSON file is momentarily invalid/half-written,
+    the sentinel logs a warning and skips pruning, preventing existing accounts from being purged.
+    """
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        # Initial sync
+        sentinel.sync_quotas_to_db()
+        assert db.get_quota_summary_stats()["total_accounts"] == 3
+
+        # Simulate a transient write on standby@gmail.com (invalid JSON)
+        acc2_path = fake_accounts_dir / "accounts" / "acc-standby-002.json"
+        acc2_path.write_text("{\"id\": \"acc2\", \"email\": \"standby@gmail.com\", \"quo")
+
+        # Next sync: scan fails on acc2
+        sentinel.sync_quotas_to_db()
+
+        # Standby account must NOT be pruned because of transient file parse error!
+        assert db.get_quota_summary_stats()["total_accounts"] == 3
+        emails = {r["account_email"] for r in db.get_quota_snapshots()}
+        assert "standby@gmail.com" in emails
+        assert sentinel._last_scan_error_count == 1
+        assert sentinel._last_pruned_count == 0
+
+
+def test_scan_accounts_deduplication_by_email(fake_accounts_dir, db):
+    """
+    Verify that if multiple files on disk contain the same email,
+    scan_accounts deduplicates them deterministically, preferring the active account.
+    """
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    # Add a duplicate copy of active account with different id
+    dup_path = fake_accounts_dir / "accounts" / "acc-active-dup.json"
+    dup_data = {
+        "id": "acc-active-dup",
+        "email": "viinam33@gmail.com",
+        "quota": {
+            "quota_groups": [
+                {
+                    "name": "gemini",
+                    "buckets": [{"bucket_id": "gemini-5h", "window": "5h", "remainingFraction": 0.5}]
+                }
+            ]
+        }
+    }
+    dup_path.write_text(json.dumps(dup_data))
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        profiles = sentinel.scan_accounts()
+
+        # Total accounts must still be 3 (viinam33 deduplicated)
+        assert len(profiles) == 3
+        viinam_profiles = [p for p in profiles if p.email == "viinam33@gmail.com"]
+        assert len(viinam_profiles) == 1
+        # The primary active account was preserved
+        assert viinam_profiles[0].is_active is True
+        assert viinam_profiles[0].account_id == "acc-active-001"
+
+
+def test_account_filename_with_spaces_and_special_chars(fake_accounts_dir, db):
+    """
+    Verify that account filenames with spaces, hashes, and parentheses are parsed cleanly.
+    """
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    special_path = fake_accounts_dir / "accounts" / "acc special#1 (team @ corp).json"
+    special_data = {
+        "id": "special#1",
+        "email": "special_char_user@test.org",
+        "quota": {
+            "quota_groups": [
+                {
+                    "name": "gemini",
+                    "buckets": [{"bucket_id": "gemini-5h", "window": "5h", "remainingFraction": 1.0}]
+                }
+            ]
+        }
+    }
+    special_path.write_text(json.dumps(special_data))
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        profiles = sentinel.scan_accounts()
+        special_prof = next((p for p in profiles if p.email == "special_char_user@test.org"), None)
+        assert special_prof is not None
+        assert special_prof.account_id == "special#1"
+
+        # Sync and verify in DB
+        sentinel.sync_quotas_to_db()
+        snaps = db.get_quota_snapshots("special_char_user@test.org")
+        assert len(snaps) == 1
+        assert snaps[0]["bucket_id"] == "gemini-5h"
+
+
+def test_concurrent_prune_and_upsert_snapshots(db):
+    """
+    Verify concurrency safety and mutex integrity between prune_stale_quota_snapshots
+    and upsert_quota_snapshot across multiple threads.
+    """
+    import threading
+
+    errors = []
+
+    def writer():
+        try:
+            for i in range(50):
+                db.upsert_quota_snapshot(
+                    f"user_{i % 5}@concurrent.com",
+                    "gemini-5h",
+                    "Gemini Models",
+                    "5h",
+                    1.0,
+                )
+        except Exception as e:
+            errors.append(e)
+
+    def pruner():
+        try:
+            for _ in range(25):
+                db.prune_stale_quota_snapshots(
+                    {"user_0@concurrent.com", "user_1@concurrent.com"}
+                )
+        except Exception as e:
+            errors.append(e)
+
+    t1 = threading.Thread(target=writer)
+    t2 = threading.Thread(target=pruner)
+    t3 = threading.Thread(target=writer)
+
+    t1.start()
+    t2.start()
+    t3.start()
+
+    t1.join()
+    t2.join()
+    t3.join()
+
+    assert len(errors) == 0
+
+
 

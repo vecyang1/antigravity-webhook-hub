@@ -105,6 +105,7 @@ class AntigravityQuotaSentinel:
         self._lock = asyncio.Lock()
         self._last_sweep_time: float = 0.0
         self._last_pruned_count: int = 0
+        self._last_scan_error_count: int = 0
 
     @property
     def quota_cfg(self) -> Any:
@@ -227,18 +228,20 @@ class AntigravityQuotaSentinel:
             return []
 
         active_id = self._resolve_active_account_id()
-        profiles: list[AccountQuotaProfile] = []
+        profiles_by_email: dict[str, AccountQuotaProfile] = {}
+        self._last_scan_error_count = 0
 
         for json_path in sorted(accounts_dir.glob("*.json")):
             try:
                 with open(json_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
             except Exception as e:
+                self._last_scan_error_count += 1
                 logger.warning("Failed loading account JSON '%s': %s", json_path.name, e)
                 continue
 
             acc_id = str(data.get("id") or json_path.stem)
-            email = str(data.get("email") or "")
+            email = str(data.get("email") or "").strip()
             if not email:
                 continue
 
@@ -314,7 +317,30 @@ class AntigravityQuotaSentinel:
                 live_fetched=False,
             )
 
-            profiles.append(profile)
+            # Deterministic deduplication by normalized email:
+            # Prefer active account -> enabled account -> newest last_updated
+            norm_email = email.lower()
+            if norm_email in profiles_by_email:
+                existing = profiles_by_email[norm_email]
+                replace = False
+                if profile.is_active and not existing.is_active:
+                    replace = True
+                elif not profile.is_active and existing.is_active:
+                    replace = False
+                elif not profile.disabled and existing.disabled:
+                    replace = True
+                elif (profile.last_updated or 0) > (existing.last_updated or 0):
+                    replace = True
+
+                if replace:
+                    logger.debug("Deduplicating accounts: selecting %s over %s for %s", profile.account_id, existing.account_id, email)
+                    profiles_by_email[norm_email] = profile
+                else:
+                    logger.debug("Deduplicating accounts: retaining %s over %s for %s", existing.account_id, profile.account_id, email)
+            else:
+                profiles_by_email[norm_email] = profile
+
+        profiles = list(profiles_by_email.values())
 
         # If live querying is enabled, attempt concurrent live fetch across accounts
         if live and profiles:
@@ -356,6 +382,12 @@ class AntigravityQuotaSentinel:
             if not accounts_dir.is_dir():
                 return 0
             profiles = self.scan_accounts(live=False)
+            if getattr(self, "_last_scan_error_count", 0) > 0:
+                logger.warning(
+                    "Skipping prune_stale_accounts: %d account file(s) failed to parse on disk",
+                    self._last_scan_error_count,
+                )
+                return 0
             current_emails = {p.email for p in profiles if p.email}
         pruned = self.db.prune_stale_quota_snapshots(current_emails)
         self._last_pruned_count = pruned
@@ -378,6 +410,7 @@ class AntigravityQuotaSentinel:
         accounts_dir = self._resolve_accounts_dir()
         dir_exists = accounts_dir.is_dir()
 
+        full_fleet_scan = (profiles is None)
         if profiles is None:
             profiles = self.scan_accounts()
 
@@ -403,16 +436,36 @@ class AntigravityQuotaSentinel:
                     logger.error("Failed to sync quota snapshot for %s/%s: %s", p.email, b.bucket_id, e)
 
         # Dynamic Pruning on Account Removal (Ghost Account Prevention):
-        # Prune if prune_stale is True AND (accounts directory exists on disk or profiles were explicitly passed)
-        if prune_stale and (dir_exists or profiles):
-            current_emails = {p.email for p in profiles if p.email}
-            try:
-                pruned = self.db.prune_stale_quota_snapshots(current_emails)
-                self._last_pruned_count = pruned
-                if pruned > 0:
-                    logger.info("Dynamic pruning: removed %d stale quota snapshots from SQLite SSOT", pruned)
-            except Exception as prune_err:
-                logger.error("Failed auto-pruning stale quota snapshots: %s", prune_err)
+        # Prune if prune_stale is True AND accounts directory exists on disk
+        if prune_stale and dir_exists:
+            # If files on disk had read/parse errors, skip pruning to prevent accidental deletion
+            if getattr(self, "_last_scan_error_count", 0) > 0:
+                logger.warning(
+                    "Skipping dynamic account pruning: %d account file(s) failed to parse on disk",
+                    self._last_scan_error_count,
+                )
+                self._last_pruned_count = 0
+            else:
+                if full_fleet_scan:
+                    current_emails = {p.email for p in profiles if p.email}
+                else:
+                    # Partial sync passed by caller: query disk for current accounts
+                    # so valid accounts on disk are NOT purged
+                    disk_profiles = self.scan_accounts(live=False)
+                    if getattr(self, "_last_scan_error_count", 0) > 0:
+                        logger.warning("Skipping dynamic account pruning due to disk parse error during partial sync")
+                        self._last_pruned_count = 0
+                        return upserted
+                    current_emails = {p.email for p in disk_profiles if p.email}
+                    current_emails.update(p.email for p in profiles if p.email)
+
+                try:
+                    pruned = self.db.prune_stale_quota_snapshots(current_emails)
+                    self._last_pruned_count = pruned
+                    if pruned > 0:
+                        logger.info("Dynamic pruning: removed %d stale quota snapshots from SQLite SSOT", pruned)
+                except Exception as prune_err:
+                    logger.error("Failed auto-pruning stale quota snapshots: %s", prune_err)
         else:
             self._last_pruned_count = 0
 

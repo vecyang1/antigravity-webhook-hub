@@ -2071,25 +2071,38 @@ class DatabaseManager:
                 stale_emails = [
                     email
                     for email in db_emails
-                    if not email or email.strip().lower() not in normalized_emails
+                    if not email or not isinstance(email, str) or not email.strip() or email.strip().lower() not in normalized_emails
                 ]
 
                 if not stale_emails:
                     return 0
 
-                placeholders = ",".join("?" for _ in stale_emails)
-                cur.execute(
-                    f"DELETE FROM antigravity_quota_snapshots WHERE account_email IN ({placeholders})",
-                    stale_emails,
-                )
-                pruned = cur.rowcount
+                valid_stale = [e for e in stale_emails if e and isinstance(e, str) and e.strip()]
+                has_dirty_blank = any(not e or not isinstance(e, str) or not e.strip() for e in stale_emails)
+
+                total_pruned = 0
+                # Delete valid stale emails in chunks of 500 to respect SQLite parameter limits
+                for i in range(0, len(valid_stale), 500):
+                    chunk = valid_stale[i : i + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    cur.execute(
+                        f"DELETE FROM antigravity_quota_snapshots WHERE account_email IN ({placeholders})",
+                        chunk,
+                    )
+                    total_pruned += cur.rowcount
+
+                # Clean up any corrupt blank or whitespace email rows
+                if has_dirty_blank:
+                    cur.execute("DELETE FROM antigravity_quota_snapshots WHERE account_email IS NULL OR TRIM(account_email) = ''")
+                    total_pruned += cur.rowcount
+
                 self._commit_and_shrink()
                 logger.info(
                     "Pruned %d stale quota snapshots for deleted accounts: %s",
-                    pruned,
+                    total_pruned,
                     stale_emails,
                 )
-                return pruned
+                return total_pruned
             except Exception as e:
                 logger.error("Failed to prune stale quota snapshots: %s", e)
                 raise
