@@ -51,16 +51,21 @@ SCHEDULED_TASK_RESCHEDULER_DIRECTIVE = """
 3. 闭环验证：调度变更后执行 `cadence_ctl doctor` 确保 0 错误，并对关键链路完成 E2E 试跑验证。
 """.strip()
 
-# Slash command matcher regex
-SLASH_COMMAND_REGEX = re.compile(
-    r'(?:^|(?<=[\s,，。、；;]))/(psychological-copywriter|strategic-compact|boost|goal|teamwork-preview|teamwork|play|scheduled-task-rescheduler)\b',
+# Antigravity Slash command matcher regexes (both rich format [/cmd](slashCommand;cmd) and plain /cmd)
+COMMANDS_PATTERN = r'(psychological-copywriter|strategic-compact|boost|goal|teamwork-preview|teamwork|play|scheduled-task-rescheduler)'
+RICH_SLASH_COMMAND_REGEX = re.compile(
+    rf'\[/{COMMANDS_PATTERN}\]\(slashCommand;[^\)]+\)',
+    re.IGNORECASE,
+)
+PLAIN_SLASH_COMMAND_REGEX = re.compile(
+    rf'(?:^|(?<=[\s,，。、；;]))/{COMMANDS_PATTERN}\b',
     re.IGNORECASE,
 )
 
 
 def extract_slash_commands(raw_text: str) -> tuple[str, list[str], list[str]]:
     """
-    Extract slash commands from raw text.
+    Extract slash commands from raw text (supporting both rich format and plain /command).
     Returns:
       (cleaned_text, extracted_command_names, active_directive_blocks)
     """
@@ -78,7 +83,10 @@ def extract_slash_commands(raw_text: str) -> tuple[str, list[str], list[str]]:
             found_commands.append(cmd_raw)
         return ""
 
-    cleaned_text = SLASH_COMMAND_REGEX.sub(_replace_match, raw_text)
+    # 1. Extract and clean rich format [/cmd](slashCommand;cmd)
+    cleaned_text = RICH_SLASH_COMMAND_REGEX.sub(_replace_match, raw_text)
+    # 2. Extract and clean plain /cmd
+    cleaned_text = PLAIN_SLASH_COMMAND_REGEX.sub(_replace_match, cleaned_text)
     # Clean up redundant spaces and trailing punctuation
     cleaned_text = re.sub(r'[ \t]+', ' ', cleaned_text).strip()
 
@@ -124,20 +132,35 @@ def build_antigravity_prompt(
     if "scheduled-task-rescheduler" in all_commands and SCHEDULED_TASK_RESCHEDULER_DIRECTIVE not in all_directives:
         all_directives.append(SCHEDULED_TASK_RESCHEDULER_DIRECTIVE)
 
+    # Antigravity Slash Command Prefix (Rich format to activate Goal Mode / Boost Mode)
+    rich_prefixes: list[str] = []
+    if "goal" in all_commands:
+        rich_prefixes.append("[/goal](slashCommand;goal)")
+    if "boost" in all_commands:
+        rich_prefixes.append("[/boost](slashCommand;boost)")
+
+    prefix_header = (" ".join(rich_prefixes) + " ") if rich_prefixes else ""
+
     # Core user intent: text + voice transcript
     prompt_parts: list[str] = []
 
     voice_tx = (payload.voice_transcript or "").strip()
+    core_text = ""
     if clean_text and voice_tx and voice_tx not in clean_text:
-        prompt_parts.append(f"{clean_text}\n\n[语音转录 / Voice Transcript]:\n{voice_tx}")
+        core_text = f"{clean_text}\n\n[语音转录 / Voice Transcript]:\n{voice_tx}"
     elif voice_tx and not clean_text:
-        prompt_parts.append(f"[语音输入 / Voice Input]:\n{voice_tx}")
+        core_text = f"[语音输入 / Voice Input]:\n{voice_tx}"
     elif clean_text:
-        prompt_parts.append(clean_text)
+        core_text = clean_text
     elif payload.files:
-        prompt_parts.append("请分析并处理随附的图片与素材附件。")
+        core_text = "请分析并处理随附的图片与素材附件。"
     else:
-        prompt_parts.append("执行 Antigravity 任务")
+        core_text = "执行 Antigravity 任务"
+
+    if prefix_header and not core_text.startswith(prefix_header):
+        core_text = f"{prefix_header}{core_text}"
+
+    prompt_parts.append(core_text)
 
     # Image attachments
     images = downloaded_images or payload.downloaded_images

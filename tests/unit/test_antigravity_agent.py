@@ -701,6 +701,22 @@ class TestAgentAPIDynamicCredentialsAndSelfHealing(unittest.TestCase):
         prompt = build_antigravity_prompt(payload)
         self.assertIn(SCHEDULED_TASK_RESCHEDULER_DIRECTIVE, prompt)
 
+    def test_rich_slash_command_and_goal_boost_prefixing(self):
+        # 1. Plain text /goal should prefix with [/goal](slashCommand;goal)
+        p1 = AntigravityTaskPayload(text="阳朔天气 /goal", channel="C0C1B86AMCN", ts="1789200000.101")
+        prompt1 = build_antigravity_prompt(p1)
+        self.assertTrue(prompt1.startswith("[/goal](slashCommand;goal) 阳朔天气"))
+
+        # 2. Rich format [/boost](slashCommand;boost) in raw text should be extracted and prefixed
+        p2 = AntigravityTaskPayload(text="清理垃圾 [/boost](slashCommand;boost)", channel="C0C1B86AMCN", ts="1789200000.102")
+        prompt2 = build_antigravity_prompt(p2)
+        self.assertTrue(prompt2.startswith("[/boost](slashCommand;boost) 清理垃圾"))
+
+        # 3. Both goal and boost
+        p3 = AntigravityTaskPayload(text="/goal /boost 紧急全量扫描", channel="C0C1B86AMCN", ts="1789200000.103")
+        prompt3 = build_antigravity_prompt(p3)
+        self.assertTrue(prompt3.startswith("[/goal](slashCommand;goal) [/boost](slashCommand;boost) 紧急全量扫描"))
+
     def test_is_connection_error_extended_patterns(self):
         self.assertTrue(is_connection_error("failed to connect to all addresses"))
         self.assertTrue(is_connection_error("connection closed before server preface received"))

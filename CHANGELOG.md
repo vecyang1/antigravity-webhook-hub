@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.3] - 2026-09-14
+
+### Changed
+- **Antigravity Rich Slash Command Prompt Synthesis (`[/goal](slashCommand;goal)` & `[/boost](slashCommand;boost)`)**:
+  - Upgraded `extract_slash_commands` in `hub/antigravity/prompt_builder.py` to recognize both Antigravity rich markdown format `[/{cmd}](slashCommand;{cmd})` and plain text `/{cmd}`.
+  - Upgraded `build_antigravity_prompt` to prepend `[/goal](slashCommand;goal)` and/or `[/boost](slashCommand;boost)` directly to the synthesized prompt for Antigravity new conversations, activating Antigravity's Autonomous Goal Loop and Boost mode natively.
+  - Added unit test `test_rich_slash_command_and_goal_boost_prefixing` in `tests/unit/test_antigravity_agent.py` (40 unit tests PASS).
+
 ## [1.16.2] - 2026-09-14
 
 ### Fixed & Hardened
