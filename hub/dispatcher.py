@@ -875,6 +875,11 @@ class TaskDispatcher:
                         pass
 
                     exit_code = proc.returncode
+                    if exit_code is None or exit_code == 255:
+                        # In asyncio on Unix/macOS under heavy concurrency, os.waitpid may race with the
+                        # signal handler or child watcher, resulting in ChildProcessError and an artificial
+                        # returncode 255 from asyncio. Since SIGKILL was sent, map this to -signal.SIGKILL.
+                        exit_code = -signal.SIGKILL
                 finally:
                     if proc is not None:
                         try:

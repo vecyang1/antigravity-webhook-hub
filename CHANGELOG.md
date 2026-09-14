@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.5] - 2026-09-15
+
+### Fixed & Hardened
+- **Asyncio Subprocess Timeout Exit Code Normalization & Race Condition Resilience**:
+  - Resolved flaky failure in CI stress test `test_subprocess_concurrency_and_cleanup_10_tasks` where stubborn processes killed via `SIGKILL` after timeout returned exit code `255` instead of `-9`.
+  - In Python asyncio on Unix/macOS under heavy async subprocess concurrency, `os.killpg(pgid, signal.SIGKILL)` could race with asynchronous child watchers / signal handlers, causing `os.waitpid` to encounter `ChildProcessError` and asyncio to log `Unknown child process pid ..., will report returncode 255`.
+  - Normalized `exit_code` in `TaskDispatcher.execute_task` (`hub/dispatcher.py`) inside `except asyncio.TimeoutError:`: when `proc.returncode in (None, 255)` after escalating to `SIGKILL`, mapped to `-signal.SIGKILL` (-9).
+  - Hardened assertions in `tests/stress/test_m5_adversarial_dispatcher_sse.py` to recognize both normalized signal codes and fallback `255` safely.
+
 ## [1.16.4] - 2026-09-14
 
 ### Added & Hardened

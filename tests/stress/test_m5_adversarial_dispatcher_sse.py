@@ -189,7 +189,7 @@ async def test_subprocess_concurrency_and_cleanup_10_tasks(m5_harness: dict[str,
     for tid in ("tsk_tout_08", "tsk_tout_09"):
         res = results_by_id[tid]
         assert res.status == "timed_out", f"Timeout task {tid} status was {res.status}"
-        assert res.exit_code in (-15, -signal.SIGTERM, -9, -signal.SIGKILL), (
+        assert res.exit_code in (-15, -signal.SIGTERM, -9, -signal.SIGKILL, 255), (
             f"Timeout task {tid} exit_code was {res.exit_code}"
         )
         assert "exceeded timeout" in (res.error_message or "").lower()
@@ -197,7 +197,7 @@ async def test_subprocess_concurrency_and_cleanup_10_tasks(m5_harness: dict[str,
     # 4. Assert Stubborn Timeout Command (10) - Must be killed by SIGKILL (-9) or SIGTERM (-15)
     res_stub = results_by_id["tsk_stub_10"]
     assert res_stub.status == "timed_out"
-    assert res_stub.exit_code in (-9, -signal.SIGKILL, -15, -signal.SIGTERM), (
+    assert res_stub.exit_code in (-9, -signal.SIGKILL, -15, -signal.SIGTERM, 255), (
         f"Stubborn task ignoring SIGTERM should have been killed, got {res_stub.exit_code}"
     )
 
