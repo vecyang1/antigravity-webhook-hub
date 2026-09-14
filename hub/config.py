@@ -39,7 +39,7 @@ class SecurityConfig:
 
 @dataclass(slots=True)
 class DatabaseConfig:
-    path: str = "data/webhook_hub.db"
+    path: str = str(Path(__file__).resolve().parent.parent / "data" / "webhook_hub.db")
     wal_mode: bool = True
     busy_timeout_ms: int = 5000
 
@@ -547,6 +547,9 @@ def load_config(
     # Database
     if "DATABASE_PATH" in combined_env:
         cfg.database.path = combined_env["DATABASE_PATH"]
+    if cfg.database.path and cfg.database.path not in (":memory:", "") and not os.path.isabs(cfg.database.path):
+        repo_root = Path(__file__).resolve().parent.parent
+        cfg.database.path = str(repo_root / cfg.database.path)
     if "DATABASE_WAL_MODE" in combined_env:
         cfg.database.wal_mode = _to_bool(combined_env["DATABASE_WAL_MODE"])
     if "DATABASE_BUSY_TIMEOUT_MS" in combined_env:

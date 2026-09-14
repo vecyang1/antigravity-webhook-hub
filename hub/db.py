@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 import threading
 import uuid
@@ -60,7 +61,11 @@ class DatabaseManager:
     """
 
     def __init__(self, db_path: str = "data/webhook_hub.db", cache_size: int = -4000):
-        self.db_path = str(db_path)
+        db_str = str(db_path)
+        if db_str not in (":memory:", "") and not os.path.isabs(db_str):
+            repo_root = Path(__file__).resolve().parent.parent
+            db_str = str(repo_root / db_str)
+        self.db_path = db_str
         self._cache_size = int(cache_size)
         if self.db_path not in (":memory:", ""):
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
