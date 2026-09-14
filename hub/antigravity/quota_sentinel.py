@@ -457,6 +457,16 @@ class AntigravityQuotaSentinel:
                                 p.email, b.bucket_id, now - warmup_ts, effective_cooldown
                             )
                             continue
+                    elif latest and latest.get("status") == "failed":
+                        created_at = latest.get("created_at")
+                        warmup_ts = parse_iso_timestamp(created_at) if isinstance(created_at, str) else None
+                        # 15m (900s) failure backoff to prevent rapid retries on invalid tokens/401/429
+                        if warmup_ts and (now - warmup_ts) < 900.0:
+                            logger.debug(
+                                "Bucket %s/%s recent warmup failed (elapsed %.0fs < 900s), in failure backoff, skipping",
+                                p.email, b.bucket_id, now - warmup_ts
+                            )
+                            continue
 
                 # 4. Mid-flight countdown check:
                 # If window is mid-flight (e.g. started 1-4 hours ago outside this hub or before restart),
