@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] - 2026-09-14
+
+### Added & Hardened
+- **Antigravity Quota Sentinel Fleet-Wide Autonomous Multi-Account Warmup**:
+  - **Standby Idle Freeze Elimination (`warmup_all_accounts: true`)**:
+    - Resolved the critical friction where standby accounts remained frozen at `4h 59m 100%` idle until switched to, causing developers to incur an unexpected 5-hour wait.
+    - Implemented autonomous fleet-wide warmup across all configured accounts in `~/.antigravity_tools/accounts/*.json`.
+    - Added full configurability via `AntigravityQuotaConfig.warmup_all_accounts`, `config.yaml`, environment variable `ANTIGRAVITY_QUOTA_WARMUP_ALL_ACCOUNTS`, CLI flags (`--all-accounts` / `--active-only`), and the Dashboard UI button.
+  - **Unstarted 100% Full Bucket vs Mid-Flight Window Detection**:
+    - Discovered that Google Cloud Code PA API returns `resetTime = query_time + 5h` (17900s–18000s in the future) for untouched 100% full buckets. The previous code erroneously treated this as an active window and skipped candidate warmup.
+    - Replaced the flawed future check with precise mid-flight window detection (`60s < time_until_reset < 17400s`), allowing unstarted 100% buckets to be warmed immediately into rolling countdowns.
+  - **Strict Cooldown Isolation & Weekly Quota Exhaustion Guard**:
+    - Isolated 4h55m cooldowns (`warmup_cooldown_seconds: 17700`) per account and bucket in SQLite SSOT (`antigravity_warmups`).
+    - Added an autonomous guard preventing 3P model warmup when weekly quota is 0%, preventing upstream Google HTTP 429 errors.
+  - **Concurrent Parallel Fleet Scanning**:
+    - Parallelized account quota status fetching using `ThreadPoolExecutor(max_workers=min(8, len(profiles)))`, reducing 8-account scan latency from 9.74s to 2.05s.
+  - **CLI and Dashboard UI Enhancements**:
+    - CLI `antigravity warmup` defaults to `--all-accounts` with human-friendly Chinese output and `--active-only` fallback.
+    - Dashboard button `warmupAllIdlePools` passes `{ all_accounts: true }` and handles model/error response aliases cleanly.
+  - **Empirical Verification**:
+    - 5 new TDD unit tests in `tests/unit/test_antigravity_quota_sentinel.py` (14/14 green).
+    - Playwright browser E2E test verifying stable live countdown rendering without desync.
+
 ## [2026-09-14] - 2026-09-14
 
 ### Features

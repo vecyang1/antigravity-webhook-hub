@@ -115,6 +115,7 @@ class AntigravityQuotaConfig:
     scan_interval_seconds: int = 120
     auto_warmup_5h: bool = True
     auto_warmup_weekly: bool = False
+    warmup_all_accounts: bool = True
     warmup_cooldown_seconds: int = 17700  # 4h 55m cooldown to avoid duplicate warmup within 5h cycle
     tools_api_host: str = "127.0.0.1"
     tools_api_port: int = 8045
@@ -216,6 +217,7 @@ class AppConfig:
                 "scan_interval_seconds": self.antigravity_quota.scan_interval_seconds,
                 "auto_warmup_5h": self.antigravity_quota.auto_warmup_5h,
                 "auto_warmup_weekly": self.antigravity_quota.auto_warmup_weekly,
+                "warmup_all_accounts": self.antigravity_quota.warmup_all_accounts,
                 "warmup_cooldown_seconds": self.antigravity_quota.warmup_cooldown_seconds,
                 "tools_api_host": self.antigravity_quota.tools_api_host,
                 "tools_api_port": self.antigravity_quota.tools_api_port,
@@ -482,6 +484,8 @@ def load_config(
             cfg.antigravity_quota.auto_warmup_5h = _to_bool(aq["auto_warmup_5h"])
         if "auto_warmup_weekly" in aq:
             cfg.antigravity_quota.auto_warmup_weekly = _to_bool(aq["auto_warmup_weekly"])
+        if "warmup_all_accounts" in aq:
+            cfg.antigravity_quota.warmup_all_accounts = _to_bool(aq["warmup_all_accounts"])
         if "warmup_cooldown_seconds" in aq:
             cfg.antigravity_quota.warmup_cooldown_seconds = _to_int(
                 aq["warmup_cooldown_seconds"], cfg.antigravity_quota.warmup_cooldown_seconds
@@ -685,6 +689,8 @@ def load_config(
         cfg.antigravity_quota.auto_warmup_5h = _to_bool(combined_env["ANTIGRAVITY_QUOTA_AUTO_WARMUP_5H"])
     if "ANTIGRAVITY_QUOTA_AUTO_WARMUP_WEEKLY" in combined_env:
         cfg.antigravity_quota.auto_warmup_weekly = _to_bool(combined_env["ANTIGRAVITY_QUOTA_AUTO_WARMUP_WEEKLY"])
+    if "ANTIGRAVITY_QUOTA_WARMUP_ALL_ACCOUNTS" in combined_env:
+        cfg.antigravity_quota.warmup_all_accounts = _to_bool(combined_env["ANTIGRAVITY_QUOTA_WARMUP_ALL_ACCOUNTS"])
     if "ANTIGRAVITY_QUOTA_WARMUP_COOLDOWN_SECONDS" in combined_env:
         cfg.antigravity_quota.warmup_cooldown_seconds = _to_int(
             combined_env["ANTIGRAVITY_QUOTA_WARMUP_COOLDOWN_SECONDS"], cfg.antigravity_quota.warmup_cooldown_seconds

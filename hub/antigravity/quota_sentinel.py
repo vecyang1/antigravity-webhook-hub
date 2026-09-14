@@ -311,19 +311,27 @@ class AntigravityQuotaSentinel:
                 live_fetched=False,
             )
 
-            # If live querying is enabled, attempt live fetch (active account prioritized)
-            if live and access_token and not disabled:
-                # Active account gets authoritative query; inactive accounts skip if token expired to eliminate 401 latency
-                is_expired = bool(token_expiry and token_expiry < time.time())
-                if is_active or not is_expired:
-                    timeout_val = 3.5 if is_active else 1.5
-                    live_b = self.fetch_live_quota(access_token, timeout=timeout_val)
-                    if live_b:
-                        profile.buckets = live_b
-                        profile.live_fetched = True
-                        profile.last_updated = time.time()
-
             profiles.append(profile)
+
+        # If live querying is enabled, attempt concurrent live fetch across accounts
+        if live and profiles:
+            import concurrent.futures
+
+            def _fetch_profile_live(prof: AccountQuotaProfile) -> None:
+                if not prof.access_token or prof.disabled:
+                    return
+                is_expired = bool(prof.token_expiry and prof.token_expiry < time.time())
+                if prof.is_active or not is_expired:
+                    timeout_val = 3.5 if prof.is_active else 2.0
+                    live_b = self.fetch_live_quota(prof.access_token, timeout=timeout_val)
+                    if live_b:
+                        prof.buckets = live_b
+                        prof.live_fetched = True
+                        prof.last_updated = time.time()
+
+            max_workers = min(8, max(1, len(profiles)))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                list(executor.map(_fetch_profile_live, profiles))
 
         # Sort with active account first, then alphabetically by email
         profiles.sort(key=lambda p: (not p.is_active, p.email))
@@ -369,14 +377,16 @@ class AntigravityQuotaSentinel:
         account_email: Optional[str] = None,
         bucket_id: Optional[str] = None,
         force: bool = False,
+        all_accounts: Optional[bool] = None,
     ) -> list[dict[str, Any]]:
         """
-        Identify buckets eligible for minimal token warmup.
+        Identify buckets eligible for minimal token warmup across the fleet.
         Eligibility Criteria:
         1. auto_warmup_5h is True (and window_type == '5h'), or auto_warmup_weekly is True.
         2. Bucket has remaining_fraction >= 0.999 (meaning 100% full, window has reset and halted).
-        3. reset_timestamp is expired or in the past (now >= reset_timestamp - 60s) or reset_timestamp is None/0.
-        4. Cooldown: No successful warmup for this bucket in the last warmup_cooldown_seconds (unless force=True).
+        3. Mid-flight countdown check: skips windows actively counting down mid-flight outside the hub.
+        4. Cooldown: Strict 4h55m cooldown per account per bucket against SQLite SSOT (unless force=True).
+        5. Fleet-wide vs active-only: Configurable via warmup_all_accounts (default True).
         """
         if profiles is None:
             profiles = self.scan_accounts()
@@ -384,20 +394,34 @@ class AntigravityQuotaSentinel:
         cooldown_sec = 17700  # Default 4h 55m
         auto_5h = True
         auto_weekly = False
+        warmup_all = True
         if self.quota_cfg:
             cooldown_sec = getattr(self.quota_cfg, "warmup_cooldown_seconds", 17700)
             auto_5h = getattr(self.quota_cfg, "auto_warmup_5h", True)
             auto_weekly = getattr(self.quota_cfg, "auto_warmup_weekly", False)
+            warmup_all = getattr(self.quota_cfg, "warmup_all_accounts", True)
+
+        if all_accounts is not None:
+            warmup_all = bool(all_accounts)
 
         now = time.time()
         candidates: list[dict[str, Any]] = []
 
         for p in profiles:
-            # Skip accounts explicitly marked as disabled
+            # Skip accounts explicitly marked as disabled by user
             if p.disabled:
                 continue
 
+            # If fleet-wide warmup is disabled and no specific account was targeted, only evaluate active account
+            if not warmup_all and not account_email and not p.is_active:
+                continue
+
+            # Check specific account email filter if provided
             if account_email and p.email.lower() != account_email.strip().lower():
+                continue
+
+            # Account must have an access token to dispatch warmup
+            if not p.access_token:
                 continue
 
             for b in p.buckets:
@@ -415,19 +439,11 @@ class AntigravityQuotaSentinel:
                     # Timer is already running and has consumed quota, skip
                     continue
 
-                # 3. Reset timestamp check: window has reset or is idle
-                if not force and b.reset_timestamp is not None:
-                    # Allow 60s grace margin before exact reset_timestamp
-                    if now < (b.reset_timestamp - 60.0):
-                        continue
-
-                # 4. Cooldown check against SQLite SSOT
+                # 3. Cooldown check against SQLite SSOT (strict 4h55m cooldown per account/bucket)
                 if not force and self.db:
                     latest = self.db.get_latest_warmup(p.email, b.bucket_id)
                     if latest and latest.get("status") == "success":
-                        # Check when latest warmup occurred
                         created_at = latest.get("created_at")
-                        # If created_at is an ISO string or timestamp
                         warmup_ts = parse_iso_timestamp(created_at) if isinstance(created_at, str) else None
                         if warmup_ts and (now - warmup_ts) < cooldown_sec:
                             logger.debug(
@@ -435,6 +451,43 @@ class AntigravityQuotaSentinel:
                                 p.email, b.bucket_id, now - warmup_ts, cooldown_sec
                             )
                             continue
+
+                # 4. Mid-flight countdown check:
+                # If window is mid-flight (e.g. started 1-4 hours ago outside this hub or before restart),
+                # reset_timestamp will be counting down in the future (between 60s and 4h50m).
+                # Unstarted/idle windows have reset_timestamp >= now + 17400s (Google sets to query time + 5h),
+                # or reset_timestamp in the past / expired / None.
+                if not force and b.reset_timestamp is not None:
+                    time_until_reset = b.reset_timestamp - now
+                    if b.window_type == "5h":
+                        if 60.0 < time_until_reset < (18000.0 - 300.0):
+                            logger.debug(
+                                "Bucket %s/%s mid-flight countdown active (reset in %.0fs), skipping",
+                                p.email, b.bucket_id, time_until_reset
+                            )
+                            continue
+                    elif b.window_type == "weekly":
+                        if 60.0 < time_until_reset < (7 * 86400.0 - 300.0):
+                            logger.debug(
+                                "Weekly bucket %s/%s mid-flight countdown active (reset in %.0fs), skipping",
+                                p.email, b.bucket_id, time_until_reset
+                            )
+                            continue
+
+                # 5. Exhausted weekly pool guard:
+                # If the corresponding weekly quota pool for this model group is exhausted (0.0%),
+                # Google Cloud Code PA returns HTTP 429. Skip until the weekly window resets.
+                if not force and b.window_type == "5h":
+                    weekly_b = next(
+                        (other for other in p.buckets if other.model_group == b.model_group and other.window_type == "weekly"),
+                        None
+                    )
+                    if weekly_b and weekly_b.remaining_fraction <= 0.001:
+                        logger.debug(
+                            "Account %s group '%s' weekly limit exhausted (%.1f%%), skipping warmup",
+                            p.email, b.model_group, weekly_b.remaining_fraction * 100
+                        )
+                        continue
 
                 # Determine model to use
                 if "gemini" in b.bucket_id.lower():
@@ -457,7 +510,7 @@ class AntigravityQuotaSentinel:
                     "reset_timestamp": b.reset_timestamp,
                 })
 
-        # Sort candidates prioritizing active account and Gemini models first
+        # Sort candidates prioritizing active account first, then Gemini models first, then 5h window
         candidates.sort(
             key=lambda c: (
                 not c["is_active"],
@@ -548,10 +601,12 @@ class AntigravityQuotaSentinel:
             "account_email": email,
             "bucket_id": bucket_id,
             "model_name": model,
+            "model_used": model,
             "trigger_reason": trigger_reason,
             "route_used": route_used,
             "status": status,
             "error_message": error_msg,
+            "error": error_msg,
             "duration_ms": duration_ms,
             "log_id": log_record.get("warmup_id"),
         }
@@ -570,6 +625,7 @@ class AntigravityQuotaSentinel:
                     "account_email": result["account_email"],
                     "bucket_id": result["bucket_id"],
                     "model_name": result["model_name"],
+                    "model_used": result["model_used"],
                     "status": result["status"],
                     "duration_ms": result["duration_ms"],
                     "timestamp": time.time(),
@@ -586,12 +642,13 @@ class AntigravityQuotaSentinel:
         bucket_id: Optional[str] = None,
         force: bool = False,
         live: bool = True,
+        all_accounts: Optional[bool] = None,
     ) -> dict[str, Any]:
         """
         Main execution loop for Sentinel:
         1. Scans account profiles (authoritative live query when live=True).
         2. Syncs quotas to SQLite SSOT.
-        3. Evaluates warmup candidates (Gemini models prioritized).
+        3. Evaluates warmup candidates across fleet (Gemini models prioritized).
         4. Dispatches warmup pings.
         5. Emits SSE real-time push events.
         6. Returns structured summary.
@@ -605,6 +662,7 @@ class AntigravityQuotaSentinel:
                 account_email=account_email,
                 bucket_id=bucket_id,
                 force=force,
+                all_accounts=all_accounts,
             )
 
             warmup_results: list[dict[str, Any]] = []

@@ -4613,10 +4613,11 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           const res = await resp.json();
           if (res.warmup_results && res.warmup_results.length > 0) {{
             const first = res.warmup_results[0];
+            const modelName = first.model_name || first.model_used || 'ping';
             if (first.status === 'success') {{
-              showToast(`Warmup successful (${{first.duration_ms}}ms, model: ${{first.model_used}})`, 'info');
+              showToast(`Warmup successful (${{first.duration_ms}}ms, model: ${{modelName}})`, 'info');
             }} else {{
-              showToast(`Warmup failed: ${{first.error || 'Check logs'}}`, 'error');
+              showToast(`Warmup failed: ${{first.error_message || first.error || 'Check logs'}}`, 'error');
             }}
           }} else {{
             showToast('Warmup command processed', 'info');
@@ -4647,7 +4648,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           headers: {{ 'Content-Type': 'application/json' }},
           body: JSON.stringify({{
             force: false,
-            reason: 'ui_warmup_all_idle'
+            reason: 'ui_warmup_all_idle',
+            all_accounts: true
           }})
         }});
         if (resp.ok) {{

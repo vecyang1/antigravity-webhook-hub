@@ -404,3 +404,149 @@ def test_get_quota_overview_formatting(fake_accounts_dir, db):
     b_gemini = next(b for b in viinam["buckets"] if b["bucket_id"] == "gemini-5h")
     assert b_gemini["remaining_percent"] == 100.0
     assert "Ready to Warmup" in b_gemini["human_countdown"]
+
+
+def test_fleet_wide_warmup_all_accounts_toggle(fake_accounts_dir, db):
+    """Test warmup_all_accounts config toggle and all_accounts runtime override."""
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+    cfg.antigravity_quota.warmup_all_accounts = True
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        profiles = sentinel.scan_accounts()
+
+        # 1. Default: fleet-wide warmup enabled -> evaluates both active and standby
+        cands_all = sentinel.evaluate_warmup_candidates(profiles)
+        cands_emails = {c["account_email"] for c in cands_all}
+        assert "viinam33@gmail.com" in cands_emails
+        assert "standby@gmail.com" in cands_emails
+
+        # 2. Config toggle: warmup_all_accounts = False -> only active account
+        cfg.antigravity_quota.warmup_all_accounts = False
+        cands_active_only = sentinel.evaluate_warmup_candidates(profiles)
+        assert len(cands_active_only) == 1
+        assert cands_active_only[0]["account_email"] == "viinam33@gmail.com"
+
+        # 3. Runtime override: all_accounts=True overrides config
+        cands_override = sentinel.evaluate_warmup_candidates(profiles, all_accounts=True)
+        assert len(cands_override) == 2
+
+
+def test_unstarted_idle_window_detection_near_5h(fake_accounts_dir, db):
+    """
+    Test that Google's live return of reset_time = query_time + 5h (4h 59m, 17950s in future)
+    for 100% full unstarted buckets is correctly detected as ELIGIBLE idle window.
+    """
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        profiles = sentinel.scan_accounts()
+
+        now = time.time()
+        # Set standby bucket reset_timestamp to now + 17950s (4h 59m 10s in future, unstarted window)
+        for p in profiles:
+            if p.email == "standby@gmail.com":
+                for b in p.buckets:
+                    if b.bucket_id == "3p-5h":
+                        b.remaining_fraction = 1.0
+                        b.reset_timestamp = now + 17950.0
+
+        candidates = sentinel.evaluate_warmup_candidates(profiles)
+        standby_cand = next((c for c in candidates if c["account_email"] == "standby@gmail.com"), None)
+        assert standby_cand is not None, "Unstarted 5h window sitting at 4h59m must be eligible for warmup"
+        assert standby_cand["bucket_id"] == "3p-5h"
+
+
+def test_mid_flight_window_rejection(fake_accounts_dir, db):
+    """
+    Test that a bucket sitting mid-flight (reset_timestamp between 60s and 4h50m in future)
+    is skipped so active countdowns are not redundantly pinged mid-flight.
+    """
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        profiles = sentinel.scan_accounts()
+
+        now = time.time()
+        # Set standby bucket to mid-flight: reset in 2 hours (7200s)
+        for p in profiles:
+            if p.email == "standby@gmail.com":
+                for b in p.buckets:
+                    if b.bucket_id == "3p-5h":
+                        b.remaining_fraction = 1.0
+                        b.reset_timestamp = now + 7200.0
+
+        candidates = sentinel.evaluate_warmup_candidates(profiles)
+        standby_cand = next((c for c in candidates if c["account_email"] == "standby@gmail.com"), None)
+        assert standby_cand is None, "Mid-flight countdown (2h remaining) must be skipped"
+
+
+def test_cooldown_isolation_across_fleet(fake_accounts_dir, db):
+    """
+    Test that warming up Account A puts ONLY Account A in cooldown,
+    leaving Account B immediately eligible.
+    """
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+    cfg.antigravity_quota.warmup_cooldown_seconds = 17700
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        profiles = sentinel.scan_accounts()
+
+        # Both viinam33 and standby are eligible initially
+        cands_before = sentinel.evaluate_warmup_candidates(profiles)
+        assert len(cands_before) == 2
+
+        # Record successful warmup only for viinam33
+        db.record_warmup_log(
+            account_email="viinam33@gmail.com",
+            bucket_id="gemini-5h",
+            model_name="gemini-3-flash",
+            trigger_reason="fleet_test",
+            route_used="tools_api_8045",
+            status="success",
+        )
+
+        # Viinam33 is now on cooldown; standby MUST still be eligible
+        cands_after = sentinel.evaluate_warmup_candidates(profiles)
+        assert len(cands_after) == 1
+        assert cands_after[0]["account_email"] == "standby@gmail.com"
+
+
+def test_fleet_wide_prioritization_order(fake_accounts_dir, db):
+    """
+    Test that candidates are prioritized in strict order:
+    1. Active account first
+    2. Primary Gemini models before Claude/3P models
+    3. 5h rolling window before weekly
+    """
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+    cfg.antigravity_quota.auto_warmup_weekly = True  # Enable weekly to test window sorting
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        profiles = sentinel.scan_accounts()
+
+        # Set all buckets to 100% full
+        for p in profiles:
+            if not p.disabled:
+                for b in p.buckets:
+                    b.remaining_fraction = 1.0
+                    b.reset_timestamp = time.time() - 100
+
+        candidates = sentinel.evaluate_warmup_candidates(profiles)
+        assert len(candidates) >= 2
+
+        # First candidate MUST be active account
+        assert candidates[0]["is_active"] is True
+        assert candidates[0]["account_email"] == "viinam33@gmail.com"
+        # Within active account, Gemini MUST come first
+        assert "gemini" in candidates[0]["bucket_id"].lower()
+

@@ -406,10 +406,13 @@ def register_observability_routes(
                 broker=active_broker,
             )
         body = req.json() if req.body else {}
-        email = body.get("account") or body.get("email")
-        bucket = body.get("bucket") or body.get("bucket_id")
-        force = bool(body.get("force", False))
-        reason = body.get("reason", "api_manual_trigger")
+        email = body.get("account") or body.get("email") or req.query_params.get("account") or req.query_params.get("email")
+        bucket = body.get("bucket") or body.get("bucket_id") or req.query_params.get("bucket") or req.query_params.get("bucket_id")
+        force = bool(body.get("force", False) or req.query_params.get("force") in ("true", "1", "yes"))
+        reason = body.get("reason") or req.query_params.get("reason") or "api_manual_trigger"
+        all_accounts_val = body.get("all_accounts")
+        if all_accounts_val is None and "all_accounts" in req.query_params:
+            all_accounts_val = req.query_params.get("all_accounts") in ("true", "1", "yes")
 
         res = await sentinel.sweep_and_warmup(
             reason=reason,
@@ -417,6 +420,7 @@ def register_observability_routes(
             bucket_id=bucket,
             force=force,
             live=True,
+            all_accounts=all_accounts_val,
         )
         return HTTPResponse.json(res, status_code=200)
 

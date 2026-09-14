@@ -1843,6 +1843,18 @@ def _add_antigravity_args(parser: argparse.ArgumentParser) -> None:
         help="Force warmup immediately, ignoring 100%% threshold or cooldown timer",
     )
     parser.add_argument(
+        "--all-accounts",
+        action="store_true",
+        default=None,
+        help="Warm up all idle accounts across the fleet (default True)",
+    )
+    parser.add_argument(
+        "--active-only",
+        action="store_true",
+        default=False,
+        help="Warm up active account only, skipping standby accounts",
+    )
+    parser.add_argument(
         "--prompt",
         default=None,
         help="Custom pull-up message content to send",
@@ -2135,14 +2147,22 @@ def cmd_antigravity(args: Any) -> int:
         bucket_id = getattr(args, "bucket", None)
         force = getattr(args, "force", False)
 
+        all_accounts = None
+        if getattr(args, "active_only", False):
+            all_accounts = False
+        elif getattr(args, "all_accounts", False):
+            all_accounts = True
+
+        target_desc = account_email or ("当前活跃账号" if all_accounts is False else "全舰队就绪账号")
         if not is_json:
-            print(f"🚀 正在为 Antigravity 执行滚动配额最小Token保活 (Force={force}, Account={account_email or '全部就绪账号'}, Bucket={bucket_id or '全部就绪池'})...")
+            print(f"🚀 正在为 Antigravity 执行滚动配额最小Token保活 (Force={force}, Target={target_desc}, Bucket={bucket_id or '全部就绪池'})...")
 
         res = asyncio.run(sentinel.sweep_and_warmup(
             reason="cli_manual_warmup",
             account_email=account_email,
             bucket_id=bucket_id,
             force=force,
+            all_accounts=all_accounts,
         ))
 
         if is_json:

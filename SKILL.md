@@ -1,9 +1,9 @@
 ---
 name: webhook-hub
 description: Control, monitor, and query the local Antigravity Webhook Hub daemon, event dispatcher, and Antigravity Watchdog on macOS.
-version: 1.12.0
+version: 1.16.0
 author: V
-date: 2026-09-13
+date: 2026-09-14
 source: local repository
 ---
 
@@ -67,7 +67,9 @@ All commands run via `./bin/webhook-hub <subcommand>` or `python3 -m hub <subcom
 ./bin/webhook-hub antigravity quota        # View 5h and weekly quota snapshots, percentages, and reset countdowns
 ./bin/webhook-hub antigravity quota --json # Machine-readable quota snapshots for all accounts
 ./bin/webhook-hub antigravity quota -a <email> # View quota for specific account
-./bin/webhook-hub antigravity warmup       # Trigger minimal 1-token ping for idle/expired 100% full buckets
+./bin/webhook-hub antigravity warmup       # Trigger minimal 1-token ping for idle/expired full buckets (fleet-wide by default)
+./bin/webhook-hub antigravity warmup --all-accounts # Autonomous fleet warmup: warm all standby accounts
+./bin/webhook-hub antigravity warmup --active-only   # Warm only the currently active IDE profile
 ./bin/webhook-hub antigravity warmup --force # Force immediate warmup ping bypassing cooldown
 ./bin/webhook-hub antigravity warmup -a <email> -b gemini-5h # Target specific account and bucket
 ```
@@ -300,6 +302,14 @@ To prevent Mac freezing or system-wide lockups:
 - **Process Concurrency Limits**: Stress tests and subprocess runners must enforce concurrency <= 2 and timeouts <= 5s, with graceful fallback.
 - **Single Instance Watchdog**: Background sweeper runs in single-flight loops with sleep/wake detection, maintaining zero CPU and <28MB RSS.
 
+## 11. Antigravity Quota Sentinel & Fleet-Wide Autonomous Warmup
 
+The Webhook Hub provides autonomous 24/7 background fleet quota monitoring and rolling warmup (`hub/antigravity/quota_sentinel.py`), completely eliminating the 5-hour idle freeze when switching between IDE developer profiles.
 
-
+### 11.1 The Standby Idle Problem & Architectural Resolution
+- **The Problem**: Google Antigravity quotas operate on a rolling 5-hour window that does not start counting down until the first token is consumed. Previously, only the currently active profile was warmed, leaving all standby accounts frozen at 100% idle (`4h 59m 100%`). When switching profiles, developers were forced to endure a full 5-hour wait.
+- **Fleet-Wide Warmup (`warmup_all_accounts: true`)**: The sentinel continuously monitors all configured accounts in `~/.antigravity_tools/accounts/*.json`. It triggers a minimal 1-token ping (`gemini-3-flash`) across standby accounts so their 5-hour rolling windows count down autonomously in the background before profile switching.
+- **Unstarted Window Detection**: Google's `retrieveUserQuotaSummary` API returns `resetTime = query_time + 5h` (17900s–18000s in the future) for unstarted 100% full buckets. The sentinel distinguishes active mid-flight countdowns (`60s < time_until_reset < 17400s`) from unstarted full buckets (`time_until_reset >= 17400s`), preventing false "in-flight" skips that previously starved standby accounts.
+- **4h55m Cooldown Isolation**: Warmup timestamps are recorded in SQLite SSOT (`antigravity_warmups`), enforcing a strict 17700s cooldown per bucket. Standby accounts are completely isolated from each other so one account's warmup never locks out another.
+- **Weekly Exhaustion Guard**: Accounts with 0% weekly balance are guarded against 3P model warmups to avoid upstream Google HTTP 429 quota exhaustion errors.
+- **Parallel Fleet Scanning**: Multi-account status scans run concurrently via `ThreadPoolExecutor`, reducing 8-account scan latency from ~10s to ~2s.
