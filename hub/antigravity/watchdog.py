@@ -207,25 +207,32 @@ def extract_subagent_ids_from_transcript(transcript_path: Path, current_convo_id
     """
     Extract all unique subagent conversation IDs spawned or referenced by this session.
     Inspects tool_calls, conversationId JSON blocks, conversation:// links, and subagent mentions.
+    Streams line-by-line to prevent high RSS memory spikes.
     """
     child_ids: list[str] = []
     if not transcript_path or not transcript_path.exists():
         return child_ids
     try:
         with open(transcript_path, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
-        for m in re.finditer(r'["\']conversationId["\']\s*:\s*["\']([0-9a-zA-Z-]{20,45})["\']', content):
-            cid = m.group(1).strip()
-            if cid != current_convo_id and cid not in child_ids:
-                child_ids.append(cid)
-        for m in re.finditer(r'conversation://([0-9a-zA-Z-]{20,45})', content):
-            cid = m.group(1).strip()
-            if cid != current_convo_id and cid not in child_ids:
-                child_ids.append(cid)
-        for m in re.finditer(r'subagent\s*\(?[`\'"]?([0-9a-fA-F-]{36})[`\'"]?\)?', content, re.IGNORECASE):
-            cid = m.group(1).strip()
-            if cid != current_convo_id and cid not in child_ids:
-                child_ids.append(cid)
+            for line in f:
+                if (
+                    "conversationId" not in line
+                    and "conversation://" not in line
+                    and "subagent" not in line
+                ):
+                    continue
+                for m in re.finditer(r'["\']conversationId["\']\s*:\s*["\']([0-9a-zA-Z-]{20,45})["\']', line):
+                    cid = m.group(1).strip()
+                    if cid != current_convo_id and cid not in child_ids:
+                        child_ids.append(cid)
+                for m in re.finditer(r'conversation://([0-9a-zA-Z-]{20,45})', line):
+                    cid = m.group(1).strip()
+                    if cid != current_convo_id and cid not in child_ids:
+                        child_ids.append(cid)
+                for m in re.finditer(r'subagent\s*\(?[`\'"]?([0-9a-fA-F-]{36})[`\'"]?\)?', line, re.IGNORECASE):
+                    cid = m.group(1).strip()
+                    if cid != current_convo_id and cid not in child_ids:
+                        child_ids.append(cid)
     except Exception as e:
         logger.debug("Failed extracting subagent IDs from %s: %s", transcript_path, e)
     return child_ids
@@ -1458,6 +1465,8 @@ class AntigravityWatchdog:
         except Exception as e:
             logger.error("Error during stalled conversation scan: %s", e)
 
+        import gc
+        gc.collect()
         return stalled
 
     async def resuscitate_session(
@@ -1816,4 +1825,6 @@ class AntigravityWatchdog:
         }
         self._status_cache = res
         self._status_cache_time = now
+        import gc
+        gc.collect()
         return res

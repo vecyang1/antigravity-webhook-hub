@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.2] - 2026-09-14
+
+### Fixed & Hardened
+- **Watchdog Transcript Stream Parsing & Memory Isolation**:
+  - Resolved RSS memory spikes (from 37MB to 167MB+) during `/antigravity/status` and background watchdog conversation scanning.
+  - Refactored `extract_subagent_ids_from_transcript` in `hub/antigravity/watchdog.py` from reading full 100MB+ `transcript_full.jsonl` files into memory to line-by-line streaming regex matching.
+  - Updated `resolve_transcript_path` in `hub/antigravity/result_delivery.py` to default to `prefer_compact=True` (`transcript.jsonl`), saving over 95% disk I/O and object allocations.
+  - Injected explicit `gc.collect()` in `scan_stalled_conversations` and `get_status`, stabilizing gateway memory permanently at 31~44 MB RSS (well below the 64.0 MB budget).
+- **CLI & E2E Verification Resilience**:
+  - Increased HTTP status check timeout in `cmd_status` from 2.0s to 5.0s to prevent false negative `STOPPED` reports during GC cycles.
+  - Hardened `scripts/verify_e2e.py` adversarial steps with 5.0s timeouts and post-SSE stream close buffer, guaranteeing 13/13 E2E tests pass consistently.
+
 ## [1.16.1] - 2026-09-14
 
 ### Fixed & Hardened

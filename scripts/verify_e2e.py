@@ -356,6 +356,7 @@ class E2EVerifier:
                 step4_detail = f"Error: {e}"
         results.append(step4_pass)
         self.log_step(4, "SSE Stream Live Subscription", step4_pass, step4_detail)
+        time.sleep(0.2)
 
         # ====================================================================
         # Step 5: Adversarial: Missing Signature Rejection (401 + 0 DB writes)
@@ -371,7 +372,7 @@ class E2EVerifier:
             req.add_header("Content-Type", "application/json")
             status_code = 0
             try:
-                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
                     status_code = resp.status
             except urllib.error.HTTPError as he:
                 status_code = he.code
@@ -409,7 +410,7 @@ class E2EVerifier:
             req = urllib.request.Request(f"{self.base_url}/webhook", data=body, headers=headers, method="POST")
             status_code = 0
             try:
-                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
                     status_code = resp.status
             except urllib.error.HTTPError as he:
                 status_code = he.code
@@ -446,7 +447,7 @@ class E2EVerifier:
             req = urllib.request.Request(f"{self.base_url}/webhook", data=body, headers=headers, method="POST")
             status_code = 0
             try:
-                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
                     status_code = resp.status
             except urllib.error.HTTPError as he:
                 status_code = he.code

@@ -1,7 +1,7 @@
 ---
 name: webhook-hub
 description: Control, monitor, and query the local Antigravity Webhook Hub daemon, event dispatcher, and Antigravity Watchdog on macOS.
-version: 1.16.0
+version: 1.16.2
 author: V
 date: 2026-09-14
 source: local repository

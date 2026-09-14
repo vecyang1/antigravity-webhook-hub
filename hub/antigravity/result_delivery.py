@@ -28,23 +28,29 @@ DEFAULT_BRAIN_ROOT = Path(
 )
 
 
-def resolve_transcript_path(conversation_id: str, brain_root: Optional[Path] = None) -> Optional[Path]:
+def resolve_transcript_path(conversation_id: str, brain_root: Optional[Path] = None, prefer_compact: bool = True) -> Optional[Path]:
     """
-    Locate the transcript_full.jsonl (or fallback transcript.jsonl)
-    for a given Antigravity conversation_id.
+    Locate transcript.jsonl (or fallback transcript_full.jsonl)
+    for a given Antigravity conversation_id. Defaults to prefer_compact=True to keep memory under budget.
     """
     root = brain_root or DEFAULT_BRAIN_ROOT
     convo_dir = root / conversation_id / ".system_generated" / "logs"
     if not convo_dir.exists():
         return None
 
-    full_path = convo_dir / "transcript_full.jsonl"
-    if full_path.exists() and full_path.stat().st_size > 0:
-        return full_path
-
     compact_path = convo_dir / "transcript.jsonl"
-    if compact_path.exists() and compact_path.stat().st_size > 0:
-        return compact_path
+    full_path = convo_dir / "transcript_full.jsonl"
+
+    if prefer_compact:
+        if compact_path.exists() and compact_path.stat().st_size > 0:
+            return compact_path
+        if full_path.exists() and full_path.stat().st_size > 0:
+            return full_path
+    else:
+        if full_path.exists() and full_path.stat().st_size > 0:
+            return full_path
+        if compact_path.exists() and compact_path.stat().st_size > 0:
+            return compact_path
 
     return None
 

@@ -459,7 +459,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     healthz_data: Optional[dict[str, Any]] = None
     try:
         req = urllib.request.Request(healthz_url, method="GET")
-        with urllib.request.urlopen(req, timeout=2.0) as resp:
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
             if resp.status == 200:
                 body = resp.read().decode("utf-8")
                 healthz_data = json.loads(body)
