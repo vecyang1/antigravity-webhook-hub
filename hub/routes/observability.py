@@ -273,7 +273,8 @@ def register_observability_routes(
             )
         elif not getattr(watchdog, "broker", None) and active_broker:
             watchdog.broker = active_broker
-        return HTTPResponse.json(watchdog.get_status(), status_code=200)
+        status_data = await asyncio.to_thread(watchdog.get_status)
+        return HTTPResponse.json(status_data, status_code=200)
 
     async def handle_antigravity_pull_up(req: HTTPRequest) -> HTTPResponse:
         """POST /antigravity/pull-up: Trigger automated pull-up / resuscitation."""
