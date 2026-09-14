@@ -96,7 +96,7 @@ class DashboardConfig:
 class AntigravityWatchdogConfig:
     enabled: bool = True
     interval_seconds: int = 30
-    lookback_minutes: int = 60
+    lookback_minutes: int = 720
     stall_grace_seconds: int = 15
     max_retries_per_session: int = 3
     auto_resuscitate: bool = True
