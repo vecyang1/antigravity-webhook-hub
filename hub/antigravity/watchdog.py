@@ -1610,7 +1610,7 @@ class AntigravityWatchdog:
     def get_status(self, force: bool = False) -> dict[str, Any]:
         """Comprehensive status report for CLI doctor, API, and dashboards."""
         now = time.time()
-        if not force and getattr(self, "_status_cache", None) and (now - getattr(self, "_status_cache_time", 0.0) < 5.0):
+        if not force and getattr(self, "_status_cache", None) and (now - getattr(self, "_status_cache_time", 0.0) < 20.0):
             return self._status_cache
 
         net_ok = self.check_network_health()
