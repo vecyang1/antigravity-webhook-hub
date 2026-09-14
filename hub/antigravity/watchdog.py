@@ -1089,6 +1089,11 @@ class AntigravityWatchdog:
                                 )
                             )
                     if not sched_info:
+                        # Check if session has already closed with goal complete
+                        has_goal_complete = any("<!-- goal_complete -->" in str(s.get("content") or "").lower() for s in parsed_steps)
+                        if has_goal_complete:
+                            continue
+
                         # Check 1: Is this session waiting on a child subagent that already completed?
                         child_ids: list[str] = []
                         for s in parsed_steps:
@@ -1102,7 +1107,16 @@ class AntigravityWatchdog:
                                 if cid != convo_id and cid not in child_ids:
                                     child_ids.append(cid)
 
+                        already_notified_cids = set()
+                        for s in parsed_steps:
+                            s_content = str(s.get("content") or "")
+                            for cid in child_ids:
+                                if cid in s_content and ("子代理完成通知" in s_content or "已完成执行" in s_content):
+                                    already_notified_cids.add(cid)
+
                         for cid in child_ids:
+                            if cid in already_notified_cids:
+                                continue
                             c_path = resolve_transcript_path(cid, self._brain_dir)
                             if c_path and c_path.exists():
                                 c_lines = self._tail_transcript_lines(c_path, max_lines=5)
@@ -1123,11 +1137,10 @@ class AntigravityWatchdog:
                                     break
 
                         has_stop_hook = any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps)
-                        has_goal_complete = any("<!-- goal_complete -->" in str(s.get("content") or "").lower() for s in parsed_steps)
 
                         if completed_child_id and (now - file_mtime > self.config.stall_grace_seconds):
                             pass
-                        elif has_stop_hook and not has_goal_complete:
+                        elif has_stop_hook:
                             pass
                         else:
                             continue
@@ -1143,7 +1156,9 @@ class AntigravityWatchdog:
                 is_boost_goal = check_session_has_boost_or_goal(transcript_path, parsed_steps)
                 has_stop_hook = any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps)
                 has_goal_complete = any("<!-- goal_complete -->" in str(s.get("content") or "").lower() for s in parsed_steps)
-                is_stop_hook_halt = has_stop_hook and not has_goal_complete and not last_step.get("tool_calls")
+                if has_goal_complete:
+                    continue
+                is_stop_hook_halt = has_stop_hook and not last_step.get("tool_calls")
 
                 # Widen MCP error detection across all loaded parsed steps (up to 15 steps)
                 for s in reversed(parsed_steps):
@@ -1233,6 +1248,30 @@ class AntigravityWatchdog:
 
                 _resolve_subagent_and_parent()
 
+                can_res, skip_reason = _evaluate_resuscitation_eligibility(convo_id, prior_attempts, is_subagent, parent_convo_id)
+                if not can_res:
+                    stalled.append(
+                        StalledSessionInfo(
+                            conversation_id=convo_id,
+                            transcript_path=transcript_path,
+                            last_step_index=last_step_idx,
+                            last_error=matched_error,
+                            last_error_time=file_mtime,
+                            is_subagent=is_subagent,
+                            parent_conversation_id=parent_convo_id,
+                            sidecar_slug=sidecar_slug,
+                            attempt_count=prior_attempts,
+                            can_resuscitate=False,
+                            skip_reason=skip_reason,
+                            is_mcp_error=is_mcp,
+                            is_boost_goal=is_boost_goal,
+                            is_stop_hook_hang=has_stop_hook,
+                            completed_child_id=completed_child_id,
+                            completed_child_summary=completed_child_summary,
+                        )
+                    )
+                    continue
+
                 # Stall grace period: recent errors (< stall_grace_seconds) are given time to self-heal
                 if now - file_mtime < self.config.stall_grace_seconds:
                     stalled.append(
@@ -1257,7 +1296,6 @@ class AntigravityWatchdog:
                     )
                     continue
 
-                can_res, skip_reason = _evaluate_resuscitation_eligibility(convo_id, prior_attempts, is_subagent, parent_convo_id)
                 stalled.append(
                     StalledSessionInfo(
                         conversation_id=convo_id,
@@ -1269,8 +1307,8 @@ class AntigravityWatchdog:
                         parent_conversation_id=parent_convo_id,
                         sidecar_slug=sidecar_slug,
                         attempt_count=prior_attempts,
-                        can_resuscitate=can_res,
-                        skip_reason=skip_reason,
+                        can_resuscitate=True,
+                        skip_reason=None,
                         is_mcp_error=is_mcp,
                         is_boost_goal=is_boost_goal,
                         is_stop_hook_hang=has_stop_hook,
@@ -1569,8 +1607,12 @@ class AntigravityWatchdog:
 
         return results
 
-    def get_status(self) -> dict[str, Any]:
+    def get_status(self, force: bool = False) -> dict[str, Any]:
         """Comprehensive status report for CLI doctor, API, and dashboards."""
+        now = time.time()
+        if not force and getattr(self, "_status_cache", None) and (now - getattr(self, "_status_cache_time", 0.0) < 5.0):
+            return self._status_cache
+
         net_ok = self.check_network_health()
         agentapi_avail = self.agentapi.is_available()
         addr, _ = self.agentapi.ensure_credentials(force=False)
@@ -1634,3 +1676,6 @@ class AntigravityWatchdog:
             "resuscitation_stats": stats,
             "recent_resuscitations": recent_resuscitations,
         }
+        self._status_cache = res
+        self._status_cache_time = now
+        return res
