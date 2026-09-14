@@ -184,6 +184,137 @@ def check_session_has_boost_or_goal(transcript_path: Path, parsed_steps: list[di
     return False
 
 
+def tail_transcript_lines(file_path: Path, max_lines: int = 15) -> list[str]:
+    """Read the last N lines of a transcript file efficiently."""
+    lines: list[str] = []
+    if not file_path or not file_path.exists():
+        return lines
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            read_size = min(size, 65536)
+            f.seek(size - read_size, os.SEEK_SET)
+            block = f.read()
+            all_lines = block.splitlines()
+            lines = all_lines[-max_lines:]
+    except Exception as e:
+        logger.debug("Failed reading tail of transcript %s: %s", file_path, e)
+    return lines
+
+
+def extract_subagent_ids_from_transcript(transcript_path: Path, current_convo_id: str) -> list[str]:
+    """
+    Extract all unique subagent conversation IDs spawned or referenced by this session.
+    Inspects tool_calls, conversationId JSON blocks, conversation:// links, and subagent mentions.
+    """
+    child_ids: list[str] = []
+    if not transcript_path or not transcript_path.exists():
+        return child_ids
+    try:
+        with open(transcript_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        for m in re.finditer(r'["\']conversationId["\']\s*:\s*["\']([0-9a-zA-Z-]{20,45})["\']', content):
+            cid = m.group(1).strip()
+            if cid != current_convo_id and cid not in child_ids:
+                child_ids.append(cid)
+        for m in re.finditer(r'conversation://([0-9a-zA-Z-]{20,45})', content):
+            cid = m.group(1).strip()
+            if cid != current_convo_id and cid not in child_ids:
+                child_ids.append(cid)
+        for m in re.finditer(r'subagent\s*\(?[`\'"]?([0-9a-fA-F-]{36})[`\'"]?\)?', content, re.IGNORECASE):
+            cid = m.group(1).strip()
+            if cid != current_convo_id and cid not in child_ids:
+                child_ids.append(cid)
+    except Exception as e:
+        logger.debug("Failed extracting subagent IDs from %s: %s", transcript_path, e)
+    return child_ids
+
+
+def is_subagent_active(
+    cid: str,
+    brain_dir: Path,
+    quiet_seconds: float = 900.0,
+    now: Optional[float] = None,
+) -> tuple[bool, str]:
+    """
+    Check if a child subagent is actively working.
+    Returns (is_active, reason).
+    
+    Principles:
+    1. If the subagent's transcript was modified within quiet_seconds (default 15m),
+       and it has NOT explicitly completed with <!-- GOAL_COMPLETE -->, it is ACTIVE.
+    2. If the subagent's last step status is "RUNNING", it is ACTIVE.
+    3. If the subagent has ongoing tool executions or model generations, it is ACTIVE.
+    4. Only when the subagent explicitly completed (<!-- GOAL_COMPLETE --> or final shutdown),
+       or the entire session has been silent for > quiet_seconds with no running tasks,
+       is it considered inactive.
+    """
+    if now is None:
+        now = time.time()
+
+    c_path = resolve_transcript_path(cid, brain_dir)
+    if not c_path or not c_path.exists():
+        c_dir = brain_dir / cid
+        if c_dir.exists():
+            try:
+                d_mtime = c_dir.stat().st_mtime
+                if now - d_mtime < quiet_seconds:
+                    return True, f"subagent_directory_recently_created ({int(now - d_mtime)}s ago)"
+            except Exception:
+                pass
+        return False, "transcript_not_found"
+
+    try:
+        c_mtime = c_path.stat().st_mtime
+    except Exception:
+        return False, "stat_failed"
+
+    time_since_mod = now - c_mtime
+
+    tail_lines = tail_transcript_lines(c_path, max_lines=15)
+    if not tail_lines:
+        if time_since_mod < quiet_seconds:
+            return True, f"empty_transcript_recent_mod ({int(time_since_mod)}s ago)"
+        return False, "empty_transcript_stale"
+
+    parsed_tail = []
+    for line in tail_lines:
+        try:
+            parsed_tail.append(json.loads(line.strip()))
+        except Exception:
+            continue
+
+    if not parsed_tail:
+        if time_since_mod < quiet_seconds:
+            return True, f"recent_mod_unparsed ({int(time_since_mod)}s ago)"
+        return False, "unparseable_transcript"
+
+    last_step = parsed_tail[-1]
+    last_status = last_step.get("status")
+
+    # A. Actively running step
+    if last_status == "RUNNING":
+        return True, f"subagent_step_running (step {last_step.get('step_index', '?')})"
+
+    # B. Check for explicit goal completion
+    has_goal_complete = False
+    for step in reversed(parsed_tail):
+        cnt = str(step.get("content") or "").lower()
+        if "<!-- goal_complete -->" in cnt:
+            has_goal_complete = True
+            break
+
+    if has_goal_complete:
+        return False, "subagent_goal_completed"
+
+    # C. Within quiet_seconds window and not explicitly completed -> actively running
+    if time_since_mod < quiet_seconds:
+        return True, f"subagent_actively_working ({int(time_since_mod)}s ago < {int(quiet_seconds)}s)"
+
+    return False, f"subagent_silent_timeout ({int(time_since_mod)}s >= {int(quiet_seconds)}s)"
+
+
 def parse_quota_reset_seconds(text: str) -> Optional[float]:
     """
     Extract reset delay in seconds from error text or JSON.
@@ -633,19 +764,7 @@ class AntigravityWatchdog:
 
     def _tail_transcript_lines(self, file_path: Path, max_lines: int = 15) -> list[str]:
         """Read the last N lines of a transcript file efficiently."""
-        lines: list[str] = []
-        try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                f.seek(0, os.SEEK_END)
-                size = f.tell()
-                read_size = min(size, 65536)
-                f.seek(size - read_size, os.SEEK_SET)
-                block = f.read()
-                all_lines = block.splitlines()
-                lines = all_lines[-max_lines:]
-        except Exception as e:
-            logger.debug("Failed reading tail of transcript %s: %s", file_path, e)
-        return lines
+        return tail_transcript_lines(file_path, max_lines=max_lines)
 
     def _find_associated_sidecar(self, conversation_id: str) -> Optional[str]:
         """Match conversation_id to any scheduled task or sidecar run."""
@@ -748,6 +867,26 @@ class AntigravityWatchdog:
                 last_type = last_step.get("type", "")
                 last_status = last_step.get("status", "")
                 last_content = last_step.get("content", "")
+
+                # --- CRITICAL BOOST / MULTI-AGENT SUBAGENT ACTIVE GUARD ---
+                # In Boost / Multi-Agent delegation mode, the parent agent MUST yield and wait for subagents
+                # to run, communicate natively, and report. If ANY child subagent is actively working
+                # (active tool execution, recent transcript writes, or unfinished goal), the parent's waiting
+                # is normal and expected. NEVER interrupt or wake up the parent prematurely!
+                child_ids = extract_subagent_ids_from_transcript(transcript_path, convo_id)
+                if child_ids:
+                    boost_quiet = float(getattr(self.config, "boost_quiet_seconds", 900))
+                    active_children = []
+                    for cid in child_ids:
+                        is_act, reason = is_subagent_active(cid, self._brain_dir, quiet_seconds=boost_quiet, now=now)
+                        if is_act:
+                            active_children.append((cid, reason))
+                    if active_children:
+                        logger.debug(
+                            "Session %s is legitimately waiting on %d active subagent(s): %s. Skipping watchdog intervention.",
+                            convo_id, len(active_children), active_children
+                        )
+                        continue
 
                 prior_attempts = self.db.get_resuscitation_attempts(convo_id) if self.db else 0
                 sidecar_slug = self._find_associated_sidecar(convo_id)
@@ -1119,15 +1258,14 @@ class AntigravityWatchdog:
                                 continue
                             c_path = resolve_transcript_path(cid, self._brain_dir)
                             if c_path and c_path.exists():
-                                c_lines = self._tail_transcript_lines(c_path, max_lines=5)
+                                c_lines = self._tail_transcript_lines(c_path, max_lines=10)
                                 for cl in reversed(c_lines):
                                     try:
                                         c_step = json.loads(cl.strip())
-                                        c_src = c_step.get("source", "")
-                                        c_tp = c_step.get("type", "")
-                                        c_st = c_step.get("status", "")
                                         c_cnt = str(c_step.get("content") or "")
-                                        if (c_src == "MODEL" and c_tp == "PLANNER_RESPONSE" and c_st == "DONE") or "<!-- goal_complete -->" in c_cnt.lower():
+                                        # Subagent completion MUST be genuine and explicit (goal_complete marker)
+                                        # NEVER treat an intermediate PLANNER_RESPONSE turn as completed!
+                                        if "<!-- goal_complete -->" in c_cnt.lower():
                                             completed_child_id = cid
                                             completed_child_summary = c_cnt[:500]
                                             break

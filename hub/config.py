@@ -97,7 +97,8 @@ class AntigravityWatchdogConfig:
     enabled: bool = True
     interval_seconds: int = 30
     lookback_minutes: int = 720
-    stall_grace_seconds: int = 15
+    stall_grace_seconds: int = 180
+    boost_quiet_seconds: int = 900
     max_retries_per_session: int = 3
     auto_resuscitate: bool = True
     probe_host: str = "1.1.1.1"
@@ -201,6 +202,7 @@ class AppConfig:
                 "interval_seconds": self.antigravity_watchdog.interval_seconds,
                 "lookback_minutes": self.antigravity_watchdog.lookback_minutes,
                 "stall_grace_seconds": self.antigravity_watchdog.stall_grace_seconds,
+                "boost_quiet_seconds": self.antigravity_watchdog.boost_quiet_seconds,
                 "max_retries_per_session": self.antigravity_watchdog.max_retries_per_session,
                 "auto_resuscitate": self.antigravity_watchdog.auto_resuscitate,
                 "probe_host": self.antigravity_watchdog.probe_host,
@@ -443,6 +445,10 @@ def load_config(
             cfg.antigravity_watchdog.stall_grace_seconds = _to_int(
                 aw["stall_grace_seconds"], cfg.antigravity_watchdog.stall_grace_seconds
             )
+        if "boost_quiet_seconds" in aw:
+            cfg.antigravity_watchdog.boost_quiet_seconds = _to_int(
+                aw["boost_quiet_seconds"], cfg.antigravity_watchdog.boost_quiet_seconds
+            )
         if "max_retries_per_session" in aw:
             cfg.antigravity_watchdog.max_retries_per_session = _to_int(
                 aw["max_retries_per_session"], cfg.antigravity_watchdog.max_retries_per_session
@@ -636,6 +642,10 @@ def load_config(
     if "ANTIGRAVITY_WATCHDOG_STALL_GRACE_SECONDS" in combined_env:
         cfg.antigravity_watchdog.stall_grace_seconds = _to_int(
             combined_env["ANTIGRAVITY_WATCHDOG_STALL_GRACE_SECONDS"], cfg.antigravity_watchdog.stall_grace_seconds
+        )
+    if "ANTIGRAVITY_WATCHDOG_BOOST_QUIET_SECONDS" in combined_env:
+        cfg.antigravity_watchdog.boost_quiet_seconds = _to_int(
+            combined_env["ANTIGRAVITY_WATCHDOG_BOOST_QUIET_SECONDS"], cfg.antigravity_watchdog.boost_quiet_seconds
         )
     if "ANTIGRAVITY_WATCHDOG_MAX_RETRIES" in combined_env:
         cfg.antigravity_watchdog.max_retries_per_session = _to_int(

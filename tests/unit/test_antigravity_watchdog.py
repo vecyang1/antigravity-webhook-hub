@@ -1646,6 +1646,151 @@ class TestAntigravityWatchdog:
         assert stalled[0].conversation_id == convo_id
         assert stalled[0].is_boost_goal is True
 
+    def test_boost_active_subagents_protect_parent_from_premature_interruption(self, db, mock_agentapi, temp_dir):
+        """
+        Critical Boost Protection:
+        When a parent conversation is in /boost mode and delegates to a child subagent,
+        the parent legitimately stops and yields control waiting for the subagent to finish and report.
+        If the child subagent is still active (e.g. running Playwright/bash/editing code),
+        the watchdog MUST NOT interrupt or wake up the parent, even if the parent has been idle for a long time.
+        """
+        parent_id = "parent-boost-orchestrator-001"
+        child_id = "child-active-worker-002"
+
+        parent_steps = [
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": "Perform deep research and automation ; /boost",
+            },
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "GENERIC",
+                "status": "DONE",
+                "content": f'Created the following subagents:\n{{\n  "conversationId": "{child_id}"\n}}',
+            },
+            {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": f"I have spawned the worker (`{child_id}`) to begin working. Since this subagent runs asynchronously in the background, I will now yield control and wait for it to report back.",
+                "tool_calls": [],
+            },
+        ]
+        _create_fake_session(temp_dir, parent_id, parent_steps, mtime_offset_seconds=400.0)
+
+        child_steps = [
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": "Subagent instructions",
+            },
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "Analyzing files...",
+                "tool_calls": [{"name": "run_command", "args": {"CommandLine": "python3 script.py"}}],
+            },
+            {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "GENERIC",
+                "status": "RUNNING",
+                "content": "Running background test...",
+            },
+        ]
+        _create_fake_session(temp_dir, child_id, child_steps, mtime_offset_seconds=10.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            stall_grace_seconds=30,
+            boost_quiet_seconds=900,
+            conversations_dir=str(temp_dir / "conversations"),
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+
+        parent_stalled = [s for s in stalled if s.conversation_id == parent_id]
+        assert len(parent_stalled) == 0, f"Parent was erroneously flagged as stalled: {parent_stalled}"
+
+        child_stalled = [s for s in stalled if s.conversation_id == child_id]
+        assert len(child_stalled) == 0, f"Child was erroneously flagged as stalled: {child_stalled}"
+
+    def test_boost_intermediate_planner_response_does_not_falsely_complete(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that an intermediate PLANNER_RESPONSE (e.g. step 1 of 200) in a child subagent
+        is NEVER falsely treated as a completed subagent that pulls up the waiting parent.
+        """
+        parent_id = "parent-boost-orchestrator-002"
+        child_id = "child-midway-worker-003"
+
+        parent_steps = [
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": "Do task ; /boost",
+            },
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "GENERIC",
+                "status": "DONE",
+                "content": f'{{"conversationId": "{child_id}"}}',
+            },
+            {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": f"Delegated to `{child_id}`, yielding control.",
+                "tool_calls": [],
+            },
+        ]
+        _create_fake_session(temp_dir, parent_id, parent_steps, mtime_offset_seconds=600.0)
+
+        child_steps = [
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": "Run Playwright tasks",
+            },
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "Navigating to Google Ads dashboard...",
+                "tool_calls": [{"name": "click", "args": {}}],
+            },
+        ]
+        _create_fake_session(temp_dir, child_id, child_steps, mtime_offset_seconds=120.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            stall_grace_seconds=30,
+            boost_quiet_seconds=900,
+            conversations_dir=str(temp_dir / "conversations"),
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        parent_stalled = [s for s in stalled if s.conversation_id == parent_id]
+        assert len(parent_stalled) == 0, "Parent was prematurely flagged as stalled while child was still working!"
+
+
 
 
 
