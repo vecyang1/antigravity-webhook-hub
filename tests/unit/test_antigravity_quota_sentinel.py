@@ -670,3 +670,199 @@ def test_get_quota_overview_account_sorting(fake_accounts_dir, db):
         assert accounts[0]["email"] == "viinam33@gmail.com"
 
 
+def test_prune_stale_quota_snapshots_db(db):
+    """Direct verification of db.prune_stale_quota_snapshots: removes stale rows, keeps active, handles empty/case-insensitivity."""
+    # Seed 3 accounts
+    db.upsert_quota_snapshot("alpha@test.com", "gemini-5h", "Gemini Models", "5h", 1.0)
+    db.upsert_quota_snapshot("alpha@test.com", "gemini-weekly", "Gemini Models", "weekly", 0.5)
+    db.upsert_quota_snapshot("beta@test.com", "3p-5h", "Claude and GPT models", "5h", 0.8)
+    db.upsert_quota_snapshot("gamma@test.com", "gemini-5h", "Gemini Models", "5h", 1.0)
+
+    assert len(db.get_quota_snapshots()) == 4
+    assert db.get_quota_summary_stats()["total_accounts"] == 3
+
+    # 1. Prune with None -> no-op
+    assert db.prune_stale_quota_snapshots(None) == 0
+    assert len(db.get_quota_snapshots()) == 4
+
+    # 2. Prune removing beta@test.com with case variation
+    pruned = db.prune_stale_quota_snapshots({"ALPHA@TEST.COM", "gamma@test.com"})
+    assert pruned == 1
+    remaining = db.get_quota_snapshots()
+    assert len(remaining) == 3
+    remaining_emails = {r["account_email"] for r in remaining}
+    assert "beta@test.com" not in remaining_emails
+    assert "alpha@test.com" in remaining_emails
+    assert "gamma@test.com" in remaining_emails
+
+    # 3. Prune removing gamma
+    pruned2 = db.prune_stale_quota_snapshots({"alpha@test.com"})
+    assert pruned2 == 1
+    assert len(db.get_quota_snapshots()) == 2
+
+    # 4. Prune with empty set -> deletes all
+    pruned3 = db.prune_stale_quota_snapshots(set())
+    assert pruned3 == 2
+    assert len(db.get_quota_snapshots()) == 0
+
+
+@pytest.mark.asyncio
+async def test_dynamic_account_addition(fake_accounts_dir, db):
+    """
+    Test dynamic ingestion on account addition:
+    When a new account JSON is placed in ~/.antigravity_tools/accounts/*.json,
+    the sentinel sweep automatically discovers it, syncs snapshots to SQLite SSOT,
+    and includes it in warmup candidates without server restart.
+    """
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+    cfg.antigravity_quota.auto_warmup_5h = True
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+
+        # Baseline: initial sweep with 3 accounts
+        with patch.object(sentinel, "execute_warmup", new_callable=AsyncMock) as mock_warmup:
+            mock_warmup.return_value = {"status": "success", "account_email": "test", "bucket_id": "b1"}
+            init_res = await sentinel.sweep_and_warmup(reason="initial_test", force=True, live=False)
+            assert init_res["accounts_scanned"] == 3
+            assert db.get_quota_summary_stats()["total_accounts"] == 3
+
+        # Dynamically add a 4th account JSON on disk
+        acc4_path = fake_accounts_dir / "accounts" / "acc-new-004.json"
+        acc4_data = {
+            "id": "acc-new-004",
+            "email": "brand_new_user@gmail.com",
+            "name": "Brand New",
+            "disabled": False,
+            "token": {
+                "access_token": "token_brand_new",
+                "project_id": "aicode-consumers",
+                "expiry_timestamp": time.time() + 7200,
+            },
+            "quota": {
+                "subscription_tier": "Google AI Pro",
+                "last_updated": int(time.time()),
+                "quota_groups": [
+                    {
+                        "name": "group_gemini",
+                        "buckets": [
+                            {
+                                "bucket_id": "gemini-5h",
+                                "window": "5h",
+                                "remaining_fraction": 1.0,
+                                "reset_time": "2026-09-14T00:00:00Z",
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+        with open(acc4_path, "w", encoding="utf-8") as f:
+            json.dump(acc4_data, f)
+
+        # Next periodic sweep fires: immediately discovers the new account
+        with patch.object(sentinel, "execute_warmup", new_callable=AsyncMock) as mock_warmup:
+            mock_warmup.return_value = {
+                "status": "success",
+                "account_email": "brand_new_user@gmail.com",
+                "bucket_id": "gemini-5h",
+            }
+            res = await sentinel.sweep_and_warmup(reason="periodic_sweep_after_add", force=True, live=False)
+
+            # Assert dynamic discovery and SSOT persistence
+            assert res["accounts_scanned"] == 4
+            assert res["stale_snapshots_pruned"] == 0
+            assert db.get_quota_summary_stats()["total_accounts"] == 4
+
+            # Verify the new account is present in DB snapshots
+            new_snaps = db.get_quota_snapshots("brand_new_user@gmail.com")
+            assert len(new_snaps) == 1
+            assert new_snaps[0]["bucket_id"] == "gemini-5h"
+            assert new_snaps[0]["remaining_fraction"] == 1.0
+
+            # Verify the new account is reflected in overview
+            overview = sentinel.get_quota_overview()
+            assert overview["accounts_count"] == 4
+            found_emails = [a["email"] for a in overview["accounts"]]
+            assert "brand_new_user@gmail.com" in found_emails
+
+            # Verify it was dispatched for warmup
+            warmed_emails = [call.args[0]["account_email"] for call in mock_warmup.call_args_list]
+            assert "brand_new_user@gmail.com" in warmed_emails
+
+
+@pytest.mark.asyncio
+async def test_dynamic_account_removal_and_pruning(fake_accounts_dir, db):
+    """
+    Test dynamic pruning on account removal (Ghost Account Prevention):
+    When an account JSON is deleted or unlinked from ~/.antigravity_tools/accounts/*.json,
+    the periodic sweep detects it is no longer on disk, and proactively prunes its stale
+    snapshot records from SQLite SSOT, preventing ghost accounts in Web dashboard and CLI.
+    """
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+
+        # Baseline: sweep with 3 accounts
+        with patch.object(sentinel, "execute_warmup", new_callable=AsyncMock):
+            res_init = await sentinel.sweep_and_warmup(reason="setup", live=False)
+            assert res_init["accounts_scanned"] == 3
+            assert db.get_quota_summary_stats()["total_accounts"] == 3
+            assert len(db.get_quota_snapshots("standby@gmail.com")) == 1
+
+        # User deletes acc2 (standby@gmail.com) from disk
+        acc2_path = fake_accounts_dir / "accounts" / "acc-standby-002.json"
+        assert acc2_path.is_file()
+        acc2_path.unlink()
+        assert not acc2_path.exists()
+
+        # Next periodic sweep runs: detects account is gone and prunes SQLite SSOT
+        with patch.object(sentinel, "execute_warmup", new_callable=AsyncMock):
+            res_sweep = await sentinel.sweep_and_warmup(reason="periodic_sweep_after_remove", live=False)
+
+            assert res_sweep["accounts_scanned"] == 2
+            assert res_sweep["stale_snapshots_pruned"] == 1
+            assert db.get_quota_summary_stats()["total_accounts"] == 2
+
+            # Deleted account snapshots are completely purged
+            stale_snaps = db.get_quota_snapshots("standby@gmail.com")
+            assert len(stale_snaps) == 0
+
+            # Overview contains NO ghost accounts
+            overview = sentinel.get_quota_overview()
+            assert overview["accounts_count"] == 2
+            overview_emails = [a["email"] for a in overview["accounts"]]
+            assert "standby@gmail.com" not in overview_emails
+            assert "viinam33@gmail.com" in overview_emails
+
+            # No phantom warmup can target the deleted account
+            cands = sentinel.evaluate_warmup_candidates(force=True)
+            cand_emails = [c["account_email"] for c in cands]
+            assert "standby@gmail.com" not in cand_emails
+
+
+def test_prune_stale_accounts_sentinel_helper(fake_accounts_dir, db):
+    """Test sentinel.prune_stale_accounts method directly."""
+    cfg = AppConfig()
+    cfg.antigravity_quota.accounts_dir = str(fake_accounts_dir / "accounts")
+
+    with patch("pathlib.Path.home", return_value=fake_accounts_dir):
+        sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+        sentinel.sync_quotas_to_db()
+
+        # Inject a ghost snapshot not on disk
+        db.upsert_quota_snapshot("ghost@defunct.com", "gemini-5h", "Gemini Models", "5h", 1.0)
+        assert len(db.get_quota_snapshots("ghost@defunct.com")) == 1
+        assert db.get_quota_summary_stats()["total_accounts"] == 4
+
+        # Run prune_stale_accounts helper
+        pruned = sentinel.prune_stale_accounts()
+        assert pruned == 1
+        assert len(db.get_quota_snapshots("ghost@defunct.com")) == 0
+        assert db.get_quota_summary_stats()["total_accounts"] == 3
+
+
+

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.4] - 2026-09-14
+
+### Added & Hardened
+- **Dynamic Multi-Account Lifecycle & Stale Account Pruning (Ghost Account Prevention)**:
+  - **Dynamic Ingestion on Account Addition**:
+    - `scan_accounts()` dynamically parses all account JSON files from `~/.antigravity_tools/accounts/*.json` fresh on every periodic sweep (120s interval) without caching file lists.
+    - Newly added accounts are immediately scanned, their live quota snapshots persisted into SQLite SSOT (`antigravity_quota_snapshots`), and eligible 100% full buckets included in autonomous warmup candidate evaluation without requiring a server restart.
+  - **Dynamic Pruning on Account Removal**:
+    - Implemented `prune_stale_quota_snapshots(current_emails: Optional[Collection[str]]) -> int` in `hub/db.py` (`DatabaseManager`).
+    - Implemented `prune_stale_accounts(current_emails: Optional[set[str]]) -> int` and integrated automated stale account pruning into `sync_quotas_to_db(prune_stale=True)` in `hub/antigravity/quota_sentinel.py`.
+    - When an account JSON is deleted or unlinked from `~/.antigravity_tools/accounts/`, the sentinel detects the removal, purges its stale snapshot rows from SQLite SSOT, and prevents ghost account rows in the Web dashboard, CLI matrix, and Uptime Kuma health probe.
+  - **Cadence Contract & Sidecar Prompt Synchronization**:
+    - Synchronized Cadence Card `CAD-20260911-webhook-hub-sentinel` in 2nd Brain and Antigravity sidecar `webhook-hub-sentinel` in `~/.gemini/config/sidecars/` to reflect dynamic multi-account and quota pool monitoring without static hardcoded counts.
+  - **TDD Test Suite Expansion**:
+    - Added 4 new unit tests in `tests/unit/test_antigravity_quota_sentinel.py` covering direct database pruning, dynamic account addition, dynamic account removal/pruning, and sentinel helper verification (22/22 pass; 313/313 full suite pass).
+
 ## [1.16.3] - 2026-09-14
 
 ### Changed

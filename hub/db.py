@@ -2035,6 +2035,67 @@ class DatabaseManager:
             finally:
                 cur.close()
 
+    def prune_stale_quota_snapshots(
+        self,
+        current_emails: Optional[Collection[str]] = None,
+    ) -> int:
+        """
+        Remove quota snapshots for accounts that no longer exist on disk.
+        Prevents ghost accounts from lingering in the Web dashboard, CLI, and health checks.
+        Returns the number of pruned rows.
+        """
+        if current_emails is None:
+            return 0
+
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                normalized_emails = {
+                    e.strip().lower()
+                    for e in current_emails
+                    if e and isinstance(e, str) and e.strip()
+                }
+
+                if not normalized_emails:
+                    cur.execute("SELECT COUNT(*) FROM antigravity_quota_snapshots")
+                    count = cur.fetchone()[0]
+                    if count > 0:
+                        cur.execute("DELETE FROM antigravity_quota_snapshots")
+                        self._commit_and_shrink()
+                        logger.info("Pruned all %d quota snapshots (0 current accounts on disk)", count)
+                    return count
+
+                cur.execute("SELECT DISTINCT account_email FROM antigravity_quota_snapshots")
+                db_emails = [row[0] for row in cur.fetchall()]
+
+                stale_emails = [
+                    email
+                    for email in db_emails
+                    if not email or email.strip().lower() not in normalized_emails
+                ]
+
+                if not stale_emails:
+                    return 0
+
+                placeholders = ",".join("?" for _ in stale_emails)
+                cur.execute(
+                    f"DELETE FROM antigravity_quota_snapshots WHERE account_email IN ({placeholders})",
+                    stale_emails,
+                )
+                pruned = cur.rowcount
+                self._commit_and_shrink()
+                logger.info(
+                    "Pruned %d stale quota snapshots for deleted accounts: %s",
+                    pruned,
+                    stale_emails,
+                )
+                return pruned
+            except Exception as e:
+                logger.error("Failed to prune stale quota snapshots: %s", e)
+                raise
+            finally:
+                cur.close()
+
     def record_warmup_log(
         self,
         account_email: str,

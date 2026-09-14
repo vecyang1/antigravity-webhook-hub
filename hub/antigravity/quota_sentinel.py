@@ -104,6 +104,7 @@ class AntigravityQuotaSentinel:
         self.broker = broker
         self._lock = asyncio.Lock()
         self._last_sweep_time: float = 0.0
+        self._last_pruned_count: int = 0
 
     @property
     def quota_cfg(self) -> Any:
@@ -228,7 +229,7 @@ class AntigravityQuotaSentinel:
         active_id = self._resolve_active_account_id()
         profiles: list[AccountQuotaProfile] = []
 
-        for json_path in accounts_dir.glob("*.json"):
+        for json_path in sorted(accounts_dir.glob("*.json")):
             try:
                 with open(json_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -342,13 +343,40 @@ class AntigravityQuotaSentinel:
         profiles.sort(key=lambda p: (not p.is_active, p.email))
         return profiles
 
-    def sync_quotas_to_db(self, profiles: Optional[list[AccountQuotaProfile]] = None) -> int:
+    def prune_stale_accounts(self, current_emails: Optional[set[str]] = None) -> int:
+        """
+        Remove quota snapshots for accounts that no longer exist on disk.
+        If current_emails is None, scans accounts directory to find current emails on disk.
+        Returns number of deleted snapshot rows.
+        """
+        if not self.db:
+            return 0
+        if current_emails is None:
+            accounts_dir = self._resolve_accounts_dir()
+            if not accounts_dir.is_dir():
+                return 0
+            profiles = self.scan_accounts(live=False)
+            current_emails = {p.email for p in profiles if p.email}
+        pruned = self.db.prune_stale_quota_snapshots(current_emails)
+        self._last_pruned_count = pruned
+        return pruned
+
+    def sync_quotas_to_db(
+        self,
+        profiles: Optional[list[AccountQuotaProfile]] = None,
+        prune_stale: bool = True,
+    ) -> int:
         """
         Persist scanned account quota snapshots into SQLite SSOT.
+        When prune_stale=True (default), also removes stale snapshot records
+        for accounts that are no longer present on disk, preventing ghost accounts.
         Returns number of bucket snapshots upserted.
         """
         if not self.db:
             return 0
+
+        accounts_dir = self._resolve_accounts_dir()
+        dir_exists = accounts_dir.is_dir()
 
         if profiles is None:
             profiles = self.scan_accounts()
@@ -373,6 +401,20 @@ class AntigravityQuotaSentinel:
                     upserted += 1
                 except Exception as e:
                     logger.error("Failed to sync quota snapshot for %s/%s: %s", p.email, b.bucket_id, e)
+
+        # Dynamic Pruning on Account Removal (Ghost Account Prevention):
+        # Prune if prune_stale is True AND (accounts directory exists on disk or profiles were explicitly passed)
+        if prune_stale and (dir_exists or profiles):
+            current_emails = {p.email for p in profiles if p.email}
+            try:
+                pruned = self.db.prune_stale_quota_snapshots(current_emails)
+                self._last_pruned_count = pruned
+                if pruned > 0:
+                    logger.info("Dynamic pruning: removed %d stale quota snapshots from SQLite SSOT", pruned)
+            except Exception as prune_err:
+                logger.error("Failed auto-pruning stale quota snapshots: %s", prune_err)
+        else:
+            self._last_pruned_count = 0
 
         return upserted
 
@@ -698,6 +740,7 @@ class AntigravityQuotaSentinel:
                 "dry_run": dry_run,
                 "accounts_scanned": len(profiles),
                 "snapshots_upserted": upserted,
+                "stale_snapshots_pruned": getattr(self, "_last_pruned_count", 0),
                 "candidates_found": len(candidates),
                 "warmup_candidates": candidates if dry_run else [],
                 "warmups_executed": len(warmup_results),
@@ -713,6 +756,7 @@ class AntigravityQuotaSentinel:
                         "type": "antigravity_quota_update",
                         "reason": reason,
                         "accounts_scanned": len(profiles),
+                        "stale_snapshots_pruned": getattr(self, "_last_pruned_count", 0),
                         "warmups_executed": len(warmup_results),
                         "timestamp": self._last_sweep_time,
                     })
