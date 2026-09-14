@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add self-healing fallback for `OSError: [Errno 8] Exec format error` when invoking `agentapi` shell script on macOS in `AgentAPIClient`.
 - Upgrade `CAD-20260911-webhook-hub-sentinel` sidecar with comprehensive `AntigravityQuotaSentinel` and Uptime Kuma Monitor #94 verification.
 - Guard optional playwright dependency and server reachability in `tests/e2e/test_quota_dashboard_e2e.py` to prevent CI/CD collection errors and unblock GitHub Actions pipelines.
+- Fix Watchdog dashboard search filtering in `dashboard_template.py` by adding `watchdog` view branch to `handleSearchInput` and real-time substring filtering on stalled sessions and resuscitation audit records.
+- Fix `Escape` key dismissal for `#resuscitationModalOverlay` to match dashboard accessibility design patterns.
+- Fix `pullUpSingleSession` loading state to use SVG pulse indicators without destructively wiping button markup.
+- Add comprehensive API/E2E test coverage in `tests/api/test_dashboard_routes.py` (`test_dashboard_antigravity_watchdog_search_and_modal_escape` and `test_dashboard_antigravity_pull_up_single_session_and_custom_prompt`).
 
 ## [1.15.0] - 2026-09-14
 

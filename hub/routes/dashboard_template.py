@@ -3205,6 +3205,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           renderSentinels();
         }} else if (state.currentMainView === 'pulses') {{
           loadPulses();
+        }} else if (state.currentMainView === 'watchdog') {{
+          renderWatchdogStatus();
         }} else {{
           refreshTasksAuthoritative();
         }}
@@ -3910,15 +3912,24 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
       const stalledTbody = document.getElementById('stalledTableBody');
       if (stalledTbody) {{
-        const list = data.stalled_sessions || [];
+        let list = data.stalled_sessions || [];
+        const q = (state.searchQuery || '').trim().toLowerCase();
+        if (q) {{
+          list = list.filter(s =>
+            (s.conversation_id && s.conversation_id.toLowerCase().includes(q)) ||
+            (s.sidecar_slug && s.sidecar_slug.toLowerCase().includes(q)) ||
+            (s.last_error && s.last_error.toLowerCase().includes(q)) ||
+            (s.skip_reason && s.skip_reason.toLowerCase().includes(q))
+          );
+        }}
         if (list.length === 0) {{
           stalledTbody.innerHTML = `
             <tr>
               <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 36px 20px;">
                 <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--status-success);"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/></svg>
-                  <span style="font-weight: 500; color: var(--text-main);">All Sessions Healthy</span>
-                  <span style="font-size: 12px; color: var(--text-subtle);">No stalled turns, hung network sockets, or interrupted subagents detected.</span>
+                  <span style="font-weight: 500; color: var(--text-main);">${{q ? 'No matching stalled sessions found' : 'All Sessions Healthy'}}</span>
+                  <span style="font-size: 12px; color: var(--text-subtle);">${{q ? 'Try clearing or changing your search query.' : 'No stalled turns, hung network sockets, or interrupted subagents detected.'}}</span>
                 </div>
               </td>
             </tr>
@@ -3966,7 +3977,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         const filter = state.resuscitationFilter;
 
         const allCountEl = document.getElementById('pillResuscitationAllCount');
-        if (allCountEl) allCountEl.innerText = stats.total || history.length;
+        if (allCountEl) allCountEl.innerText = stats.total || (data.recent_resuscitations ? data.recent_resuscitations.length : 0);
         const succCountEl = document.getElementById('pillResuscitationSuccessCount');
         if (succCountEl) succCountEl.innerText = stats.resuscitated || 0;
         const failCountEl = document.getElementById('pillResuscitationFailedCount');
@@ -3978,11 +3989,23 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           history = history.filter(r => r.status === 'failed' || r.status === 'exhausted');
         }}
 
+        const q = (state.searchQuery || '').trim().toLowerCase();
+        if (q) {{
+          history = history.filter(r =>
+            (r.conversation_id && r.conversation_id.toLowerCase().includes(q)) ||
+            (r.resuscitation_id && r.resuscitation_id.toLowerCase().includes(q)) ||
+            (r.sidecar_slug && r.sidecar_slug.toLowerCase().includes(q)) ||
+            (r.last_error && r.last_error.toLowerCase().includes(q)) ||
+            (r.status && r.status.toLowerCase().includes(q)) ||
+            (r.resuscitation_prompt && r.resuscitation_prompt.toLowerCase().includes(q))
+          );
+        }}
+
         if (history.length === 0) {{
           historyTbody.innerHTML = `
             <tr>
               <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 32px;">
-                No resuscitation records found for current filter.
+                ${{q ? 'No resuscitation records matching "' + escapeHtml(q) + '"' : 'No resuscitation records found for current filter.'}}
               </td>
             </tr>
           `;
@@ -4073,7 +4096,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       if (btnEl) {{
         btnEl.disabled = true;
         btnEl.dataset.originalHtml = btnEl.innerHTML;
-        btnEl.innerText = 'Pulling up...';
+        btnEl.innerHTML = `<span class="pulse-indicator" style="background-color: currentColor;"></span><span>Pulling up...</span>`;
       }}
       showToast(`Initiating pull-up for session ${{convoId.substring(0, 10)}}...`, 'info');
 
@@ -4094,7 +4117,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       }} finally {{
         if (btnEl) {{
           btnEl.disabled = false;
-          btnEl.innerHTML = btnEl.dataset.originalHtml || 'Pull-Up Now';
+          btnEl.innerHTML = btnEl.dataset.originalHtml || '<span>Pull-Up Now</span>';
         }}
         // Unidirectional data flow: re-read authoritative state from SSOT API
         await loadWatchdogStatus();
@@ -5737,6 +5760,9 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         }}
         if (document.getElementById('signalModalOverlay') && document.getElementById('signalModalOverlay').classList.contains('open')) {{
           closeSignalModal();
+        }}
+        if (document.getElementById('resuscitationModalOverlay') && document.getElementById('resuscitationModalOverlay').classList.contains('open')) {{
+          closeResuscitationModal();
         }}
       }}
       if ((e.metaKey || e.ctrlKey) && e.key === 'f') {{

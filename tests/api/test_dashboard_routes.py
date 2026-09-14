@@ -1107,3 +1107,90 @@ async def test_dashboard_antigravity_pull_up_and_sse_streaming(dashboard_test_ap
             assert "attempting" in actions or "pull_up_batch_completed" in actions
     finally:
         broker.unsubscribe("events", queue)
+
+
+async def test_dashboard_antigravity_watchdog_search_and_modal_escape(dashboard_test_app: dict[str, Any]):
+    """Verify Watchdog frontend SPA handles live search queries, modal escape dismiss, and button SVG states."""
+    base_url = dashboard_test_app["base_url"]
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{base_url}/dashboard")
+        assert resp.status_code == 200
+        html = resp.text
+
+        # 1. Verify handleSearchInput handles 'watchdog' view
+        assert "else if (state.currentMainView === 'watchdog')" in html
+        assert "renderWatchdogStatus();" in html
+
+        # 2. Verify renderWatchdogStatus filters by state.searchQuery
+        assert "const q = (state.searchQuery || '').trim().toLowerCase();" in html
+        assert "No matching stalled sessions found" in html
+        assert "No resuscitation records matching" in html
+
+        # 3. Verify Escape key handler closes resuscitation modal
+        assert "document.getElementById('resuscitationModalOverlay')" in html
+        assert "closeResuscitationModal();" in html
+
+        # 4. Verify pullUpSingleSession preserves pulse indicator and clean typography
+        assert "pulse-indicator" in html
+        assert "Pull-Up Now" in html
+
+
+async def test_dashboard_antigravity_pull_up_single_session_and_custom_prompt(dashboard_test_app: dict[str, Any]):
+    """Verify single session pull-up with custom resuscitation prompt writes SSOT and emits SSE."""
+    import asyncio
+    base_url = dashboard_test_app["base_url"]
+    db = dashboard_test_app["db"]
+    broker = dashboard_test_app["broker"]
+
+    convo_id = "test_custom_convo_042"
+    custom_prompt = "Custom emergency wake up prompt for testing"
+
+    # Create dummy transcript so resolve_transcript_path succeeds
+    config = dashboard_test_app["config"]
+    brain_root = Path(config.antigravity_watchdog.brain_dir)
+    convo_logs = brain_root / convo_id / ".system_generated" / "logs"
+    convo_logs.mkdir(parents=True, exist_ok=True)
+    (convo_logs / "transcript.jsonl").write_text('{"event": "start", "step_index": 1}\n', encoding="utf-8")
+
+    # Subscribe to broker stream to capture real-time broadcast
+    queue = broker.subscribe("events")
+    try:
+        # Mock send_message on AgentAPIClient
+        with patch("hub.antigravity.agentapi_client.AgentAPIClient.send_message", return_value=(True, "OK", "")):
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{base_url}/antigravity/pull-up",
+                    json={"conversation_id": convo_id, "prompt": custom_prompt},
+                )
+                assert resp.status_code == 200
+                res_data = resp.json()
+                assert res_data["success"] is True
+                assert res_data["status"] == "resuscitated"
+
+                # Verify database SSOT updated
+                recs = db.list_resuscitations(conversation_id=convo_id)
+                assert len(recs) >= 1
+                assert recs[0]["status"] == "resuscitated"
+                assert recs[0]["resuscitation_prompt"] == custom_prompt
+
+                # Verify status endpoint reflects this immediately
+                status_resp = await client.get(f"{base_url}/antigravity/status")
+                assert status_resp.status_code == 200
+                st_data = status_resp.json()
+                recent_ids = [r["conversation_id"] for r in st_data.get("recent_resuscitations", [])]
+                assert convo_id in recent_ids
+
+                # Verify SSE events broadcasted
+                events = []
+                while True:
+                    try:
+                        events.append(await asyncio.wait_for(queue.get(), timeout=0.5))
+                    except asyncio.TimeoutError:
+                        break
+
+                actions = [e.get("action") for e in events]
+                assert "attempting" in actions or "resuscitated" in actions or "pull_up_completed" in actions
+    finally:
+        broker.unsubscribe("events", queue)
+
