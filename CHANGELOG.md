@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Harden boost/goal hang recovery and MCP error detection (`a51fa0a`)
 
 ### Fixes
+- Increase default watchdog lookback_minutes to 720 (12 hours) (`b838527`)
+- Add parent waiting on completed subagent resuscitation and 24h boost/goal lookback (`8f90aca`)
+- Restore subagent markers and anchor caller parent in termination test (`2f7f8de`)
 - Harden schedule remount ls_pid lifecycle and prevent infinite remount loops (`34f58f4`)
 - Add circuit breaker for `quota_restored_pull_up` in `AntigravityWatchdog` to cap at `max_retries_per_session` and prevent runaway pull-up loops.
 - Add self-healing fallback for `OSError: [Errno 8] Exec format error` when invoking `agentapi` shell script on macOS in `AgentAPIClient`.
