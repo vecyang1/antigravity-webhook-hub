@@ -1524,6 +1524,129 @@ class TestAntigravityWatchdog:
         assert stalled[0].can_resuscitate is False
         assert stalled[0].skip_reason == "orphaned_subagent_cannot_determine_parent"
 
+    def test_parent_waiting_on_completed_subagent_resuscitated_with_delegation_report(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that when a parent conversation delegates to a child subagent, and the child subagent
+        completes, but the parent never received the notification (e.g. dropped IPC),
+        the watchdog detects parent_waiting_subagent_completed_hang and resuscitates the parent
+        with PARENT_DELEGATION_COMPLETED_PROMPT containing the child's summary.
+        """
+        parent_id = "parent-waiting-subagent-001"
+        child_id = "child-completed-worker-002"
+
+        # Parent conversation: invoked child subagent and is waiting for completion report
+        parent_steps = [
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": "Run complex multi-agent coding task ; /goal",
+            },
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "GENERIC",
+                "status": "DONE",
+                "content": f'Created the following subagents:\n{{\n  "conversationId": "{child_id}"\n}}',
+            },
+            {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": f"The task has been delegated to the **DeepCoder** subagent (`{child_id}`). I am waiting for its completion report.",
+                "tool_calls": [],
+            },
+        ]
+        _create_fake_session(temp_dir, parent_id, parent_steps, mtime_offset_seconds=60.0)
+
+        # Child conversation: finished and reported completion
+        child_steps = [
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": f"Subagent task instructions for {child_id}",
+            },
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "DeepCoder pipeline completed successfully. All 37/37 tests passed. <!-- GOAL_COMPLETE -->",
+                "tool_calls": [],
+            },
+        ]
+        _create_fake_session(temp_dir, child_id, child_steps, mtime_offset_seconds=50.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            stall_grace_seconds=10,
+            conversations_dir=str(temp_dir / "conversations"),
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        # 1. Scan detects parent as stalled waiting on completed subagent
+        stalled = watchdog.scan_stalled_conversations()
+        parent_stalled = [s for s in stalled if s.conversation_id == parent_id]
+        assert len(parent_stalled) == 1
+        assert parent_stalled[0].completed_child_id == child_id
+        assert "parent_waiting_subagent_completed_hang" in parent_stalled[0].last_error
+        assert parent_stalled[0].can_resuscitate is True
+
+        # 2. Resuscitate parent: dispatches PARENT_DELEGATION_COMPLETED_PROMPT to parent_id
+        res = asyncio.run(watchdog.resuscitate_session(parent_stalled[0]))
+        assert res["status"] == "resuscitated"
+        mock_agentapi.send_message.assert_called_once()
+        call_kwargs = mock_agentapi.send_message.call_args[1]
+        assert call_kwargs["conversation_id"] == parent_id
+        assert "【系统自动拉起：子代理完成通知】" in call_kwargs["content"]
+        assert child_id in call_kwargs["content"]
+        assert "All 37/37 tests passed" in call_kwargs["content"]
+
+    def test_extended_lookback_allows_boost_goal_sessions_within_24h(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that sessions with /boost or /goal are not dropped by the 60m lookback window
+        if their transcript was updated within 24h (e.g. overnight 8-hour sessions).
+        """
+        convo_id = "overnight-goal-session-001"
+        steps = [
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": "Run overnight long batch ; /goal",
+            },
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "",
+                "tool_calls": [],
+            },
+        ]
+        # Set mtime to 3 hours ago (10800s > 3600s lookback_seconds)
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=10800.0)
+
+        # Default lookback is 60 minutes
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            lookback_minutes=60,
+            stall_grace_seconds=10,
+            conversations_dir=str(temp_dir / "conversations"),
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        assert stalled[0].conversation_id == convo_id
+        assert stalled[0].is_boost_goal is True
+
+
 
 
 

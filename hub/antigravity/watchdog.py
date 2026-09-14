@@ -115,6 +115,16 @@ TOOL_RESULT_RESUSCITATION_PROMPT = (
     "请越过偶发中断，根据上一步工具返回的结果以及原定任务计划，直接继续推进下一步（请全中文汇报进展）。"
 )
 
+PARENT_DELEGATION_COMPLETED_PROMPT = (
+    "【系统自动拉起：子代理完成通知】\n"
+    "检测到本会话此前委派的子 Agent（ID: {subagent_id}）已完成执行，但其完成通知因系统重启或 IPC 偶发丢包未送达。\n"
+    "子 Agent 最新执行汇报如下：\n"
+    "----------------------------------------\n"
+    "{subagent_summary}\n"
+    "----------------------------------------\n"
+    "请根据子 Agent 的上述成果继续推进下一步、更新 walkthrough.md 成果记录，并在任务完成后以 <!-- GOAL_COMPLETE --> 闭环活跃目标（请全中文汇报进展）。"
+)
+
 
 @dataclass(slots=True)
 class StalledSessionInfo:
@@ -139,6 +149,8 @@ class StalledSessionInfo:
     active_cron_expression: Optional[str] = None
     is_boost_goal: bool = False
     is_stop_hook_hang: bool = False
+    completed_child_id: Optional[str] = None
+    completed_child_summary: Optional[str] = None
 
 
 def check_session_has_boost_or_goal(transcript_path: Path, parsed_steps: list[dict[str, Any]]) -> bool:
@@ -701,9 +713,14 @@ class AntigravityWatchdog:
 
                 try:
                     trans_stat = transcript_path.stat()
-                    # Do not skip sessions with monitored active schedules
-                    if convo_id not in active_sched_map and (now - trans_stat.st_mtime > lookback_seconds):
-                        continue
+                    # Do not skip sessions with monitored active schedules, or unclosed /boost /goal sessions within 24h
+                    if convo_id not in active_sched_map:
+                        age = now - trans_stat.st_mtime
+                        if age > max(lookback_seconds, 86400):
+                            continue
+                        elif age > lookback_seconds:
+                            if not check_session_has_boost_or_goal(transcript_path, []):
+                                continue
                     file_mtime = trans_stat.st_mtime
                 except Exception:
                     continue
@@ -738,6 +755,8 @@ class AntigravityWatchdog:
                 parent_convo_id = None
                 is_subagent = False
                 _parent_resolved = False
+                completed_child_id: Optional[str] = None
+                completed_child_summary: str = ""
 
                 def _resolve_subagent_and_parent():
                     nonlocal parent_convo_id, is_subagent, _parent_resolved
@@ -1070,9 +1089,45 @@ class AntigravityWatchdog:
                                 )
                             )
                     if not sched_info:
-                        # If session was blocked by Stop Hook and ended without completing the goal,
-                        # do not treat it as a clean completion; fall through to stall detection.
-                        if any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps) and not any("<!-- goal_complete -->" in str(s.get("content") or "").lower() for s in parsed_steps):
+                        # Check 1: Is this session waiting on a child subagent that already completed?
+                        child_ids: list[str] = []
+                        for s in parsed_steps:
+                            s_content = str(s.get("content") or "")
+                            for m in re.finditer(r'["\']conversationId["\']\s*:\s*["\']([0-9a-zA-Z-]{20,45})["\']', s_content):
+                                cid = m.group(1)
+                                if cid != convo_id and cid not in child_ids:
+                                    child_ids.append(cid)
+                            for m in re.finditer(r'subagent\s*\(?[`\'"]?([0-9a-zA-Z-]{20,45})[`\'"]?\)?', s_content, re.IGNORECASE):
+                                cid = m.group(1)
+                                if cid != convo_id and cid not in child_ids:
+                                    child_ids.append(cid)
+
+                        for cid in child_ids:
+                            c_path = resolve_transcript_path(cid, self._brain_dir)
+                            if c_path and c_path.exists():
+                                c_lines = self._tail_transcript_lines(c_path, max_lines=5)
+                                for cl in reversed(c_lines):
+                                    try:
+                                        c_step = json.loads(cl.strip())
+                                        c_src = c_step.get("source", "")
+                                        c_tp = c_step.get("type", "")
+                                        c_st = c_step.get("status", "")
+                                        c_cnt = str(c_step.get("content") or "")
+                                        if (c_src == "MODEL" and c_tp == "PLANNER_RESPONSE" and c_st == "DONE") or "<!-- goal_complete -->" in c_cnt.lower():
+                                            completed_child_id = cid
+                                            completed_child_summary = c_cnt[:500]
+                                            break
+                                    except Exception:
+                                        continue
+                                if completed_child_id:
+                                    break
+
+                        has_stop_hook = any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps)
+                        has_goal_complete = any("<!-- goal_complete -->" in str(s.get("content") or "").lower() for s in parsed_steps)
+
+                        if completed_child_id and (now - file_mtime > self.config.stall_grace_seconds):
+                            pass
+                        elif has_stop_hook and not has_goal_complete:
                             pass
                         else:
                             continue
@@ -1105,11 +1160,13 @@ class AntigravityWatchdog:
                         is_mcp = True
                         break
 
-                # 1. Check if the conversation ended in an empty planner response hang or halted after Stop Hook
-                if len(parsed_steps) >= 2 and last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and (not last_content or is_stop_hook_halt) and not last_step.get("tool_calls"):
+                # 1. Check if the conversation ended in an empty planner response hang, halted after Stop Hook, or waiting on completed subagent
+                if len(parsed_steps) >= 2 and last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and (not last_content or is_stop_hook_halt or completed_child_id) and not last_step.get("tool_calls"):
                     if now - file_mtime > self.config.stall_grace_seconds:
                         is_stalled = True
-                        if has_stop_hook:
+                        if completed_child_id:
+                            matched_error = f"parent_waiting_subagent_completed_hang:{completed_child_id}"
+                        elif has_stop_hook:
                             matched_error = "stop_hook_mcp_hang" if is_mcp else "stop_hook_hang"
                         elif is_boost_goal:
                             matched_error = "boost_goal_mcp_hang" if is_mcp else "boost_goal_hang"
@@ -1194,6 +1251,8 @@ class AntigravityWatchdog:
                             is_mcp_error=is_mcp,
                             is_boost_goal=is_boost_goal,
                             is_stop_hook_hang=has_stop_hook,
+                            completed_child_id=completed_child_id,
+                            completed_child_summary=completed_child_summary,
                         )
                     )
                     continue
@@ -1215,6 +1274,8 @@ class AntigravityWatchdog:
                         is_mcp_error=is_mcp,
                         is_boost_goal=is_boost_goal,
                         is_stop_hook_hang=has_stop_hook,
+                        completed_child_id=completed_child_id,
+                        completed_child_summary=completed_child_summary,
                     )
                 )
 
@@ -1241,7 +1302,12 @@ class AntigravityWatchdog:
         target_convo_id = session_info.parent_conversation_id if is_delegated_boost else convo_id
 
         # Determine tailored prompt based on scenario
-        if is_delegated_boost:
+        if session_info.completed_child_id:
+            prompt = custom_prompt or PARENT_DELEGATION_COMPLETED_PROMPT.format(
+                subagent_id=session_info.completed_child_id,
+                subagent_summary=session_info.completed_child_summary or "（已圆满完成原定子任务）",
+            )
+        elif is_delegated_boost:
             # Active account info from QuotaSentinel
             active_account_email = "已恢复活跃账户"
             if self.quota_sentinel and hasattr(self.quota_sentinel, "is_active_account_healthy"):
