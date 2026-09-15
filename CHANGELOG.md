@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-09-16] - 2026-09-16
+
+### Fixed & Hardened
+- **Cloudflare Ingress Tunnel HTTP/2 Self-Healing & LaunchAgent (`tunnel/`)**:
+  - Diagnosed Cloudflare Argo Tunnel 530 / Error 1033 caused by UDP/QUIC packet drops and handshake timeouts in current network environment.
+  - Installed and launched persistent macOS LaunchAgent `com.vec.cloudflared-http2.plist` running `--protocol http2`, routing TCP-based HTTP/2 ingress stably to `http://127.0.0.1:9423`.
+  - Updated `tunnel/start_tunnel.sh` status checker to accurately detect both system LaunchDaemon and user HTTP/2 LaunchAgent.
+  - Verified edge reachability with `curl https://webhook.worldinspirelab.com/healthz` returning 200 OK.
+- **Sentinel Cadence Run & End-to-End Verification (`CAD-20260911-webhook-hub-sentinel`)**:
+  - Validated gateway health (PID 39068, RSS 44.88 MB <= 64 MB budget).
+  - Watchdog & Doctor confirmed AgentAPI CLI ready, Language Server gRPC (localhost:52147) connected, and suspended session handling fused properly.
+  - Quota Sentinel audited 8 tracked accounts (Active: `viinam33@gmail.com` with Gemini 86.8% / 3P 100.0%, 0 ghost accounts).
+  - Executed Sweeper dry-run (0 pending) and native `SlackReconciler` catch-up (all threads complete).
+  - 13/13 E2E test checks passed cleanly.
+  - SQLite snapshot backup created: `backups/webhook_hub_20260916.db` (19 MB).
+- **HTTP Dispatch Authorization**:
+  - Added Bearer authorization header to HTTP dispatch (`f3603c2`).
+
 ## [1.16.10] - 2026-09-16
 
 ### Fixed & Hardened

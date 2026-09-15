@@ -130,7 +130,11 @@ if [[ "${ACTION}" == "status" ]]; then
   if [[ -n "${RUNNING_PID}" ]]; then
     echo "  Process:       RUNNING (PID ${RUNNING_PID})"
     if [[ -f "/Library/LaunchDaemons/com.cloudflare.cloudflared.plist" ]]; then
-      echo "  Service:       macOS LaunchDaemon (/Library/LaunchDaemons/com.cloudflare.cloudflared.plist)"
+      echo "  Daemon:        macOS LaunchDaemon (/Library/LaunchDaemons/com.cloudflare.cloudflared.plist)"
+    fi
+    HTTP2_AGENT_PID=$(launchctl list 2>/dev/null | grep "com.vec.cloudflared-http2" | awk '{print $1}' || true)
+    if [[ -n "${HTTP2_AGENT_PID}" && "${HTTP2_AGENT_PID}" != "-" ]]; then
+      echo "  HTTP/2 Agent:  RUNNING (PID ${HTTP2_AGENT_PID}, Protocol: HTTP/2)"
     fi
   else
     echo "  Process:       STOPPED (No active cloudflared tunnel process)"
