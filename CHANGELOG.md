@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.7] - 2026-09-15
+
+### Fixed
+- **Uptime Kuma Maintenance Alert Triage Script Path Normalization**:
+  - In `hub/routes/uptime_kuma.py`, normalized the fallback `UPTIME_KUMA_TRIAGE_SCRIPT` default path to the absolute path `/Users/vecsatfoxmailcom/Documents/Cowork/Antigravity Cowork/26.06.06 2nd Brain/00 - System/scripts/audit_maintenance_alert_triage.py`.
+  - Prevents non-zero exit code 2 when Uptime Kuma triggers automated maintenance alert triage while Webhook Hub runs from directories other than the Cowork workspace root.
+
 ## [1.16.6] - 2026-09-15
 
 ### Fixed & Changed
