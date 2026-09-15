@@ -1909,20 +1909,44 @@ def _add_catchup_args(parser: argparse.ArgumentParser) -> None:
 
 def cmd_catchup(args: Any) -> int:
     """Reconcile and catch up unfulfilled offline tasks from Slack #input_agent."""
-    import subprocess
-    script_path = "/Users/vecsatfoxmailcom/Documents/Cowork/Antigravity Cowork/26.04.25 slack notion image demo/scripts/slack_agent_ops.py"
-    cmd = [sys.executable, script_path, "reconcile"]
-    if getattr(args, "dry_run", False):
-        cmd.append("--dry-run")
-    elif getattr(args, "execute", False):
-        cmd.append("--execute")
+    from hub.antigravity.reconciler import SlackReconciler
+    from hub.db import DatabaseManager
+
+    db_path = getattr(args, "db", "data/webhook_hub.db")
+    db = DatabaseManager(db_path=db_path)
+    reconciler = SlackReconciler(db=db)
+
+    channel = getattr(args, "channel", "C0C1B86AMCN")
+    limit = getattr(args, "limit", 50)
+    dry_run = getattr(args, "dry_run", False)
+    execute = getattr(args, "execute", False)
+    if not dry_run and not execute:
+        execute = True
+
+    print(f"🔄 Native Slack Reconciler & Offline Auto Catch-up (channel={channel}, limit={limit}, dry_run={dry_run})")
+    res = reconciler.run_catchup(channel=channel, limit=limit, dry_run=dry_run, execute=execute)
+
+    unfulfilled_cnt = res.get("unfulfilled_count", 0)
+    dispatched_cnt = len(res.get("dispatched", []))
+    skipped_cnt = len(res.get("skipped", []))
+
+    if unfulfilled_cnt == 0:
+        print("✅ No unfulfilled offline tasks found. All threads are reconciled and complete!")
+        return 0
+
+    print(f"📋 Found {unfulfilled_cnt} unfulfilled offline task thread(s):")
+    for d in res.get("dispatched", []):
+        print(f"  🚀 Dispatched: thread_ts={d.get('thread_ts')}, task_id={d.get('task_id')}")
+    for s in res.get("skipped", []):
+        reason = s.get("reason", "unknown")
+        print(f"  ⏸️  Skipped: thread_ts={s.get('thread_ts')}, reason={reason}")
+
+    if dry_run:
+        print(f"ℹ️  Dry run complete. {unfulfilled_cnt} task(s) inspected, 0 dispatched.")
     else:
-        cmd.append("--execute")
-    if getattr(args, "limit", None):
-        cmd.extend(["--limit", str(args.limit)])
-    if getattr(args, "channel", None):
-        cmd.extend(["--channel", str(args.channel)])
-    return subprocess.run(cmd).returncode
+        print(f"🎉 Reconcile complete. {dispatched_cnt} task(s) dispatched, {skipped_cnt} skipped/active.")
+
+    return 0
 
 
 def cmd_antigravity(args: Any) -> int:

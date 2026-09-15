@@ -71,44 +71,130 @@ class AntigravityTaskPayload:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AntigravityTaskPayload:
-        raw_text = str(data.get("text") or "").strip()
-        voice_tx = data.get("voice_transcript") or data.get("audio_transcript")
+        # Unwrap nested 'data' if present (e.g. from {"action": "antigravity.run", "data": {...}})
+        sub_data = data.get("data") if isinstance(data.get("data"), dict) else {}
+
+        raw_text = str(
+            data.get("text")
+            or sub_data.get("text")
+            or data.get("raw_text")
+            or sub_data.get("raw_text")
+            or data.get("prompt")
+            or sub_data.get("prompt")
+            or ""
+        ).strip()
+        voice_tx = (
+            data.get("voice_transcript")
+            or sub_data.get("voice_transcript")
+            or data.get("audio_transcript")
+            or sub_data.get("audio_transcript")
+        )
         if voice_tx:
             voice_tx = str(voice_tx).strip()
 
-        # Files normalization
-        raw_files = data.get("files") or data.get("audio_files") or []
+        # Files normalization (support files, audio_files, and image_urls)
+        raw_files = (
+            data.get("files")
+            or sub_data.get("files")
+            or data.get("audio_files")
+            or sub_data.get("audio_files")
+            or []
+        )
         files: list[dict[str, Any]] = []
         if isinstance(raw_files, list):
             for f in raw_files:
                 if isinstance(f, dict):
                     files.append(f)
 
-        ts = str(data.get("ts") or data.get("event_ts") or "")
-        thread_ts = data.get("thread_ts")
+        # Convert image_urls to normalized files structure if not already present
+        image_urls = data.get("image_urls") or sub_data.get("image_urls") or []
+        if isinstance(image_urls, list):
+            for url in image_urls:
+                if isinstance(url, str) and url.strip():
+                    clean_url = url.strip()
+                    if not any(f.get("url_private") == clean_url or f.get("url") == clean_url for f in files):
+                        file_name = clean_url.split("?")[0].split("/")[-1] or "image.png"
+                        files.append({"url_private": clean_url, "name": file_name})
+
+        channel = (
+            data.get("channel")
+            or sub_data.get("channel")
+            or data.get("channel_id")
+            or sub_data.get("channel_id")
+        )
+        if channel:
+            channel = str(channel).strip()
+
+        ts = str(
+            data.get("ts")
+            or sub_data.get("ts")
+            or data.get("event_ts")
+            or sub_data.get("event_ts")
+            or ""
+        ).strip()
+
+        thread_ts = data.get("thread_ts") or sub_data.get("thread_ts")
         if thread_ts:
             thread_ts = str(thread_ts).strip()
 
+        user = (
+            data.get("user")
+            or sub_data.get("user")
+            or data.get("user_id")
+            or sub_data.get("user_id")
+        )
+        if user:
+            user = str(user).strip()
+
+        source = data.get("source") or sub_data.get("source") or "slack"
+
         # Determine if this is a follow-up 追问
-        is_follow_up = bool(thread_ts and thread_ts != ts)
+        is_follow_up = bool(
+            data.get("is_follow_up")
+            or sub_data.get("is_follow_up")
+            or data.get("is_followup")
+            or sub_data.get("is_followup")
+            or (thread_ts and thread_ts != ts)
+        )
+
+        model_tier = str(
+            data.get("model_tier")
+            or sub_data.get("model_tier")
+            or data.get("model")
+            or sub_data.get("model")
+            or "pro"
+        ).lower()
+
+        title = data.get("title") or sub_data.get("title")
+        slash_commands = list(data.get("slash_commands") or sub_data.get("slash_commands") or [])
+        active_skills = list(data.get("active_skills") or sub_data.get("active_skills") or [])
+
+        downloaded_images = list(data.get("downloaded_images") or sub_data.get("downloaded_images") or [])
+
+        merged_metadata = dict(sub_data.get("metadata") or {})
+        merged_metadata.update(dict(data.get("metadata") or {}))
 
         return cls(
             text=raw_text,
             voice_transcript=voice_tx,
-            voice_transcribed=bool(data.get("voice_transcribed") or voice_tx),
+            voice_transcribed=bool(
+                data.get("voice_transcribed")
+                or sub_data.get("voice_transcribed")
+                or voice_tx
+            ),
             files=files,
-            channel=data.get("channel"),
+            channel=channel or None,
             ts=ts or None,
             thread_ts=thread_ts or None,
-            user=data.get("user"),
-            source=data.get("source") or "slack",
-            model_tier=str(data.get("model_tier") or data.get("model") or "pro").lower(),
-            title=data.get("title"),
-            slash_commands=list(data.get("slash_commands") or []),
-            active_skills=list(data.get("active_skills") or []),
+            user=user or None,
+            source=source,
+            model_tier=model_tier,
+            title=title,
+            slash_commands=slash_commands,
+            active_skills=active_skills,
             is_follow_up=is_follow_up,
-            downloaded_images=list(data.get("downloaded_images") or []),
-            metadata=dict(data.get("metadata") or {}),
+            downloaded_images=downloaded_images,
+            metadata=merged_metadata,
         )
 
 

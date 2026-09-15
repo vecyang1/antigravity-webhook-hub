@@ -68,7 +68,9 @@ async def execute_antigravity_task(
     # Extract or synthesize payload
     payload = AntigravityTaskPayload.from_dict(params_dict)
     if not payload.text and task_data.get("command"):
-        payload.text = str(task_data["command"])
+        cmd_candidate = str(task_data["command"]).strip()
+        if cmd_candidate and not cmd_candidate.startswith("agentapi"):
+            payload.text = cmd_candidate
 
     channel = payload.channel
     ts = payload.ts

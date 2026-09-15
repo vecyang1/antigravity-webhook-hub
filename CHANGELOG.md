@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.10] - 2026-09-16
+
+### Fixed & Hardened
+- **Native Slack Reconciler & Toolchain Convergence (`hub/antigravity/reconciler.py`)**:
+  - Eliminated external subprocess call in `cmd_catchup()` to temporary Cowork script `slack_agent_ops.py`.
+  - Implemented native `SlackReconciler` within Webhook Hub native toolchain, supporting `--channel`, `--limit`, `--dry-run`, and `--execute`.
+  - Refactored `slack_agent_ops.py` to be a pointer/wrapper delegating to the native `SlackReconciler`, eliminating split wheels and snippet rot.
+- **Contract-First & Type-Safe Payload Normalization (`hub/antigravity/models.py`)**:
+  - Enhanced `AntigravityTaskPayload.from_dict` to automatically unwrap nested `data` dictionaries and map `channel_id`, `event_ts`, `raw_text`, `image_urls`, and `files`.
+  - Converts raw `image_urls` into canonical file dictionary attachments with `url_private` and extracted filename.
+- **Multimodal Prompt Protection & CLI Command Leak Prevention (`hub/antigravity/prompt_builder.py` & `session_manager.py`)**:
+  - Added visual instruction synthesis when user message contains image attachments without text (`"请仔细审查随附的图片与报错截图，分析其中的内容、错误原因并给出修复或处理建议。"`).
+  - Explicitly filters out launcher command strings (`"agentapi new-conversation"`, `"agentapi run"`) in `build_antigravity_prompt`, `build_follow_up_prompt`, and `session_manager.py`, preventing command leaks to the model.
+- **SSOT Database-Backed Idempotency & Anti-Spam Cooldown (`hub/antigravity/reconciler.py`)**:
+  - Reconciler checks both `tasks` table (`queued` / `running`) and `session_threads` table (`status='active'`), ensuring active sessions are never duplicated.
+  - Intercepts duplicate dispatch during the 15-minute cooldown period and adds gateway idempotency headers (`X-Hub-Event-Id`, `X-Idempotency-Key`).
+  - Implemented chronological offline vs completion tracking (`last_offline_ts > (last_completion_ts or 0.0)`), ensuring offline follow-ups are never swallowed by historical completion notices.
+- **TDD Verification & Full Test Suite**:
+  - Added 8 comprehensive unit tests in `tests/unit/test_reconciler.py`.
+  - Full unit test suite passes with 264/264 tests passing (0 failures).
+
 ## [1.16.9] - 2026-09-15
 
 ### Fixed & Hardened

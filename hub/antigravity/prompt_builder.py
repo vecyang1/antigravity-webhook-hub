@@ -118,6 +118,10 @@ def build_antigravity_prompt(
     raw_text = payload.text or ""
     clean_text, commands, directives = extract_slash_commands(raw_text)
 
+    # Disallow CLI internal launcher commands from polluting prompt
+    if clean_text.strip().lower() in ("agentapi new-conversation", "agentapi run", "agentapi"):
+        clean_text = ""
+
     # Combine with any already declared slash commands or active skills
     all_commands = list(dict.fromkeys(payload.slash_commands + commands))
     all_directives = list(directives)
@@ -144,6 +148,7 @@ def build_antigravity_prompt(
     # Core user intent: text + voice transcript
     prompt_parts: list[str] = []
 
+    images = downloaded_images or payload.downloaded_images
     voice_tx = (payload.voice_transcript or "").strip()
     core_text = ""
     if clean_text and voice_tx and voice_tx not in clean_text:
@@ -152,8 +157,8 @@ def build_antigravity_prompt(
         core_text = f"[语音输入 / Voice Input]:\n{voice_tx}"
     elif clean_text:
         core_text = clean_text
-    elif payload.files:
-        core_text = "请分析并处理随附的图片与素材附件。"
+    elif payload.files or images:
+        core_text = "请仔细审查随附的图片与报错截图，分析其中的内容、错误原因并给出修复或处理建议。"
     else:
         core_text = "执行 Antigravity 任务"
 
@@ -187,6 +192,10 @@ def build_follow_up_prompt(
     """
     raw_text = payload.text or ""
     clean_text, commands, directives = extract_slash_commands(raw_text)
+
+    # Disallow CLI internal launcher commands from polluting follow-up prompt
+    if clean_text.strip().lower() in ("agentapi new-conversation", "agentapi run", "agentapi"):
+        clean_text = ""
 
     prompt_parts: list[str] = ["[用户追问 / User Follow-up]:"]
 
