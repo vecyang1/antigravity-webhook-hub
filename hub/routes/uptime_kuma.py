@@ -185,9 +185,9 @@ def register_uptime_kuma_routes(
         is_down = (status_code == 0)
         is_up = (status_code == 1)
 
-        # Case A: Service is UP (Recovery)
+        # Case A: Service is UP (Healthy / Recovery)
         if is_up:
-            _recent_down_events.pop(monitor_id, None)
+            was_down = _recent_down_events.pop(monitor_id, None) is not None
             logger.info("Uptime Kuma UP received for monitor: %s (%s)", monitor_name, monitor_url)
 
             # Persist event to DB
@@ -214,7 +214,14 @@ def register_uptime_kuma_routes(
                     "msg": msg,
                 })
 
-            send_desktop_notification("Antigravity Webhook Hub", f"🟢 [UP] {monitor_name} is operational", sound="Glass")
+            # Health probe alerting discipline: only alert when unhealthy (or recovering from outage).
+            # Routine periodic healthy heartbeats stay quiet to prevent alert fatigue.
+            notify_on_up = os.environ.get("UPTIME_KUMA_NOTIFY_ON_UP", "false").lower() in ("true", "1", "yes")
+            notify_on_recovery = os.environ.get("UPTIME_KUMA_NOTIFY_ON_RECOVERY", "true").lower() in ("true", "1", "yes")
+            if notify_on_up:
+                send_desktop_notification("Antigravity Webhook Hub", f"🟢 [UP] {monitor_name} is operational", sound="Glass")
+            elif was_down and notify_on_recovery:
+                send_desktop_notification("Antigravity Webhook Hub", f"🟢 [RECOVERED] {monitor_name} is back operational", sound="Glass")
 
             return HTTPResponse.json({
                 "status": "up",

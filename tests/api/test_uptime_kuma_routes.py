@@ -315,3 +315,53 @@ async def test_kuma_legacy_path_compatibility(kuma_server_harness: Any):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "up"
+
+
+async def test_kuma_up_silenced_by_default_and_recovery_notified(
+    kuma_server_harness: Any, monkeypatch: pytest.MonkeyPatch
+):
+    """Health probe alerting discipline: UP heartbeats stay quiet by default; recovery after confirmed DOWN alerts."""
+    base_url, server, config, db, dispatcher, probe_state = kuma_server_harness
+    headers = {"Authorization": f"Bearer {config.security.bearer_token}"}
+
+    notifications = []
+    monkeypatch.setattr(
+        "hub.routes.uptime_kuma.send_desktop_notification",
+        lambda title, msg, sound="Basso": notifications.append((title, msg, sound)),
+    )
+
+    # 1. Routine UP heartbeat (no prior outage) -> must produce ZERO desktop notifications
+    payload_up = {
+        "heartbeat": {"status": 1, "time": "2026-09-15 10:00:00", "msg": "200 OK"},
+        "monitor": {"id": "mon_probe_99", "name": "Health Probe", "url": "https://example.com/healthz"},
+    }
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.post(f"{base_url}/api/webhook/uptime-kuma", json=payload_up, headers=headers)
+        assert resp.status_code == 200
+    assert len(notifications) == 0, "Routine UP heartbeat must stay quiet by default"
+
+    # 2. DOWN outage confirmed -> triggers DOWN alert notification
+    probe_state["alive"] = False
+    payload_down = {
+        "heartbeat": {"status": 0, "time": "2026-09-15 10:01:00", "msg": "503 Service Unavailable"},
+        "monitor": {"id": "mon_probe_99", "name": "Health Probe", "url": "https://example.com/healthz"},
+    }
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.post(f"{base_url}/api/webhook/uptime-kuma", json=payload_down, headers=headers)
+        assert resp.status_code == 202
+    assert len(notifications) == 1
+    assert "DOWN" in notifications[0][1]
+
+    # 3. Recovery UP heartbeat after prior DOWN outage -> sends RECOVERED notification
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.post(f"{base_url}/api/webhook/uptime-kuma", json=payload_up, headers=headers)
+        assert resp.status_code == 200
+    assert len(notifications) == 2
+    assert "RECOVERED" in notifications[1][1]
+
+    # 4. Successive routine UP heartbeat -> quiet again
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.post(f"{base_url}/api/webhook/uptime-kuma", json=payload_up, headers=headers)
+        assert resp.status_code == 200
+    assert len(notifications) == 2, "Subsequent UP heartbeats must remain quiet"
+

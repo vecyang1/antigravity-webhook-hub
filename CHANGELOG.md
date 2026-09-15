@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.6] - 2026-09-15
+
+### Fixed & Changed
+- **Health Probe Quiet Alerting Discipline & Alert Fatigue Prevention**:
+  - Implemented configurable silencing of routine healthy UP heartbeats in `hub/routes/uptime_kuma.py`.
+  - Normal periodic operational health checks stay quiet by default, eliminating repeated desktop notification banners (`🟢 [UP] ... is operational`) and sound spam.
+  - Desktop alerts only fire on confirmed DOWN outages (`🔴 [DOWN]`), or when recovering from an outage (`🟢 [RECOVERED] ... is back operational`).
+  - Added environment variable overrides `UPTIME_KUMA_NOTIFY_ON_UP` (default `false`) and `UPTIME_KUMA_NOTIFY_ON_RECOVERY` (default `true`).
+  - Added unit test `test_kuma_up_silenced_by_default_and_recovery_notified` in `tests/api/test_uptime_kuma_routes.py`.
+
 ## [1.16.5] - 2026-09-15
 
 ### Fixed & Hardened
