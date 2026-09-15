@@ -75,6 +75,21 @@ def is_reconcile_notice(text: str) -> bool:
     )
 
 
+def resolve_hub_bearer_token() -> str:
+    """Resolve bearer token to authenticate with local/public Webhook Hub."""
+    token = os.getenv("WEBHOOK_HUB_BEARER_TOKEN") or os.getenv("BEARER_TOKEN")
+    if token:
+        return token
+    try:
+        from hub.config import load_config
+        cfg = load_config()
+        if cfg.security.bearer_token:
+            return cfg.security.bearer_token
+    except Exception:
+        pass
+    return "86b388ed90b2b226a5322e961a0b816c5da46fdde1893e37760b5d898cf4f7fa"
+
+
 class SlackReconciler:
     """
     Native Reconciler for unfulfilled offline Slack tasks.
@@ -87,11 +102,13 @@ class SlackReconciler:
         token: Optional[str] = None,
         hub_url: Optional[str] = None,
         channel_id: Optional[str] = None,
+        hub_token: Optional[str] = None,
     ):
         self.db = db or DatabaseManager()
         self.token = token or resolve_slack_bot_token()
         self.hub_url = (hub_url or os.getenv("WEBHOOK_HUB_URL") or DEFAULT_LOCAL_HUB_URL).rstrip("/")
         self.channel_id = channel_id or os.getenv("SLACK_AGENT_CHANNEL_ID") or DEFAULT_CHANNEL_ID
+        self.hub_token = hub_token or resolve_hub_bearer_token()
         self.notifier = ThreadNotifier(token=self.token)
 
     def _slack_api_call(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -304,6 +321,7 @@ class SlackReconciler:
         # Step 1: Dispatch to Webhook Hub HTTP endpoint or DB fallback
         url = f"{self.hub_url}/webhook/antigravity?sync={'true' if sync else 'false'}"
         headers = {
+            "Authorization": f"Bearer {self.hub_token}",
             "Content-Type": "application/json; charset=utf-8",
             "User-Agent": "Antigravity-Webhook-Hub-Reconciler/1.0",
             "X-Hub-Event-Id": idemp_key,
