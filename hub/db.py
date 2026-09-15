@@ -1619,17 +1619,51 @@ class DatabaseManager:
             finally:
                 cur.close()
 
-    def get_resuscitation_attempts(self, conversation_id: str) -> int:
-        """Count how many times this conversation has already been resuscitated (excluding quota_cooldown)."""
+    def get_resuscitation_attempts(
+        self,
+        conversation_id: str,
+        current_step_index: Optional[int] = None,
+    ) -> int:
+        """
+        Count consecutive resuscitation attempts for this conversation.
+        If current_step_index is provided and the session has progressed past the
+        last recorded resuscitation step (current_step_index > last_res.last_step_index + 1),
+        consecutive failures reset to 0 because forward progress was made.
+        """
         with self._lock:
             cur = self._conn.cursor()
             try:
                 cur.execute(
-                    "SELECT COUNT(*) FROM antigravity_resuscitations WHERE conversation_id = ? AND status NOT IN ('quota_cooldown', 'schedule_remounted')",
+                    """
+                    SELECT last_step_index, status,
+                           strftime('%s', resuscitated_at) AS resuscitated_epoch
+                    FROM antigravity_resuscitations
+                    WHERE conversation_id = ? AND status NOT IN ('quota_cooldown', 'schedule_remounted')
+                    ORDER BY rowid DESC
+                    """,
                     (conversation_id,),
                 )
-                row = cur.fetchone()
-                return int(row[0]) if row else 0
+                rows = cur.fetchall()
+                if not rows:
+                    return 0
+
+                if current_step_index is not None:
+                    latest_rec = rows[0]
+                    last_step = latest_rec["last_step_index"]
+                    if last_step is not None and current_step_index > last_step + 1:
+                        # Forward progress made! Previous resuscitation was successful.
+                        return 0
+
+                # Count consecutive attempts at the same step index without forward progress
+                consecutive = 0
+                anchor_step = rows[0]["last_step_index"]
+                for r in rows:
+                    step_idx = r["last_step_index"]
+                    if anchor_step is None or step_idx is None or abs(step_idx - anchor_step) <= 1:
+                        consecutive += 1
+                    else:
+                        break
+                return consecutive
             finally:
                 cur.close()
 

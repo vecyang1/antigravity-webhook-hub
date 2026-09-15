@@ -24,6 +24,7 @@ from hub.antigravity.watchdog import (
     DEFAULT_RESUSCITATION_PROMPT,
     EMPTY_RESPONSE_RESUSCITATION_PROMPT,
     MCP_ERROR_RESUSCITATION_PROMPT,
+    NETWORK_ERROR_RESUSCITATION_PROMPT,
     QUOTA_RESUSCITATION_PROMPT,
     SCHEDULE_REMOUNT_PROMPT,
     TOOL_RESULT_RESUSCITATION_PROMPT,
@@ -32,6 +33,7 @@ from hub.antigravity.watchdog import (
     check_session_has_boost_or_goal,
     detect_parent_conversation_id,
     extract_active_schedule_from_transcript,
+    inspect_conversation_db_for_terminal_network_error,
     parse_cron_interval_seconds,
     parse_quota_reset_seconds,
 )
@@ -1789,6 +1791,126 @@ class TestAntigravityWatchdog:
         stalled = watchdog.scan_stalled_conversations()
         parent_stalled = [s for s in stalled if s.conversation_id == parent_id]
         assert len(parent_stalled) == 0, "Parent was prematurely flagged as stalled while child was still working!"
+
+    def test_inspect_conversation_db_for_terminal_network_error(self, temp_dir):
+        """
+        Verify that inspect_conversation_db_for_terminal_network_error accurately detects
+        step_type = 17 network issues (e.g. There was a network issue connecting to the server).
+        """
+        import sqlite3
+        convo_id = "test-network-terminal-error-convo"
+        conv_dir = temp_dir / "conversations"
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        db_path = conv_dir / f"{convo_id}.db"
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)")
+        # Insert normal step
+        conn.execute("INSERT INTO steps VALUES (1, 1, ?)", (b"normal step",))
+        # Insert terminal error step (step_type=17) with network issue text
+        err_msg = b"prefix... Error Unknown: There was a network issue connecting to the server, please try again. ...suffix"
+        conn.execute("INSERT INTO steps VALUES (2, 17, ?)", (err_msg,))
+        conn.commit()
+        conn.close()
+
+        res = inspect_conversation_db_for_terminal_network_error(convo_id, conversations_dir=conv_dir)
+        assert res is not None
+        assert res["step_index"] == 2
+        assert res["error"] == "network_issue_server_error"
+        assert "network issue" in res["details"].lower()
+
+    def test_get_resuscitation_attempts_resets_on_forward_step_progress(self, db):
+        """
+        Verify that DatabaseManager.get_resuscitation_attempts resets the consecutive
+        resuscitation count to 0 when the conversation makes forward step progress.
+        """
+        convo_id = "test-forward-progress-reset"
+        # Record 3 resuscitation attempts at step 174
+        db.record_resuscitation(convo_id, last_step_index=174)
+        db.record_resuscitation(convo_id, last_step_index=174)
+        db.record_resuscitation(convo_id, last_step_index=174)
+
+        # Same step index: returns 3
+        assert db.get_resuscitation_attempts(convo_id, current_step_index=174) == 3
+
+        # Forward progress (step 195): consecutive attempts reset to 0!
+        assert db.get_resuscitation_attempts(convo_id, current_step_index=195) == 0
+
+    def test_watchdog_resets_attempts_after_backoff_cooldown_expires(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that after backoff_cooldown_seconds expires (e.g. 1800s),
+        the session is NOT permanently locked out and can be resuscitated again.
+        """
+        convo_id = "test-backoff-cooldown-expiry"
+        # Seed 3 attempts at step 174
+        for _ in range(3):
+            db.record_resuscitation(
+                convo_id,
+                last_step_index=174,
+            )
+
+        # Set the resuscitated_at timestamp to 2000s in the past (longer than 1800s cooldown)
+        old_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 2000.0))
+        with db._lock:
+            db._conn.execute(
+                "UPDATE antigravity_resuscitations SET resuscitated_at = ? WHERE conversation_id = ?",
+                (old_ts, convo_id),
+            )
+            db._conn.commit()
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Keep running"},
+            {"step_index": 174, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "ERROR", "content": "There was a network issue connecting to the server", "tool_calls": []},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=120.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            stall_grace_seconds=30,
+            backoff_cooldown_seconds=1800,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        target = next((s for s in stalled if s.conversation_id == convo_id), None)
+        assert target is not None
+        # Should NOT be blocked by max_retries_exhausted!
+        assert target.can_resuscitate is True
+        assert "max_retries_exhausted" not in (target.skip_reason or "")
+
+    def test_resuscitate_session_prioritizes_network_error_prompt(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that resuscitate_session uses NETWORK_ERROR_RESUSCITATION_PROMPT
+        when is_network_issue is True.
+        """
+        convo_id = "test-network-prompt-selection"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Run long task"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "ERROR", "content": "Network timeout", "tool_calls": []},
+        ]
+        t_path = _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=120.0)
+
+        session = StalledSessionInfo(
+            conversation_id=convo_id,
+            transcript_path=t_path,
+            last_step_index=1,
+            last_error="There was a network issue connecting to the server",
+            last_error_time=time.time() - 120.0,
+            is_subagent=False,
+            is_network_issue=True,
+            can_resuscitate=True,
+        )
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        mock_agentapi.send_message.return_value = (True, "OK", "")
+
+        res = asyncio.run(watchdog.resuscitate_session(session))
+        assert res["status"] == "resuscitated"
+
+        mock_agentapi.send_message.assert_called_once()
+        called_prompt = mock_agentapi.send_message.call_args[1]["content"]
+        assert "【系统自动网络故障自愈拉起提醒】" in called_prompt
 
 
 

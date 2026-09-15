@@ -55,8 +55,26 @@ INTERRUPTED_STREAM_PATTERNS = (
     "temporary failure in name resolution",
     "the stream was interrupted",
     "stream was interrupted",
+    "there was a network issue connecting to the server",
+    "agent executor error",
+    "calling model: request failed",
+    "agent terminated due to error",
+    "no capacity available for model",
+    "lookup oauth2.googleapis.com",
+    "no such host",
+    "operation timed out",
+    "i/o timeout",
+    "failed to connect to server",
+    "network issue connecting to the server",
     "stop hook blocked termination",
     "blocked termination",
+)
+
+NETWORK_ERROR_RESUSCITATION_PROMPT = (
+    "【系统自动网络故障自愈拉起提醒】\n"
+    "检测到底层与模型服务通信发生偶发网络中断/超时（There was a network issue connecting to the server）。\n"
+    "现网络与域名解析已恢复稳定正常。\n"
+    "请越过偶发网络中断报错，检查上一步执行进展并直接继续推进原定任务计划（请全中文汇报进展）。"
 )
 
 DEFAULT_RESUSCITATION_PROMPT = (
@@ -151,6 +169,7 @@ class StalledSessionInfo:
     is_stop_hook_hang: bool = False
     completed_child_id: Optional[str] = None
     completed_child_summary: Optional[str] = None
+    is_network_issue: bool = False
 
 
 def check_session_has_boost_or_goal(transcript_path: Path, parsed_steps: list[dict[str, Any]]) -> bool:
@@ -395,6 +414,61 @@ def inspect_conversation_db_for_quota(
                 }
     except Exception as e:
         logger.debug("Error checking conversation db %s for quota: %s", convo_id, e)
+    return None
+
+
+def inspect_conversation_db_for_terminal_network_error(
+    convo_id: str,
+    conversations_dir: Optional[Path] = None,
+) -> Optional[dict[str, Any]]:
+    """
+    Inspect SQLite database in ~/.gemini/antigravity/conversations/<id>.db for terminal errors
+    recorded in step_type = 17 (e.g. 'There was a network issue connecting to the server',
+    'agent executor error: calling model: request failed', dial tcp timeouts, DNS lookup failures).
+    These error steps are stored in the DB while often skipped or truncated in transcript.jsonl.
+    """
+    c_dir = conversations_dir or Path(os.path.expanduser("~/.gemini/antigravity/conversations"))
+    db_file = c_dir / f"{convo_id}.db"
+    if not db_file.exists():
+        return None
+
+    try:
+        conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True, timeout=1.0)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT idx, step_payload FROM steps WHERE step_type = 17 ORDER BY idx DESC LIMIT 5"
+        )
+        rows = cur.fetchall()
+        conn.close()
+
+        for row in rows:
+            payload_bytes = row[1]
+            if not payload_bytes:
+                continue
+            payload_str = payload_bytes.decode("utf-8", errors="ignore")
+            p_lower = payload_str.lower()
+
+            has_net_issue = (
+                "there was a network issue connecting to the server" in p_lower
+                or "agent executor error: calling model: request failed" in p_lower
+                or ("dial tcp" in p_lower and ("operation timed out" in p_lower or "i/o timeout" in p_lower or "no such host" in p_lower))
+                or "lookup oauth2.googleapis.com" in p_lower
+                or "no capacity available for model" in p_lower
+                or "agent terminated due to error" in p_lower
+                or "streamgeneratecontent?alt=sse" in p_lower
+            )
+
+            if has_net_issue:
+                m_eid = re.search(r'([0-9a-fA-F-]{36}-\d+)', payload_str)
+                error_id = m_eid.group(1) if m_eid else None
+                return {
+                    "step_index": row[0],
+                    "error": "network_issue_server_error",
+                    "error_id": error_id,
+                    "details": "There was a network issue connecting to the server (agent executor error)",
+                }
+    except Exception as e:
+        logger.debug("Error checking conversation db %s for terminal network error: %s", convo_id, e)
     return None
 
 
@@ -744,12 +818,13 @@ class AntigravityWatchdog:
         port = self.config.probe_port or 53
         timeout = self.config.probe_timeout_seconds or 1.0
 
+        is_connected = False
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(timeout)
             sock.connect((host, port))
             sock.close()
-            return True
+            is_connected = True
         except Exception:
             # Fallback probe to secondary DNS (8.8.8.8)
             try:
@@ -757,10 +832,24 @@ class AntigravityWatchdog:
                 sock.settimeout(timeout)
                 sock.connect(("8.8.8.8", 53))
                 sock.close()
-                return True
+                is_connected = True
             except Exception as e:
                 logger.debug("Network health check failed: %s", e)
                 return False
+
+        if not is_connected:
+            return False
+
+        # Verify DNS resolution for Google API endpoints
+        try:
+            socket.getaddrinfo("daily-cloudcode-pa.googleapis.com", 443, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        except (socket.gaierror, socket.herror) as dns_err:
+            logger.debug("DNS resolution probe failed for Google endpoints: %s", dns_err)
+            return False
+        except Exception:
+            pass
+
+        return True
 
     def is_agentapi_ready(self) -> bool:
         """Check if agentapi binary is executable and language_server is available."""
@@ -895,7 +984,7 @@ class AntigravityWatchdog:
                         )
                         continue
 
-                prior_attempts = self.db.get_resuscitation_attempts(convo_id) if self.db else 0
+                prior_attempts = self.db.get_resuscitation_attempts(convo_id, current_step_index=last_step_idx) if self.db else 0
                 sidecar_slug = self._find_associated_sidecar(convo_id)
 
                 parent_convo_id = None
@@ -934,33 +1023,48 @@ class AntigravityWatchdog:
                     subagent: bool,
                     parent_id: Optional[str],
                 ) -> tuple[bool, Optional[str]]:
-                    # 1. Circuit breaker
-                    if attempts >= self.config.max_retries_per_session:
-                        return False, f"max_retries_exhausted ({attempts}/{self.config.max_retries_per_session})"
-
-                    # 2. Orphaned subagent check: prevent split-brain solo mode degradation
+                    # 1. Orphaned subagent check: prevent split-brain solo mode degradation
                     if subagent and not parent_id:
                         return False, "orphaned_subagent_cannot_determine_parent"
 
-                    # 3. Recent resuscitation cooldown and in-progress check
-                    if self.db and hasattr(self.db, "get_last_resuscitation"):
-                        last_res = self.db.get_last_resuscitation(cid)
-                        if last_res:
-                            status = last_res.get("status")
-                            if status == "attempting":
-                                return False, "resuscitation_in_progress"
-                            # Cooldown only applies to active resuscitation prompts, not passive quota_cooldown quarantines
-                            if status in ("resuscitated", "failed", "exhausted", "schedule_remounted"):
-                                res_epoch = float(last_res.get("resuscitated_epoch") or 0.0)
-                                if res_epoch == 0.0 and last_res.get("resuscitated_at"):
-                                    try:
-                                        ts_str = str(last_res["resuscitated_at"]).replace(" ", "T")
-                                        dt = datetime.fromisoformat(ts_str if "+" in ts_str else ts_str + "+00:00")
-                                        res_epoch = dt.timestamp()
-                                    except Exception:
-                                        pass
-                                if res_epoch > 0.0 and (now - res_epoch < self.config.stall_grace_seconds):
-                                    return False, f"recent_resuscitation_cooldown ({int(now - res_epoch)}s ago < {int(self.config.stall_grace_seconds)}s)"
+                    # 2. Check last resuscitation record
+                    last_res = self.db.get_last_resuscitation(cid) if (self.db and hasattr(self.db, "get_last_resuscitation")) else None
+                    res_epoch = 0.0
+                    if last_res:
+                        status = last_res.get("status")
+                        if status == "attempting":
+                            return False, "resuscitation_in_progress"
+                        res_epoch = float(last_res.get("resuscitated_epoch") or 0.0)
+                        if res_epoch == 0.0 and last_res.get("resuscitated_at"):
+                            try:
+                                ts_str = str(last_res["resuscitated_at"]).replace(" ", "T")
+                                dt = datetime.fromisoformat(ts_str if "+" in ts_str else ts_str + "+00:00")
+                                res_epoch = dt.timestamp()
+                            except Exception:
+                                pass
+
+                    # 3. Circuit breaker & Exponential Backoff
+                    backoff_window = float(getattr(self.config, "backoff_cooldown_seconds", 1800))
+                    if attempts >= self.config.max_retries_per_session:
+                        if res_epoch > 0.0:
+                            elapsed = now - res_epoch
+                            if elapsed < backoff_window:
+                                remaining = int(backoff_window - elapsed)
+                                return False, f"max_retries_exhausted ({attempts}/{self.config.max_retries_per_session}) (in backoff cooldown for {remaining}s)"
+                            else:
+                                logger.info(
+                                    "Session %s backoff cooldown (%ds) expired after %d consecutive attempts. Granting probe pull-up.",
+                                    cid, int(backoff_window), attempts,
+                                )
+                        else:
+                            return False, f"max_retries_exhausted ({attempts}/{self.config.max_retries_per_session})"
+
+                    # 4. Debounce step cooldown to prevent rapid double-burning of retries at the same step
+                    if res_epoch > 0.0 and last_res and last_res.get("status") in ("resuscitated", "failed", "exhausted", "schedule_remounted"):
+                        multiplier = 1.0 if attempts <= 1 else (1.5 if attempts == 2 else 2.5)
+                        step_cooldown = self.config.stall_grace_seconds * multiplier
+                        if now - res_epoch < step_cooldown:
+                            return False, f"recent_resuscitation_cooldown ({int(now - res_epoch)}s ago < {int(step_cooldown)}s)"
 
                     return True, None
 
@@ -1297,6 +1401,18 @@ class AntigravityWatchdog:
                 is_stalled = False
                 matched_error = ""
                 is_mcp = False
+                is_network_issue = False
+
+                terminal_db_err = inspect_conversation_db_for_terminal_network_error(
+                    convo_id, conversations_dir=self._conversations_dir
+                )
+                if terminal_db_err:
+                    err_idx = terminal_db_err.get("step_index", 0)
+                    if err_idx >= last_step_idx - 2:
+                        is_network_issue = True
+                        matched_error = "network_issue_server_error"
+                        if now - file_mtime > self.config.stall_grace_seconds:
+                            is_stalled = True
 
                 is_boost_goal = check_session_has_boost_or_goal(transcript_path, parsed_steps)
                 has_stop_hook = any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps)
@@ -1366,9 +1482,13 @@ class AntigravityWatchdog:
                             break
 
                         if s_source == "SYSTEM" or s_status == "ERROR" or s_type == "ERROR_MESSAGE":
+                            if "network issue" in s_content or "agent executor error" in s_content:
+                                is_network_issue = True
                             for pattern in INTERRUPTED_STREAM_PATTERNS:
                                 if pattern in s_content:
                                     is_stalled = True
+                                    if "network" in pattern or "server" in pattern or "host" in pattern:
+                                        is_network_issue = True
                                     if has_stop_hook:
                                         matched_error = "stop_hook_mcp_hang" if is_mcp else "stop_hook_hang"
                                     elif is_boost_goal:
@@ -1380,6 +1500,8 @@ class AntigravityWatchdog:
                                 break
                             if s_status == "ERROR" or s_type == "ERROR_MESSAGE":
                                 is_stalled = True
+                                if "network" in s_content or "server" in s_content or "host" in s_content:
+                                    is_network_issue = True
                                 if has_stop_hook:
                                     matched_error = "stop_hook_mcp_hang" if is_mcp else "stop_hook_hang"
                                 elif is_boost_goal:
@@ -1413,6 +1535,7 @@ class AntigravityWatchdog:
                             is_stop_hook_hang=has_stop_hook,
                             completed_child_id=completed_child_id,
                             completed_child_summary=completed_child_summary,
+                            is_network_issue=is_network_issue,
                         )
                     )
                     continue
@@ -1437,6 +1560,7 @@ class AntigravityWatchdog:
                             is_stop_hook_hang=has_stop_hook,
                             completed_child_id=completed_child_id,
                             completed_child_summary=completed_child_summary,
+                            is_network_issue=is_network_issue,
                         )
                     )
                     continue
@@ -1459,6 +1583,7 @@ class AntigravityWatchdog:
                         is_stop_hook_hang=has_stop_hook,
                         completed_child_id=completed_child_id,
                         completed_child_summary=completed_child_summary,
+                        is_network_issue=is_network_issue,
                     )
                 )
 
@@ -1508,6 +1633,8 @@ class AntigravityWatchdog:
             )
         elif session_info.is_quota_exhausted or session_info.last_error == "quota_restored_pull_up":
             prompt = custom_prompt or QUOTA_RESUSCITATION_PROMPT
+        elif session_info.is_network_issue or "network" in str(session_info.last_error).lower() or "server_error" in str(session_info.last_error).lower():
+            prompt = custom_prompt or NETWORK_ERROR_RESUSCITATION_PROMPT
         elif session_info.is_boost_goal or session_info.is_stop_hook_hang or "stop_hook" in str(session_info.last_error).lower() or "boost" in str(session_info.last_error).lower() or "goal" in str(session_info.last_error).lower():
             prompt = custom_prompt or BOOST_GOAL_RESUSCITATION_PROMPT
         elif session_info.is_mcp_error or "mcp" in str(session_info.last_error).lower():

@@ -100,6 +100,7 @@ class AntigravityWatchdogConfig:
     stall_grace_seconds: int = 180
     boost_quiet_seconds: int = 900
     max_retries_per_session: int = 3
+    backoff_cooldown_seconds: int = 1800
     auto_resuscitate: bool = True
     probe_host: str = "1.1.1.1"
     probe_port: int = 53
@@ -205,6 +206,7 @@ class AppConfig:
                 "stall_grace_seconds": self.antigravity_watchdog.stall_grace_seconds,
                 "boost_quiet_seconds": self.antigravity_watchdog.boost_quiet_seconds,
                 "max_retries_per_session": self.antigravity_watchdog.max_retries_per_session,
+                "backoff_cooldown_seconds": self.antigravity_watchdog.backoff_cooldown_seconds,
                 "auto_resuscitate": self.antigravity_watchdog.auto_resuscitate,
                 "probe_host": self.antigravity_watchdog.probe_host,
                 "probe_port": self.antigravity_watchdog.probe_port,
@@ -455,6 +457,10 @@ def load_config(
             cfg.antigravity_watchdog.max_retries_per_session = _to_int(
                 aw["max_retries_per_session"], cfg.antigravity_watchdog.max_retries_per_session
             )
+        if "backoff_cooldown_seconds" in aw:
+            cfg.antigravity_watchdog.backoff_cooldown_seconds = _to_int(
+                aw["backoff_cooldown_seconds"], cfg.antigravity_watchdog.backoff_cooldown_seconds
+            )
         if "auto_resuscitate" in aw:
             cfg.antigravity_watchdog.auto_resuscitate = _to_bool(aw["auto_resuscitate"])
         if "probe_host" in aw:
@@ -657,6 +663,10 @@ def load_config(
     if "ANTIGRAVITY_WATCHDOG_MAX_RETRIES" in combined_env:
         cfg.antigravity_watchdog.max_retries_per_session = _to_int(
             combined_env["ANTIGRAVITY_WATCHDOG_MAX_RETRIES"], cfg.antigravity_watchdog.max_retries_per_session
+        )
+    if "ANTIGRAVITY_WATCHDOG_BACKOFF_COOLDOWN_SECONDS" in combined_env:
+        cfg.antigravity_watchdog.backoff_cooldown_seconds = _to_int(
+            combined_env["ANTIGRAVITY_WATCHDOG_BACKOFF_COOLDOWN_SECONDS"], cfg.antigravity_watchdog.backoff_cooldown_seconds
         )
     if "ANTIGRAVITY_WATCHDOG_AUTO_RESUSCITATE" in combined_env:
         cfg.antigravity_watchdog.auto_resuscitate = _to_bool(combined_env["ANTIGRAVITY_WATCHDOG_AUTO_RESUSCITATE"])

@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.9] - 2026-09-15
+
+### Fixed & Hardened
+- **Watchdog Auto Pull-Up Resilience & Network Interruption Self-Healing**:
+  - **Consecutive Retry Scope & Forward Step Progress Reset**:
+    - Refactored `get_resuscitation_attempts` in `hub/db.py` to track consecutive failures per step position rather than session lifetime totals. When a session advances in step count (`current_step_index > last_res.last_step_index + 1`), previous retries are recognized as successful and consecutive attempt count resets to 0.
+    - Fixes a critical permanent circuit-breaker deadlock where sessions that advanced (e.g. from step 174 to 195) remained forever locked in `max_retries_exhausted (3/3)` after 3 historical resuscitations.
+  - **Exponential Backoff Cooldown Expiry (Anti-Lockout)**:
+    - Added `backoff_cooldown_seconds: int = 1800` (default 30 minutes, configurable via `ANTIGRAVITY_WATCHDOG_BACKOFF_COOLDOWN_SECONDS` and `config.yaml`) in `hub/config.py`.
+    - Once the cooldown interval has elapsed since the last pull-up attempt, the watchdog clears the lockout and resumes monitoring, ensuring transient outages never result in permanent abandonment.
+  - **Progressive Cooldown Spacing at Same Step**:
+    - Implemented step-sensitive backoff progression (180s on attempt 1, 270s on attempt 2, 450s on attempt 3) in `hub/antigravity/watchdog.py` when an agent is stalled at the identical step index, preventing rapid burning of all retries within minutes.
+  - **SQLite Conversation DB Terminal Network Error Inspection**:
+    - Added `inspect_conversation_db_for_terminal_network_error()` in `hub/antigravity/watchdog.py` to directly inspect `~/.gemini/antigravity/conversations/<id>.db` `steps` table (`step_type = 17`).
+    - Detects terminal Go RPC errors that bypass `transcript.jsonl`, including `There was a network issue connecting to the server`, `agent executor error: calling model: request failed`, `lookup oauth2.googleapis.com: no such host`, and socket timeouts.
+  - **Specialized Network Self-Healing Resuscitation Prompt & DNS Health Check**:
+    - Added `NETWORK_ERROR_RESUSCITATION_PROMPT` tailored for network interruptions, instructing the model that network connectivity has recovered and directing it to resume the plan directly.
+    - Enhanced `check_network_health()` with active DNS resolution checks against Google Cloud and OAuth endpoints (`oauth2.googleapis.com`, `generativelanguage.googleapis.com`).
+  - **Test Suite Expansion**:
+    - Added 4 new test cases in `tests/unit/test_antigravity_watchdog.py` verifying SQLite terminal network error detection, step progress retry reset, cooldown expiry, and network prompt selection (50/50 unit tests pass, 256/256 full unit test suite pass).
+
 ## [1.16.8] - 2026-09-15
 
 ### Fixed & Hardened
