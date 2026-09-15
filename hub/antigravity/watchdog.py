@@ -1045,6 +1045,9 @@ class AntigravityWatchdog:
 
                     # 3. Circuit breaker & Exponential Backoff
                     backoff_window = float(getattr(self.config, "backoff_cooldown_seconds", 1800))
+                    max_total = int(getattr(self.config, "max_total_attempts", 5))
+                    if attempts >= max_total:
+                        return False, f"max_retries_permanently_exhausted ({attempts}/{max_total})"
                     if attempts >= self.config.max_retries_per_session:
                         if res_epoch > 0.0:
                             elapsed = now - res_epoch

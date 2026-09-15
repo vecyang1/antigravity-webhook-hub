@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.11] - 2026-09-16
+
+### Fixed & Hardened
+- **Watchdog Permanent Exhaustion Circuit Breaker (`hub/antigravity/watchdog.py`, `hub/config.py`)**:
+  - Eliminated recurring 30-minute ghost resuscitation loop where stalled sessions beyond `max_retries_per_session` were repeatedly granted probe pull-ups after `backoff_cooldown_seconds` (1800s).
+  - Introduced `max_total_attempts` (default: 5) and `max_retries_permanently_exhausted` status gate, ensuring unrecoverable sessions are permanently fused and never trigger periodic subagent wake-up reminders.
+
 ## [2026-09-16] - 2026-09-16
 
 ### Fixed & Hardened
