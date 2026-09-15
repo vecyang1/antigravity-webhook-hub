@@ -1670,6 +1670,20 @@ def cmd_service(args: Any) -> int:
             print(f"Error: Plist {plist_path} not found. Run './bin/webhook-hub service install' first.", file=sys.stderr)
             return 1
         subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+        if pid_file.is_file():
+            old_pid = _read_pid_file(pid_file)
+            if old_pid and _is_pid_running(old_pid):
+                try:
+                    os.kill(old_pid, signal.SIGTERM)
+                    time.sleep(0.5)
+                except OSError:
+                    pass
+                if _is_pid_running(old_pid):
+                    try:
+                        os.kill(old_pid, signal.SIGKILL)
+                        time.sleep(0.2)
+                    except OSError:
+                        pass
         time.sleep(1.0)
         res = subprocess.run(["launchctl", "load", "-w", str(plist_path)], capture_output=True, text=True)
         if res.returncode != 0:

@@ -701,7 +701,7 @@ class TaskDispatcher:
                     final_status = "succeeded"
                     exit_code = 0
 
-            elif action_type in ("antigravity", "agent_conversation", "antigravity_task"):
+            elif action_type in ("antigravity", "agent_conversation", "antigravity_task", "antigravity.run", "antigravity_run"):
                 # Google Antigravity Agent native dispatch with thread linking and Slack milestone notifications
                 from hub.antigravity.session_manager import execute_antigravity_task
 

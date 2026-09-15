@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.8] - 2026-09-15
+
+### Fixed & Hardened
+- **Antigravity Action Normalization & Native Dispatch Alignment**:
+  - Normalized `action` / `action_type` matching in `hub/routes/webhook.py` and `hub/dispatcher.py` to recognize `"antigravity.run"` and `"antigravity_run"`, mapping them to native Antigravity task dispatch and default `agentapi new-conversation` command fallback.
+  - Fixes `ValueError: No executable command found for task` when upstream webhooks or catchup services emit `action: "antigravity.run"`.
+- **macOS LaunchAgent Service Restart Process Cleanup**:
+  - In `hub/cli.py` (`cmd_service restart`), added termination and cleanup of existing background daemon processes tracked in `.webhook-hub.pid` before reloading launchd plist, preventing port 9423 collision and LaunchAgent error code 78.
+
 ## [1.16.7] - 2026-09-15
 
 ### Fixed

@@ -57,6 +57,8 @@ def register_webhook_routes(
             source = body_dict.get("source") or "default"
 
         action_type = body_dict.get("action_type") or body_dict.get("action")
+        if action_type in ("antigravity.run", "antigravity_run"):
+            action_type = "antigravity"
         if not action_type:
             if source in ("contact-review", "contact_review") or req.path.endswith("/contact-review"):
                 action_type = "contact_review"
@@ -69,7 +71,7 @@ def register_webhook_routes(
         command = body_dict.get("command") or body_dict.get("target_action")
         if not command and action_type in ("contact_review", "review_contact", "contact-review"):
             command = "bin/webhook-hub review-contact"
-        elif not command and action_type in ("antigravity", "agent_conversation", "antigravity_task"):
+        elif not command and action_type in ("antigravity", "agent_conversation", "antigravity_task", "antigravity.run", "antigravity_run"):
             command = "agentapi new-conversation"
         elif not command and (source in ("surecart", "surecart-acs", "surecart_acs", "stripe-acs", "stripe_acs") or "/surecart" in req.path):
             evt = body_dict.get("event") or body_dict.get("type")
@@ -233,7 +235,7 @@ def register_webhook_routes(
                 await res
 
         # For Antigravity tasks originating from Slack, announce milestone 1 (collected) under thread
-        if action_type in ("antigravity", "agent_conversation", "antigravity_task") and not source.endswith("_stress"):
+        if action_type in ("antigravity", "agent_conversation", "antigravity_task", "antigravity.run", "antigravity_run") and not source.endswith("_stress"):
             channel = body_dict.get("channel")
             ts = str(body_dict.get("ts") or body_dict.get("event_ts") or "")
             thread_ts = body_dict.get("thread_ts")
