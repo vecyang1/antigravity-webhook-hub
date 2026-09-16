@@ -114,17 +114,18 @@ class E2EVerifier:
         Check if gateway server is reachable.
         If not reachable, launch a genuine ephemeral instance via `bin/webhook-hub` or `hub.cli`.
         """
-        try:
-            req = urllib.request.Request(f"{self.base_url}/healthz", method="GET")
-            with urllib.request.urlopen(req, timeout=1.0) as resp:
-                if resp.status == 200:
-                    if not self.db_path:
-                        default_db = PROJECT_ROOT / "data" / "webhook_hub.db"
-                        if default_db.is_file():
-                            self.db_path = str(default_db)
-                    return True
-        except Exception:
-            pass
+        for _ in range(3):
+            try:
+                req = urllib.request.Request(f"{self.base_url}/healthz", method="GET")
+                with urllib.request.urlopen(req, timeout=1.5) as resp:
+                    if resp.status == 200:
+                        if not self.db_path:
+                            default_db = PROJECT_ROOT / "data" / "webhook_hub.db"
+                            if default_db.is_file():
+                                self.db_path = str(default_db)
+                        return True
+            except Exception:
+                time.sleep(0.5)
 
         # Launch genuine ephemeral server instance
         print(f"{CYAN}No active hub detected at {self.base_url}. Starting ephemeral hub instance...{RESET}")

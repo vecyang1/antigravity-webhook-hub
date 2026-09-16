@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.13] - 2026-09-16
+
+### Fixed & Hardened
+- **E2E Verification Gateway Preflight Retry Loop (`scripts/verify_e2e.py`)**:
+  - Added 3-attempt retry loop with 1.5s timeout and 0.5s backoff to `ensure_server_running()`.
+  - Prevents false-negative ephemeral hub instance spawns when the live gateway is processing concurrent background catchup or database flushes.
+
 ## [1.16.12] - 2026-09-16
 
 ### Added & Hardened
