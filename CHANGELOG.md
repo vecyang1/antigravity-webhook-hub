@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.12] - 2026-09-16
+
+### Added & Hardened
+- **Human Attention Protection & Dual-Mode Reporting Discipline (`CAD-20260911-webhook-hub-sentinel`)**:
+  - Upgraded Sentinel cadence prompt and all fleet sidecars with Human Attention Protection protocol to eliminate alert fatigue.
+  - Enforces Dual-Mode reporting gate: on healthy/all-green runs, strictly output concise 3-5 line metric snapshots or skip/no-change; verbose step breakdowns are reserved exclusively for detected issues, active self-healing, or system improvements.
+  - Integrated attention guard detection into `cadence_ctl evolve-sidecars` and `cadence_ctl doctor`, enabling autopoietic injection and verification across all 50 Antigravity sidecars.
+  - Cleaned up accidental orphaned test directory `DatabaseConfig(path='`.
+
 ## [1.16.11] - 2026-09-16
 
 ### Fixed & Hardened
