@@ -1910,7 +1910,114 @@ class TestAntigravityWatchdog:
 
         mock_agentapi.send_message.assert_called_once()
         called_prompt = mock_agentapi.send_message.call_args[1]["content"]
-        assert "【系统自动网络故障自愈拉起提醒】" in called_prompt
+        assert "【系统自动网络/服务故障自愈拉起提醒】" in called_prompt
+
+    def test_inspect_conversation_db_for_agent_execution_terminated_and_location(self, temp_dir):
+        """
+        Verify that inspect_conversation_db_for_terminal_network_error accurately detects
+        'Agent execution terminated due to error' and 'User location is not supported',
+        extracting the exact error ID.
+        """
+        import sqlite3
+        convo_id = "test-agent-execution-location-error"
+        conv_dir = temp_dir / "conversations"
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        db_path = conv_dir / f"{convo_id}.db"
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)")
+        # Insert incident payload
+        payload = (
+            b"(Agent execution terminated due to error. "
+            b"OFAILED_PRECONDITION (code 400): User location is not supported for the API use. "
+            b"TraceID: 0xc895b8d75a1080cc 2'6aa506b4-cbf0-4cdd-86af-5086a23c541d-278 JOFAILED_PRECONDITION"
+        )
+        conn.execute("INSERT INTO steps VALUES (27, 17, ?)", (payload,))
+        conn.commit()
+        conn.close()
+
+        res = inspect_conversation_db_for_terminal_network_error(convo_id, conversations_dir=conv_dir)
+        assert res is not None
+        assert res["step_index"] == 27
+        assert res["error"] == "network_issue_server_error"
+        assert res["error_id"] == "6aa506b4-cbf0-4cdd-86af-5086a23c541d-27"
+
+    def test_terminal_db_error_bypasses_stall_grace_seconds(self, db, temp_dir):
+        """
+        Verify that a conversation with terminal execution error recorded in SQLite DB
+        bypasses the 180s stall grace period and is immediately marked can_resuscitate=True.
+        """
+        import sqlite3
+        convo_id = "test-terminal-grace-bypass"
+        conv_dir = temp_dir / "conversations"
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        db_path = conv_dir / f"{convo_id}.db"
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)")
+        payload = b"Agent execution terminated due to error. User location is not supported for the API use. 6aa506b4-cbf0-4cdd-86af-5086a23c541d-27"
+        conn.execute("INSERT INTO steps VALUES (27, 17, ?)", (payload,))
+        conn.commit()
+        conn.close()
+
+        # Transcript only up to step 26 or user prompt
+        steps = [
+            {"step_index": 25, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": "Done task"},
+            {"step_index": 26, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": None, "tool_calls": []},
+        ]
+        # Modified only 10 seconds ago (far less than stall_grace_seconds = 180s)
+        t_path = _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=10.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            stall_grace_seconds=180,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config)
+        watchdog._conversations_dir = conv_dir
+
+        stalled = watchdog.scan_stalled_conversations()
+        matched = [s for s in stalled if s.conversation_id == convo_id]
+        assert len(matched) == 1
+        assert matched[0].can_resuscitate is True
+        assert matched[0].skip_reason is None
+        assert matched[0].is_network_issue is True
+        assert matched[0].last_error == "network_issue_server_error"
+
+    def test_boost_goal_prioritized_over_network_prompt(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that a /goal or /boost session that hits a network/location error
+        retains the BOOST_GOAL_RESUSCITATION_PROMPT to enforce team coordination discipline.
+        """
+        convo_id = "test-boost-goal-network-priority"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "[/goal] Autonomous Audit Task"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "ERROR", "content": "Agent execution terminated due to error", "tool_calls": []},
+        ]
+        t_path = _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=120.0)
+
+        session = StalledSessionInfo(
+            conversation_id=convo_id,
+            transcript_path=t_path,
+            last_step_index=1,
+            last_error="network_issue_server_error",
+            last_error_time=time.time() - 120.0,
+            is_subagent=False,
+            is_boost_goal=True,
+            is_network_issue=True,
+            can_resuscitate=True,
+        )
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        mock_agentapi.send_message.return_value = (True, "OK", "")
+
+        res = asyncio.run(watchdog.resuscitate_session(session))
+        assert res["status"] == "resuscitated"
+
+        mock_agentapi.send_message.assert_called_once()
+        called_prompt = mock_agentapi.send_message.call_args[1]["content"]
+        assert "【系统自动自愈拉起提醒：/boost 目标自治与协同推进延续】" in called_prompt
+        assert "严禁退化为单兵等待或打假卡" in called_prompt
 
 
 

@@ -58,7 +58,13 @@ INTERRUPTED_STREAM_PATTERNS = (
     "there was a network issue connecting to the server",
     "agent executor error",
     "calling model: request failed",
+    "agent execution terminated due to error",
     "agent terminated due to error",
+    "user location is not supported",
+    "location is not supported for the api use",
+    "failed_precondition",
+    "model output error",
+    "503 service unavailable",
     "no capacity available for model",
     "lookup oauth2.googleapis.com",
     "no such host",
@@ -71,10 +77,10 @@ INTERRUPTED_STREAM_PATTERNS = (
 )
 
 NETWORK_ERROR_RESUSCITATION_PROMPT = (
-    "【系统自动网络故障自愈拉起提醒】\n"
-    "检测到底层与模型服务通信发生偶发网络中断/超时（There was a network issue connecting to the server）。\n"
-    "现网络与域名解析已恢复稳定正常。\n"
-    "请越过偶发网络中断报错，检查上一步执行进展并直接继续推进原定任务计划（请全中文汇报进展）。"
+    "【系统自动网络/服务故障自愈拉起提醒】\n"
+    "检测到底层与模型服务通信发生偶发网络中断、地域路由抖动或超时（Network Issue / User Location / Server Error）。\n"
+    "现网络与接口通信已恢复正常。\n"
+    "请越过偶发网络与终端中断报错，检查上一步执行进展并直接继续推进原定任务计划（请全中文汇报进展）。"
 )
 
 DEFAULT_RESUSCITATION_PROMPT = (
@@ -436,37 +442,56 @@ def inspect_conversation_db_for_terminal_network_error(
         conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True, timeout=1.0)
         cur = conn.cursor()
         cur.execute(
-            "SELECT idx, step_payload FROM steps WHERE step_type = 17 ORDER BY idx DESC LIMIT 5"
+            "SELECT idx, step_payload FROM steps WHERE step_type = 17 ORDER BY idx DESC LIMIT 1"
         )
-        rows = cur.fetchall()
+        row = cur.fetchone()
         conn.close()
 
-        for row in rows:
-            payload_bytes = row[1]
-            if not payload_bytes:
-                continue
-            payload_str = payload_bytes.decode("utf-8", errors="ignore")
-            p_lower = payload_str.lower()
+        if not row:
+            return None
 
-            has_net_issue = (
-                "there was a network issue connecting to the server" in p_lower
-                or "agent executor error: calling model: request failed" in p_lower
-                or ("dial tcp" in p_lower and ("operation timed out" in p_lower or "i/o timeout" in p_lower or "no such host" in p_lower))
-                or "lookup oauth2.googleapis.com" in p_lower
-                or "no capacity available for model" in p_lower
-                or "agent terminated due to error" in p_lower
-                or "streamgeneratecontent?alt=sse" in p_lower
-            )
+        payload_bytes = row[1]
+        if not payload_bytes:
+            return None
+        payload_str = payload_bytes.decode("utf-8", errors="ignore")
+        p_lower = payload_str.lower()
 
-            if has_net_issue:
+        has_terminal_issue = (
+            "there was a network issue connecting to the server" in p_lower
+            or "agent executor error: calling model: request failed" in p_lower
+            or "agent executor error" in p_lower
+            or ("dial tcp" in p_lower and ("operation timed out" in p_lower or "i/o timeout" in p_lower or "no such host" in p_lower or "connect" in p_lower))
+            or "lookup oauth2.googleapis.com" in p_lower
+            or "no capacity available for model" in p_lower
+            or "agent execution terminated due to error" in p_lower
+            or "agent terminated due to error" in p_lower
+            or "user location is not supported" in p_lower
+            or "location is not supported for the api use" in p_lower
+            or "failed_precondition" in p_lower
+            or "model output error" in p_lower
+            or "503 service unavailable" in p_lower
+            or "broken pipe" in p_lower
+            or "stream was interrupted" in p_lower
+            or "the stream was interrupted" in p_lower
+            or "streamgeneratecontent?alt=sse" in p_lower
+        )
+
+        if has_terminal_issue:
+            # Error ID is formatted as <trajectory_id>-<step_index>. In protobuf byte stream,
+            # the step_index digits may immediately precede next field tag byte (e.g. \x38 / '8').
+            # Prioritize matching exact step_index from row[0].
+            m_exact = re.search(rf'([0-9a-fA-F-]{{36}})-({row[0]})', payload_str)
+            if m_exact:
+                error_id = f"{m_exact.group(1)}-{row[0]}"
+            else:
                 m_eid = re.search(r'([0-9a-fA-F-]{36}-\d+)', payload_str)
                 error_id = m_eid.group(1) if m_eid else None
-                return {
-                    "step_index": row[0],
-                    "error": "network_issue_server_error",
-                    "error_id": error_id,
-                    "details": "There was a network issue connecting to the server (agent executor error)",
-                }
+            return {
+                "step_index": row[0],
+                "error": "network_issue_server_error",
+                "error_id": error_id,
+                "details": "Agent execution terminated due to error / network issue connecting to the server",
+            }
     except Exception as e:
         logger.debug("Error checking conversation db %s for terminal network error: %s", convo_id, e)
     return None
@@ -1397,8 +1422,17 @@ class AntigravityWatchdog:
                         else:
                             continue
 
-                # If the last step is an active user input or running tool, it's not stalled.
-                if last_status == "RUNNING" or (last_source in ("USER_EXPLICIT", "USER") and now - file_mtime < self.config.stall_grace_seconds):
+                terminal_db_err = inspect_conversation_db_for_terminal_network_error(
+                    convo_id, conversations_dir=self._conversations_dir
+                )
+                is_terminal_db_error = False
+                if terminal_db_err:
+                    err_idx = terminal_db_err.get("step_index", 0)
+                    if err_idx >= last_step_idx - 2:
+                        is_terminal_db_error = True
+
+                # If the last step is an active user input or running tool, and NO terminal DB error occurred, it's not stalled.
+                if not is_terminal_db_error and (last_status == "RUNNING" or (last_source in ("USER_EXPLICIT", "USER") and now - file_mtime < self.config.stall_grace_seconds)):
                     continue
 
                 is_stalled = False
@@ -1406,16 +1440,10 @@ class AntigravityWatchdog:
                 is_mcp = False
                 is_network_issue = False
 
-                terminal_db_err = inspect_conversation_db_for_terminal_network_error(
-                    convo_id, conversations_dir=self._conversations_dir
-                )
-                if terminal_db_err:
-                    err_idx = terminal_db_err.get("step_index", 0)
-                    if err_idx >= last_step_idx - 2:
-                        is_network_issue = True
-                        matched_error = "network_issue_server_error"
-                        if now - file_mtime > self.config.stall_grace_seconds:
-                            is_stalled = True
+                if is_terminal_db_error:
+                    is_network_issue = True
+                    matched_error = "network_issue_server_error"
+                    is_stalled = True
 
                 is_boost_goal = check_session_has_boost_or_goal(transcript_path, parsed_steps)
                 has_stop_hook = any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps)
@@ -1543,8 +1571,10 @@ class AntigravityWatchdog:
                     )
                     continue
 
-                # Stall grace period: recent errors (< stall_grace_seconds) are given time to self-heal
-                if now - file_mtime < self.config.stall_grace_seconds:
+                # Stall grace period: recent errors (< stall_grace_seconds) are given time to self-heal.
+                # However, deterministic terminal execution errors recorded in SQLite DB (step_type = 17)
+                # have completely terminated execution and cannot self-heal. They bypass the stall grace period.
+                if not is_terminal_db_error and (now - file_mtime < self.config.stall_grace_seconds):
                     stalled.append(
                         StalledSessionInfo(
                             conversation_id=convo_id,
@@ -1636,10 +1666,10 @@ class AntigravityWatchdog:
             )
         elif session_info.is_quota_exhausted or session_info.last_error == "quota_restored_pull_up":
             prompt = custom_prompt or QUOTA_RESUSCITATION_PROMPT
-        elif session_info.is_network_issue or "network" in str(session_info.last_error).lower() or "server_error" in str(session_info.last_error).lower():
-            prompt = custom_prompt or NETWORK_ERROR_RESUSCITATION_PROMPT
         elif session_info.is_boost_goal or session_info.is_stop_hook_hang or "stop_hook" in str(session_info.last_error).lower() or "boost" in str(session_info.last_error).lower() or "goal" in str(session_info.last_error).lower():
             prompt = custom_prompt or BOOST_GOAL_RESUSCITATION_PROMPT
+        elif session_info.is_network_issue or "network" in str(session_info.last_error).lower() or "server_error" in str(session_info.last_error).lower():
+            prompt = custom_prompt or NETWORK_ERROR_RESUSCITATION_PROMPT
         elif session_info.is_mcp_error or "mcp" in str(session_info.last_error).lower():
             prompt = custom_prompt or MCP_ERROR_RESUSCITATION_PROMPT
         elif session_info.has_active_schedule or "schedule" in str(session_info.last_error).lower():

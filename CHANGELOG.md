@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.15] - 2026-09-18
+
+### Fixed & Hardened
+- **Antigravity Watchdog 终端执行与地区拦截错误秒级自愈 (`hub/antigravity/watchdog.py`)**:
+  - **模式签名全面扩充**：扩充 `INTERRUPTED_STREAM_PATTERNS` 与 SQLite DB 检查签名，补充 `"agent execution terminated due to error"`, `"user location is not supported"`, `"location is not supported for the api use"`, `"failed_precondition"`, `"model output error"`, `"503 service unavailable"` 等 10+ 项关键错误。
+  - **单步精检防历史穿透**：重构 `inspect_conversation_db_for_terminal_network_error()`，单查最新的一步（`LIMIT 1`），杜绝因未匹配最新错误而穿透回滚匹配历史旧步数引发的误判。
+  - **精确解析 Protobuf 终端 Error ID**：针对 Protobuf 二进制流中 step_index 紧邻下一字段 tag（如 `\x38` / `'8'`）导致贪婪截取问题，实现优先结合当前步骤 `idx` 精准匹配，提取与 IDE 前端一致的 Error ID。
+  - **终端错误免除 180s 沉睡等待**：针对 `step_type = 17` 终端中止，在 `scan_stalled_conversations()` 提前捕获并标记 `is_terminal_db_error`，豁免 `stall_grace_seconds` 冷却限制与用户输入过滤规则，实现终端致命报错秒级识别与即时拉起。
+  - **提示词优先级纠正**：在 `resuscitate_session()` 中提升 `is_boost_goal` 提示词优先级至普通网络提示词之前，确保 `/boost`、`/goal` 与多 Agent 协同任务在遭遇网络/地域抖动唤醒时始终保留团队自治强纪律（严禁降级 Solo、MCP 降级原生 CLI、Stop Hook 持续交付）。
+  - **提示词自愈引导强化**：更新 `NETWORK_ERROR_RESUSCITATION_PROMPT`，覆盖 Google API 瞬时地区路由抖动与服务器超时的自动跨越指引。
+
 ## [1.16.14] - 2026-09-18
 
 ### Fixed & Hardened
