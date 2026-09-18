@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.14] - 2026-09-18
+
+### Fixed & Hardened
+- **Cloudflare Ingress Tunnel Diagnostics & Fake-IP Warning (`tunnel/start_tunnel.sh`)**:
+  - Enhanced `--status` public health check with HTTP status code reporting and active DNS Fake-IP detection.
+  - Automatically flags `198.18.*` Fake-IP hijack from local proxy TUN interfaces (e.g. Clash Verge) that causes edge TLS handshake EOF and HTTP 530 errors.
+
 ## [1.16.13] - 2026-09-16
 
 ### Fixed & Hardened

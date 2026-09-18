@@ -148,10 +148,15 @@ if [[ "${ACTION}" == "status" ]]; then
   fi
 
   echo "  Public Ingress: https://${PUBLIC_HOST}"
-  if curl -s -f "https://${PUBLIC_HOST}/healthz" >/dev/null 2>&1; then
+  PUBLIC_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 "https://${PUBLIC_HOST}/healthz" 2>/dev/null || echo "000")
+  if [[ "${PUBLIC_HTTP_CODE}" == "200" ]]; then
     echo "  Public Health: ONLINE (200 OK reachable via Cloudflare Edge)"
   else
-    echo "  Public Health: UNREACHABLE"
+    echo "  Public Health: UNREACHABLE (HTTP ${PUBLIC_HTTP_CODE})"
+    EDGE_IP=$(dig +short region1.v2.argotunnel.com 2>/dev/null | head -n 1 || true)
+    if [[ "${EDGE_IP}" =~ ^198\.18\. ]]; then
+      echo "  ↳ ⚠️ Warning: Cloudflare Edge resolved to Fake-IP (${EDGE_IP}) via TUN/Proxy. Disable TUN or add bypass."
+    fi
   fi
   echo "=================================================================="
   exit 0
