@@ -888,28 +888,46 @@ class AntigravityWatchdog:
         return tail_transcript_lines(file_path, max_lines=max_lines)
 
     def _find_associated_sidecar(self, conversation_id: str) -> Optional[str]:
-        """Match conversation_id to any scheduled task or sidecar run."""
+        """Match conversation_id to any scheduled task or sidecar run with TTL caching."""
         if not self._sidecar_data_dir.exists():
             return None
 
-        try:
-            for slug_dir in self._sidecar_data_dir.iterdir():
-                if not slug_dir.is_dir():
-                    continue
-                events_dir = slug_dir / "events"
-                if not events_dir.exists():
-                    continue
-                for ev_file in events_dir.glob("*.json"):
-                    try:
-                        content = ev_file.read_text(encoding="utf-8", errors="ignore")
-                        if conversation_id in content:
-                            return slug_dir.name
-                    except Exception:
-                        continue
-        except Exception as e:
-            logger.debug("Error resolving sidecar for %s: %s", conversation_id, e)
+        now = time.time()
+        cache = getattr(self, "_sidecar_map_cache", None)
+        last_built = getattr(self, "_sidecar_map_last_built", 0.0)
 
-        return None
+        if cache is None or (now - last_built) > 60.0:
+            cache = {}
+            try:
+                for slug_dir in self._sidecar_data_dir.iterdir():
+                    if not slug_dir.is_dir():
+                        continue
+                    events_dir = slug_dir / "events"
+                    if not events_dir.exists():
+                        continue
+                    for ev_file in events_dir.glob("*.json"):
+                        try:
+                            content = ev_file.read_text(encoding="utf-8", errors="ignore")
+                            idx = content.find('"conversationId":"')
+                            if idx != -1:
+                                end_idx = content.find('"', idx + 18)
+                                if end_idx != -1:
+                                    cid = content[idx + 18 : end_idx]
+                                    cache[cid] = slug_dir.name
+                            elif '"conversation_id":"' in content:
+                                idx2 = content.find('"conversation_id":"')
+                                end_idx2 = content.find('"', idx2 + 19)
+                                if end_idx2 != -1:
+                                    cid = content[idx2 + 19 : end_idx2]
+                                    cache[cid] = slug_dir.name
+                        except Exception:
+                            continue
+            except Exception as e:
+                logger.debug("Error building sidecar map cache: %s", e)
+            self._sidecar_map_cache = cache
+            self._sidecar_map_last_built = now
+
+        return cache.get(conversation_id)
 
     def scan_stalled_conversations(self) -> list[StalledSessionInfo]:
         """
@@ -1010,7 +1028,7 @@ class AntigravityWatchdog:
                         continue
 
                 prior_attempts = self.db.get_resuscitation_attempts(convo_id, current_step_index=last_step_idx) if self.db else 0
-                sidecar_slug = self._find_associated_sidecar(convo_id)
+                sidecar_slug: Optional[str] = None
 
                 parent_convo_id = None
                 is_subagent = False
@@ -1019,9 +1037,11 @@ class AntigravityWatchdog:
                 completed_child_summary: str = ""
 
                 def _resolve_subagent_and_parent():
-                    nonlocal parent_convo_id, is_subagent, _parent_resolved
+                    nonlocal parent_convo_id, is_subagent, _parent_resolved, sidecar_slug
                     if not _parent_resolved:
                         _parent_resolved = True
+                        if sidecar_slug is None:
+                            sidecar_slug = self._find_associated_sidecar(convo_id)
                         parent_convo_id = detect_parent_conversation_id(
                             convo_id,
                             conversations_dir=self._conversations_dir,
@@ -1870,7 +1890,7 @@ class AntigravityWatchdog:
             logger.debug("Antigravity Watchdog: Antigravity language_server not ready, skipping tick.")
             return []
 
-        stalled = self.scan_stalled_conversations()
+        stalled = await asyncio.to_thread(self.scan_stalled_conversations)
         results: list[dict[str, Any]] = []
         awakened_targets: set[str] = set()
 

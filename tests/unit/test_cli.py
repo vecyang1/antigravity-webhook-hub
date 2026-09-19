@@ -797,7 +797,7 @@ def test_cmd_service_non_darwin_rejected(capsys):
 @patch("platform.system", return_value="Darwin")
 def test_cmd_service_status_stopped(mock_sys, tmp_path, capsys):
     """Verify service status output when daemon is stopped and plist not installed."""
-    code = main(["service", "status", "--dir", str(tmp_path), "--launch-agents-dir", str(tmp_path)])
+    code = main(["service", "status", "--dir", str(tmp_path), "--launch-agents-dir", str(tmp_path), "--label", "com.test.nonexistent.webhook-hub"])
     assert code == 1  # Not running
     out = capsys.readouterr().out
     assert "macOS LaunchAgent Status" in out

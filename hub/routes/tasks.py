@@ -469,28 +469,23 @@ def register_task_routes(
                 real_tasks = 0
                 test_tasks = 0
 
-                summary_rows = await db.execute_read(f"""
-                    SELECT status,
-                           CASE WHEN {TEST_EVENT_SQL_FILTER} THEN 1 ELSE 0 END as is_test,
-                           COUNT(*) as cnt
-                    FROM tasks
-                    GROUP BY status, is_test
-                """)
-                for r in summary_rows:
+                task_rows = await db.execute_read(
+                    "SELECT task_id, event_id, source, command, target_action, action_params_json, status FROM tasks"
+                )
+                for r in task_rows:
                     st = r.get("status")
-                    is_t = bool(r.get("is_test", 0))
-                    cnt = int(r.get("cnt", 0))
+                    is_t = is_test_task(r)
                     if st in counts_by_status:
-                        counts_by_status[st] += cnt
-                    total_tasks += cnt
+                        counts_by_status[st] += 1
+                    total_tasks += 1
                     if is_t:
                         if st in test_by_status:
-                            test_by_status[st] += cnt
-                        test_tasks += cnt
+                            test_by_status[st] += 1
+                        test_tasks += 1
                     else:
                         if st in real_by_status:
-                            real_by_status[st] += cnt
-                        real_tasks += cnt
+                            real_by_status[st] += 1
+                        real_tasks += 1
 
                 source_rows = await db.execute_read(
                     "SELECT source, COUNT(*) as cnt FROM tasks GROUP BY source ORDER BY cnt DESC LIMIT 10"

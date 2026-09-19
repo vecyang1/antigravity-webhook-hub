@@ -336,6 +336,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         proc = subprocess.Popen(
             cmd,
             start_new_session=True,
+            stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=log_file,
         )
@@ -1533,8 +1534,27 @@ def cmd_service(args: Any) -> int:
     python_bin = sys.executable
     launch_agents_dir = Path(getattr(args, "launch_agents_dir", None) or (Path.home() / "Library" / "LaunchAgents")).resolve()
     plist_path = launch_agents_dir / f"{label}.plist"
-    out_log = project_dir / "webhook-hub.log"
-    err_log = project_dir / "webhook-hub-err.log"
+
+    # On macOS, launchd has strict TCC sandbox restrictions and cannot write StandardOutPath/StandardErrorPath
+    # directly into ~/Documents or ~/Desktop. Standard macOS convention places user LaunchAgent logs under ~/Library/Logs/.
+    if getattr(args, "launch_agents_dir", None) or getattr(args, "dir", None):
+        out_log = project_dir / "webhook-hub.log"
+        err_log = project_dir / "webhook-hub-err.log"
+    else:
+        logs_dir = Path.home() / "Library" / "Logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        out_log = logs_dir / "webhook-hub.log"
+        err_log = logs_dir / "webhook-hub-err.log"
+        local_out = project_dir / "webhook-hub.log"
+        local_err = project_dir / "webhook-hub-err.log"
+        try:
+            if not local_out.exists() and not local_out.is_symlink():
+                local_out.symlink_to(out_log)
+            if not local_err.exists() and not local_err.is_symlink():
+                local_err.symlink_to(err_log)
+        except Exception:
+            pass
+
     pid_file = project_dir / DEFAULT_PID_FILE
 
     def _is_service_loaded() -> tuple[bool, Optional[int]]:
@@ -1583,6 +1603,8 @@ def cmd_service(args: Any) -> int:
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>StandardInPath</key>
+    <string>/dev/null</string>
     <key>StandardOutPath</key>
     <string>{out_log}</string>
     <key>StandardErrorPath</key>
@@ -1601,6 +1623,7 @@ def cmd_service(args: Any) -> int:
 """
         is_loaded, _ = _is_service_loaded()
         if is_loaded:
+            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], capture_output=True)
             subprocess.run(["launchctl", "unload", "-w", str(plist_path)], capture_output=True)
 
         if pid_file.is_file():
@@ -1614,8 +1637,10 @@ def cmd_service(args: Any) -> int:
 
         plist_path.write_text(plist_content, encoding="utf-8")
 
-        load_res = subprocess.run(["launchctl", "load", "-w", str(plist_path)], capture_output=True, text=True)
+        load_res = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)], capture_output=True, text=True)
         if load_res.returncode != 0:
+            load_res = subprocess.run(["launchctl", "load", "-w", str(plist_path)], capture_output=True, text=True)
+        if load_res.returncode != 0 and not _is_service_loaded()[0]:
             print(f"Error loading launchd plist: {load_res.stderr.strip()}", file=sys.stderr)
             return load_res.returncode
 
@@ -1640,6 +1665,7 @@ def cmd_service(args: Any) -> int:
     elif action in ("uninstall", "disable"):
         print(f"Uninstalling macOS LaunchAgent '{label}'...")
         if plist_path.is_file():
+            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], capture_output=True)
             subprocess.run(["launchctl", "unload", "-w", str(plist_path)], capture_output=True)
             try:
                 plist_path.unlink()
@@ -1647,6 +1673,7 @@ def cmd_service(args: Any) -> int:
             except OSError as e:
                 print(f"  • Warning: failed to delete plist: {e}")
         else:
+            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], capture_output=True)
             subprocess.run(["launchctl", "unload", "-w", str(plist_path)], capture_output=True)
 
         if pid_file.is_file():
@@ -1669,6 +1696,7 @@ def cmd_service(args: Any) -> int:
         if not plist_path.is_file():
             print(f"Error: Plist {plist_path} not found. Run './bin/webhook-hub service install' first.", file=sys.stderr)
             return 1
+        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], capture_output=True)
         subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
         if pid_file.is_file():
             old_pid = _read_pid_file(pid_file)
@@ -1685,8 +1713,10 @@ def cmd_service(args: Any) -> int:
                     except OSError:
                         pass
         time.sleep(1.0)
-        res = subprocess.run(["launchctl", "load", "-w", str(plist_path)], capture_output=True, text=True)
+        res = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)], capture_output=True, text=True)
         if res.returncode != 0:
+            res = subprocess.run(["launchctl", "load", "-w", str(plist_path)], capture_output=True, text=True)
+        if res.returncode != 0 and not _is_service_loaded()[0]:
             print(f"Error reloading service: {res.stderr.strip()}", file=sys.stderr)
             return res.returncode
         time.sleep(1.0)

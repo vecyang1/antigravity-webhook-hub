@@ -338,6 +338,7 @@ class AgentAPIClient:
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *actual_cmd,
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=cwd,
@@ -348,6 +349,7 @@ class AgentAPIClient:
                     actual_cmd = ["/bin/sh"] + actual_cmd
                     proc = await asyncio.create_subprocess_exec(
                         *actual_cmd,
+                        stdin=asyncio.subprocess.DEVNULL,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         cwd=cwd,

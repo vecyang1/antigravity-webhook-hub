@@ -90,6 +90,8 @@ class TaskDispatcher:
         if self.antigravity_watchdog and self.antigravity_quota:
             self.antigravity_watchdog.quota_sentinel = self.antigravity_quota
 
+        self._quota_boot_task: Optional[asyncio.Task] = None
+
     async def start(self) -> None:
         """Start background task dispatcher workers, recover orphaned tasks, and launch unprocessed sweeper."""
         if hasattr(self.db, "recover_orphaned_tasks"):
@@ -108,10 +110,12 @@ class TaskDispatcher:
         except Exception as e:
             logger.warning("Initial boot-time sweep failed: %s", e)
 
-        # Initial Antigravity quota scan and SSOT sync on startup
+        # Initial Antigravity quota scan and SSOT sync on startup (non-blocking background task)
         if self.antigravity_quota and getattr(self.antigravity_quota, "is_enabled", True):
             try:
-                await self.antigravity_quota.sweep_and_warmup(reason="boot_startup")
+                self._quota_boot_task = asyncio.create_task(
+                    self.antigravity_quota.sweep_and_warmup(reason="boot_startup")
+                )
             except Exception as e:
                 logger.debug("Initial boot-time Antigravity quota sync skipped: %s", e)
 
@@ -167,6 +171,14 @@ class TaskDispatcher:
             except (asyncio.CancelledError, Exception):
                 pass
             self._sweeper_task = None
+
+        if self._quota_boot_task is not None and not self._quota_boot_task.done():
+            self._quota_boot_task.cancel()
+            try:
+                await self._quota_boot_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._quota_boot_task = None
 
         if self._worker_tasks:
             for t in self._worker_tasks:
@@ -784,6 +796,7 @@ class TaskDispatcher:
 
                 proc = await asyncio.create_subprocess_shell(
                     cmd,
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     env=proc_env,

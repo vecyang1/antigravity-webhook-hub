@@ -165,3 +165,21 @@ async def test_agent_signal_file_emission(dispatcher_instance: Any, tmp_path: Pa
     assert len(signal_files) == 1
     signal_content = json.loads(signal_files[0].read_text(encoding="utf-8"))
     assert signal_content["task_id"] == task_id
+
+
+async def test_cli_command_stdin_devnull_safe(dispatcher_instance: Any):
+    """Tier 1: Subprocess execution is resilient against Bad file descriptor (stdin connected to devnull)."""
+    dispatcher, db = dispatcher_instance
+    task_id = "tsk_disp_devnull"
+    db.tasks[task_id] = {
+        "task_id": task_id,
+        "action_type": "cli",
+        "command": "python3 -c \"import sys; print('stdin_readable:', sys.stdin.readable())\"",
+        "status": "queued",
+        "timeout_seconds": 10,
+    }
+
+    result = await dispatcher.execute_task(task_id)
+    assert result.exit_code == 0
+    assert result.status == "succeeded"
+    assert "stdin_readable: True" in result.stdout

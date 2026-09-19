@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.16] - 2026-09-19
+
+### Fixed & Hardened
+- **Watchdog 停滞扫描性能大重构与非阻塞异步化 (`hub/antigravity/watchdog.py`)**:
+  - **消除主事件循环假死**：定位并解决 `_find_associated_sidecar` 每次扫描（621 个会话）高频重复打开读取全量 Sidecar 文件（O(N*M) 9.6 万次文件读取，耗时 17.57s 导致主 asyncio 事件循环假死）的问题。
+  - **TTL 内存索引与惰性解析**：引入 60 秒 TTL 内存缓存映射 `_sidecar_map_cache` 并改用快速字符串解析，将 Sidecar 关联解析延迟降低至微秒级；并将 sidecar 关联解析惰性后置到 `_resolve_subagent_and_parent`，跳过非停滞会话的不必要遍历。
+  - **线程池卸载**：在 `resuscitate_stalled_sessions` 中通过 `await asyncio.to_thread(self.scan_stalled_conversations)` 将文件系统密集型扫描卸载到独立工作线程池，彻底解除主事件循环阻塞。
+- **Dispatcher 启动非阻塞改造与后台配额预热 (`hub/dispatcher.py`)**:
+  - 将启动阶段的 `antigravity_quota.sweep_and_warmup(reason="boot_startup")` 改为非阻塞 `asyncio.create_task` 后台执行，并在 `stop()` 中妥善捕获与取消，消除网关启动阶段 12s+ 阻塞导致端口绑定超时的隐患。
+  - CLI 任务执行子进程添加 `stdin=asyncio.subprocess.DEVNULL` 保护，防止文件描述符竞争异常。
+- **任务聚合与健康探测毫秒级性能优化 (`hub/routes/tasks.py`, `hub/routes/observability.py`)**:
+  - **`GET /tasks/summary` 52 倍加速**：废弃包含 50+ 个 LIKE 匹配子句的慢 SQL 过滤，改用轻量列投影 + 内存高速 `is_test_task()` 分类，将接口耗时从 3.15s 压缩至 0.06s。
+  - **`GET /health` / `GET /healthz` 34 倍加速**：消除每次请求无条件执行的 `db.shrink_memory()`、`gc.collect(2)` 和 Darwin 内存释放，仅在 RSS 接近或超出预算（85%）时按需执行，将健康检查响应耗时从 1.5s 压降至 44ms。
+- **macOS LaunchAgent 与单元测试隔离修护 (`hub/cli.py`, `tests/unit/test_cli.py`)**:
+  - `cmd_service`: 迁移至现代 `launchctl bootstrap gui/<uid>` 规范（向后兼容 fallback `launchctl load`），支持日志路径权限自动修复。
+  - 单元测试状态隔离：为 `test_cmd_service_status_stopped` 显式注入隔离 label，彻底消除单元测试对宿主真实运行中守护进程的干扰。
+  - 验证全绿：13/13 E2E 检查与 268/268 单元测试 100% 通过。
+
 ## [1.16.15] - 2026-09-18
 
 ### Fixed & Hardened

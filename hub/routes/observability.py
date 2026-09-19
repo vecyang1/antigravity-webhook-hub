@@ -70,23 +70,14 @@ def register_observability_routes(
             except Exception:
                 pass
 
-        if db is not None and hasattr(db, "shrink_memory"):
-            try:
-                db.shrink_memory(truncate_wal=False)
-            except Exception:
-                pass
-
-        gc.collect(2)
-        _apply_darwin_pressure_relief()
-
         stats = server.get_stats()
         uptime = stats.get("uptime_seconds", 0.0)
         rss_mb = get_memory_rss_mb()
         budget_limit = get_memory_budget_mb(config)
-        if rss_mb > budget_limit:
+        if rss_mb > budget_limit * 0.85:
             if db is not None and hasattr(db, "shrink_memory"):
                 try:
-                    db.shrink_memory(truncate_wal=True)
+                    db.shrink_memory(truncate_wal=(rss_mb > budget_limit))
                 except Exception:
                     pass
             gc.collect(2)
