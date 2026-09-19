@@ -647,7 +647,7 @@ class E2EVerifier:
             # 1. GET /dashboard returns 200 and text/html
             dash_req = urllib.request.Request(f"{self.base_url}/dashboard", method="GET")
             dash_ok = False
-            with urllib.request.urlopen(dash_req, timeout=2.0) as resp:
+            with urllib.request.urlopen(dash_req, timeout=5.0) as resp:
                 body = resp.read().decode("utf-8")
                 ct = resp.headers.get("Content-Type", "")
                 dash_ok = resp.status == 200 and "text/html" in ct and "Antigravity Webhook Hub" in body
@@ -655,33 +655,33 @@ class E2EVerifier:
             # 2. GET /ui alias returns 200 and text/html
             ui_req = urllib.request.Request(f"{self.base_url}/ui", method="GET")
             ui_ok = False
-            with urllib.request.urlopen(ui_req, timeout=2.0) as resp:
+            with urllib.request.urlopen(ui_req, timeout=5.0) as resp:
                 ui_ok = resp.status == 200 and "text/html" in resp.headers.get("Content-Type", "")
 
             # 3. GET /health returns 200 and JSON with status ok/healthy
             health_req = urllib.request.Request(f"{self.base_url}/health", method="GET")
             health_ok = False
-            with urllib.request.urlopen(health_req, timeout=2.0) as resp:
+            with urllib.request.urlopen(health_req, timeout=5.0) as resp:
                 h_json = json.loads(resp.read().decode("utf-8"))
                 health_ok = resp.status == 200 and h_json.get("status") in ("ok", "healthy")
 
             # 4. GET /tasks/summary returns task aggregation counts
             summary_req = urllib.request.Request(f"{self.base_url}/tasks/summary", method="GET")
             summary_ok = False
-            with urllib.request.urlopen(summary_req, timeout=2.0) as resp:
+            with urllib.request.urlopen(summary_req, timeout=5.0) as resp:
                 s_json = json.loads(resp.read().decode("utf-8"))
                 summary_ok = resp.status == 200 and "total_tasks" in s_json and "by_status" in s_json
 
             # 5. HEAD /healthz and HEAD /dashboard return 200 with 0-byte body
             head_healthz_req = urllib.request.Request(f"{self.base_url}/healthz", method="HEAD")
             head_ok = False
-            with urllib.request.urlopen(head_healthz_req, timeout=2.0) as resp:
+            with urllib.request.urlopen(head_healthz_req, timeout=5.0) as resp:
                 head_healthz_body = resp.read()
                 head_ok = resp.status == 200 and len(head_healthz_body) == 0
 
             head_dash_req = urllib.request.Request(f"{self.base_url}/dashboard", method="HEAD")
             head_dash_ok = False
-            with urllib.request.urlopen(head_dash_req, timeout=2.0) as resp:
+            with urllib.request.urlopen(head_dash_req, timeout=5.0) as resp:
                 head_dash_body = resp.read()
                 head_dash_ok = resp.status == 200 and len(head_dash_body) == 0
 

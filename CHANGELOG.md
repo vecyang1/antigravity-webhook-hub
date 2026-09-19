@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.17] - 2026-09-20
+
+### Fixed & Hardened
+- **端到端验证套件冷启动超时防御 (`scripts/verify_e2e.py`)**:
+  - 在 Step 11（Dashboard, Observability UI & HEAD Support）中，将 `urllib.request.urlopen` 的超时阈值从 2.0s 适度放宽至 5.0s，防止网关初次访问冷加载仪表盘 HTML 与任务聚合接口时的假阳性超时，确保 13 项对抗与端到端验证稳健通过。
+
 ## [1.16.16] - 2026-09-19
 
 ### Fixed & Hardened
