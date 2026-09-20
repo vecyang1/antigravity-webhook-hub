@@ -228,15 +228,30 @@ def tail_transcript_lines(file_path: Path, max_lines: int = 15) -> list[str]:
     return lines
 
 
+_subagent_id_cache: dict[str, tuple[float, int, list[str]]] = {}
+
+
 def extract_subagent_ids_from_transcript(transcript_path: Path, current_convo_id: str) -> list[str]:
     """
     Extract all unique subagent conversation IDs spawned or referenced by this session.
     Inspects tool_calls, conversationId JSON blocks, conversation:// links, and subagent mentions.
-    Streams line-by-line to prevent high RSS memory spikes.
+    Streams line-by-line with mtime/size caching to prevent repetitive file reads and high RSS churn.
     """
     child_ids: list[str] = []
     if not transcript_path or not transcript_path.exists():
         return child_ids
+
+    cache_key = f"{transcript_path}:{current_convo_id}"
+    mtime, size = 0.0, 0
+    try:
+        st = transcript_path.stat()
+        mtime, size = st.st_mtime, st.st_size
+        cached = _subagent_id_cache.get(cache_key)
+        if cached is not None and cached[0] == mtime and cached[1] == size:
+            return list(cached[2])
+    except Exception:
+        pass
+
     try:
         with open(transcript_path, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
@@ -260,6 +275,12 @@ def extract_subagent_ids_from_transcript(transcript_path: Path, current_convo_id
                         child_ids.append(cid)
     except Exception as e:
         logger.debug("Failed extracting subagent IDs from %s: %s", transcript_path, e)
+
+    if len(_subagent_id_cache) > 256:
+        _subagent_id_cache.clear()
+    if mtime > 0:
+        _subagent_id_cache[cache_key] = (mtime, size, list(child_ids))
+
     return child_ids
 
 
@@ -907,7 +928,8 @@ class AntigravityWatchdog:
                         continue
                     for ev_file in events_dir.glob("*.json"):
                         try:
-                            content = ev_file.read_text(encoding="utf-8", errors="ignore")
+                            with open(ev_file, "r", encoding="utf-8", errors="ignore") as f:
+                                content = f.read(4096)
                             idx = content.find('"conversationId":"')
                             if idx != -1:
                                 end_idx = content.find('"', idx + 18)
@@ -1645,6 +1667,8 @@ class AntigravityWatchdog:
 
         import gc
         gc.collect()
+        from hub.memory import apply_memory_pressure_relief
+        apply_memory_pressure_relief()
         return stalled
 
     async def resuscitate_session(
@@ -1932,6 +1956,8 @@ class AntigravityWatchdog:
                         awakened_targets.add(item.parent_conversation_id)
                 await asyncio.sleep(0.25)
 
+        from hub.memory import apply_memory_pressure_relief
+        apply_memory_pressure_relief()
         return results
 
     def get_status(self, force: bool = False) -> dict[str, Any]:

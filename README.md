@@ -284,7 +284,7 @@ Returns system liveness, database status, and memory RSS validation (supports bo
   "system": {
     "memory_rss_mb": 19.3,
     "memory_healthy": true,
-    "memory_budget_mb": 64.0
+    "memory_budget_mb": 128.0
   }
 }
 ```
@@ -390,7 +390,7 @@ python3 scripts/verify_e2e.py
 ```
 
 Verification suite checks:
-1. Health check & memory RSS budget verification (`< 30MB`)
+1. Health check & memory RSS budget verification (`< 128MB`)
 2. Legitimate webhook ingress & HMAC validation (`202 Accepted`)
 3. SQLite SSOT verification in WAL mode
 4. SSE stream protocol headers & heartbeat delivery

@@ -494,7 +494,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             }
             print(json.dumps(out, indent=2))
         else:
-            budget_limit = float(healthz_data.get("system", {}).get("memory_budget_mb", 64.0))
+            budget_limit = float(healthz_data.get("system", {}).get("memory_budget_mb", 128.0))
             print("==================================================")
             print(" Antigravity Webhook Hub Status: RUNNING")
             print("==================================================")
@@ -1739,7 +1739,7 @@ def cmd_service(args: Any) -> int:
         print(f"  • Process State:   {'RUNNING (PID: ' + str(running_pid) + ')' if running_pid else 'STOPPED'}")
         if running_pid:
             rss = _get_process_rss_mb(running_pid)
-            svc_budget = float(os.environ.get("MEMORY_BUDGET_MB", 64.0))
+            svc_budget = float(os.environ.get("MEMORY_BUDGET_MB", 128.0))
             print(f"  • Process RSS:     {rss:.2f} MB (Budget: < {svc_budget:.1f} MB)")
         print(f"  • Log File:        {out_log}")
         print(f"  • Error Log:       {err_log}")

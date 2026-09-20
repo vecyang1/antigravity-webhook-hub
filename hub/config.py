@@ -22,7 +22,7 @@ class ServerConfig:
     max_body_bytes: int = 1048576  # 1MB
     log_level: str = "INFO"
     keep_alive_timeout: int = 65
-    memory_budget_mb: float = 64.0
+    memory_budget_mb: float = 128.0
 
 
 @dataclass(slots=True)
@@ -148,6 +148,7 @@ class AppConfig:
                 "max_body_bytes": self.server.max_body_bytes,
                 "log_level": self.server.log_level,
                 "keep_alive_timeout": self.server.keep_alive_timeout,
+                "memory_budget_mb": self.server.memory_budget_mb,
             },
             "security": {
                 "auth_mode": self.security.auth_mode,

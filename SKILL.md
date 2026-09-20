@@ -9,7 +9,7 @@ source: local repository
 
 # Webhook Hub Skill
 
-Lightweight (<64MB production budget, 0% idle CPU) macOS webhook gateway and event dispatcher for Antigravity AI agents. Provides secure HMAC/Bearer ingress, decoupled execution queues, SQLite SSOT logging, and live SSE streaming.
+Lightweight (<128MB production budget, 0% idle CPU) macOS webhook gateway and event dispatcher for Antigravity AI agents. Provides secure HMAC/Bearer ingress, decoupled execution queues, SQLite SSOT logging, and live SSE streaming.
 
 ## 1. Quick Invocations
 
@@ -20,7 +20,7 @@ All commands run via `./bin/webhook-hub <subcommand>` or `python3 -m hub <subcom
 ./bin/webhook-hub setup                 # Self-diagnose environment, scaffold data/ dirs, provision secure .env
 ./bin/webhook-hub setup --force         # Re-scaffold and regenerate fresh cryptographic tokens
 ./bin/webhook-hub service install       # Install & activate native macOS launchd LaunchAgent auto-start daemon
-./bin/webhook-hub service status        # Check LaunchAgent registration, PID, RSS memory (<64MB), logs
+./bin/webhook-hub service status        # Check LaunchAgent registration, PID, RSS memory (<128MB), logs
 ./bin/webhook-hub service logs -n 50    # View last 50 lines of stdout and stderr daemon logs
 ./bin/webhook-hub service restart       # Cleanly reload daemon via launchctl unload/load
 ./bin/webhook-hub service uninstall     # Unload LaunchAgent and remove plist

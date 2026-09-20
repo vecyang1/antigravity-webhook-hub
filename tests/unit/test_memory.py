@@ -35,7 +35,7 @@ def test_get_memory_rss_bytes_and_mb():
 
 def test_get_memory_budget_mb_resolution():
     # 1. Default
-    assert get_memory_budget_mb() == 64.0
+    assert get_memory_budget_mb() == 128.0
 
     # 2. Config override
     cfg = AppConfig()

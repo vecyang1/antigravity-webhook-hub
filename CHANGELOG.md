@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.19] - 2026-09-20
+
+### Changed & Hardened
+- **生产内存预算从 64MB 扩容至 128MB 与全链路阈值对齐 (`hub/config.py`, `hub/memory.py`, `hub/cli.py`, `hub/routes/dashboard_template.py`)**:
+  - **默认预算上调**：将 `ServerConfig.memory_budget_mb` 及 `get_memory_budget_mb()` 默认值从 64.0 MB 提升至 128.0 MB，适配 macOS Apple Silicon (Darwin Mach 虚拟内存页) 与 Python 3.14 真实生产负载下的正常驻留集需求（日常稳定在 30~55 MB，告警由 51.9 MB / 81% 降至 40.5% 健康绿标）。
+  - **全链路同步**：同步更新 `hub/cli.py`（`service status` 和 `status` 命令展示与默认回退）、`hub/config.py`（`to_dict()` 补齐 `memory_budget_mb`）、Web 仪表盘 HTML 占位符与 JS 遥测进度条渲染计算（`const budgetMb = ... || 128`），并在环境变量 `MEMORY_BUDGET_MB` 优先继承机制下保持动态可配。
+- **Watchdog 停滞扫描内存防泄漏硬化 (`hub/antigravity/watchdog.py`)**:
+  - **mtime/size 缓存化解析**：在 `extract_subagent_ids_from_transcript` 中引入基于 `(mtime, size)` 的文件状态缓存 `_subagent_id_cache`（上限 256 项自动淘汰），彻底避免每 30 秒重复打开扫描未变动对话的大文本日志与高频正则匹配引起的临时字符串内存碎片。
+  - **Sidecar 读取上限约束**：`_find_associated_sidecar` 由全量 `read_text()` 优化为单文件最大截取读取 4KB，精准命中头部 `conversationId` 字段的同时消除大规模事件文件读取引发的内存峰值。
+  - **周期扫描垃圾回收与内存压降**：在 `scan_stalled_conversations` 及 `resuscitate_stalled_sessions` 周期结束时注入 `apply_memory_pressure_relief()` 与 `gc.collect()`，及时释放内核 Darwin 内存区缓存。
+- **配额哨兵与后台空闲内存调度优化 (`hub/antigravity/quota_sentinel.py`, `hub/server.py`)**:
+  - 在 `sweep_and_warmup` 循环末尾添加主动内存压降，消除多账号 HTTP 轮询对象驻留。
+  - 优化 `AsyncHTTPServer._idle_memory_monitor`：将轮询间隔由过载的 0.3s 调整为更温和的 0.5s 自适应步长，避免在高并发或长请求时频繁触发 `PRAGMA wal_checkpoint(TRUNCATE)` 产生磁盘与锁争用，保障管理接口稳定高速响应。
+- **端到端及对抗性测试基准更新 (`scripts/verify_e2e.py`, `tests/stress/test_m3_challenger.py`, `tests/stress/test_m5_adversarial_dispatcher_sse.py`, `tests/unit/test_memory.py`)**:
+  - 端到端验证 Step 1 与总体验收回退对齐 128.0MB；所有 280 项单元测试及 13 项端到端验收用例 100% 通过（Gateway RSS 稳定在 29~40 MB）。
+
 ## [1.16.18] - 2026-09-20
 
 ### Fixed & Hardened

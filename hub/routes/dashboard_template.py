@@ -1752,7 +1752,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         <div class="telemetry-card">
           <div class="telemetry-row">
             <span class="telemetry-label">Memory RSS</span>
-            <span class="telemetry-value" id="telemetryMemory">-- MB / 30 MB</span>
+            <span class="telemetry-value" id="telemetryMemory">-- MB / 128 MB</span>
           </div>
           <div class="progress-bar-container">
             <div class="progress-bar-fill" id="telemetryMemoryBar" style="width: 0%;"></div>
@@ -2942,7 +2942,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
 
     function renderTelemetry(health) {{
       const memMb = health.memory_rss_mb || 0;
-      const budgetMb = (health.system && health.system.memory_budget_mb) || 64;
+      const budgetMb = (health.system && health.system.memory_budget_mb) || 128;
       document.getElementById('telemetryMemory').innerText = memMb.toFixed(1) + ' MB / ' + budgetMb + ' MB';
       const pct = Math.min(100, Math.round((memMb / budgetMb) * 100));
       const bar = document.getElementById('telemetryMemoryBar');

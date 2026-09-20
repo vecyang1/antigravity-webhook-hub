@@ -822,6 +822,11 @@ class AntigravityQuotaSentinel:
                     reason, len(warmup_results), total_duration_ms
                 )
 
+            import gc
+            gc.collect(1)
+            from hub.memory import apply_memory_pressure_relief
+            apply_memory_pressure_relief()
+
             return summary
 
     def get_quota_overview(self, account_email: Optional[str] = None) -> dict[str, Any]:
