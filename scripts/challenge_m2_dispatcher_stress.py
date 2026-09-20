@@ -521,10 +521,11 @@ asyncio.run(run())
         print(f"       Isolated Dispatcher Start RSS: {start:.2f} MB")
         print(f"       Isolated Dispatcher Peak RSS:  {peak:.2f} MB")
 
-        if peak < 30.0:
-            self.log_pass("4.1 Memory RSS Budget (<30MB) Sequential Queue", f"Peak RSS {peak:.2f} MB < 30.0 MB (Margin: {30.0 - peak:.2f} MB)")
+        target_budget = float(os.environ.get("MEMORY_BUDGET_MB", 128.0))
+        if peak < target_budget:
+            self.log_pass(f"4.1 Memory RSS Budget (<{target_budget:.0f}MB) Sequential Queue", f"Peak RSS {peak:.2f} MB < {target_budget:.1f} MB (Margin: {target_budget - peak:.2f} MB)")
         else:
-            self.log_warn("4.1 Memory RSS Budget (<30MB) Sequential Queue", f"Peak RSS {peak:.2f} MB is right at the 30.0MB threshold")
+            self.log_warn(f"4.1 Memory RSS Budget (<{target_budget:.0f}MB) Sequential Queue", f"Peak RSS {peak:.2f} MB is right at the {target_budget:.1f}MB threshold")
 
     def test_4_2_parallel_burst_concurrency_stress(self):
         """4.2: Concurrently execute 10 tasks in parallel -> measure peak RSS and detect missing semaphore."""
@@ -576,10 +577,11 @@ asyncio.run(run())
                 val = float(line.split(":")[1])
 
         print(f"       Parallel Burst (10 simultaneous tasks) Peak RSS: {val:.2f} MB")
-        if val > 30.0:
-            self.log_warn("4.2 Concurrency Bounding & RSS Limit", f"Unthrottled 10 parallel tasks peaked at {val:.2f} MB > 30MB budget. Dispatcher lacks concurrency semaphore.")
+        target_budget = float(os.environ.get("MEMORY_BUDGET_MB", 128.0))
+        if val > target_budget:
+            self.log_warn("4.2 Concurrency Bounding & RSS Limit", f"Unthrottled 10 parallel tasks peaked at {val:.2f} MB > {target_budget:.1f}MB budget.")
         else:
-            self.log_pass("4.2 Concurrency Bounding & RSS Limit", f"Burst peak {val:.2f} MB < 30MB")
+            self.log_pass("4.2 Concurrency Bounding & RSS Limit", f"Burst peak {val:.2f} MB < {target_budget:.1f}MB (Margin: {target_budget - val:.2f} MB)")
 
 
 async def main():

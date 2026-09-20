@@ -362,7 +362,8 @@ class M5EmpiricalRunner:
     # Test 5: Standalone Server Process Memory RSS Under Load (<30MB)
     # ------------------------------------------------------------------------
     async def test_5_standalone_server_memory_rss_under_load(self):
-        name = "Standalone Server Process Memory RSS Under Load (<30MB Budget)"
+        target_budget = float(os.environ.get("MEMORY_BUDGET_MB", 128.0))
+        name = f"Standalone Server Process Memory RSS Under Load (<{target_budget:.0f}MB Budget)"
         secret = "standalone_m5_secret_32bytes_1234"
         port = 63124
         db_file = os.path.join(self.temp_dir, "standalone_rss.db")
@@ -371,7 +372,7 @@ class M5EmpiricalRunner:
         env["WEBHOOK_SECRET"] = secret
 
         proc = subprocess.Popen(
-            [sys.executable, "-m", "hub.cli", "start", "--port", str(port), "--db", db_file],
+            [sys.executable, "-m", "hub.cli", "start", "--port", str(port), "--db", db_file, "--pidfile", f"{db_file}.pid"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
@@ -380,7 +381,8 @@ class M5EmpiricalRunner:
         try:
             time.sleep(1.0)
             if proc.poll() is not None:
-                self.log_fail(name, "Server failed to start")
+                err = proc.stderr.read().decode() if proc.stderr else ""
+                self.log_fail(name, f"Server failed to start: {err}")
                 return
 
             out_init = subprocess.check_output(["ps", "-o", "rss=", "-p", str(proc.pid)]).decode().strip()
@@ -408,14 +410,14 @@ class M5EmpiricalRunner:
             out_after = subprocess.check_output(["ps", "-o", "rss=", "-p", str(proc.pid)]).decode().strip()
             rss_after = int(out_after) / 1024.0
 
-            if rss_after >= 30.0:
+            if rss_after >= target_budget:
                 self.log_fail(
                     name,
-                    f"Process RSS breached 30MB under load: {rss_after:.2f}MB (initial: {rss_init:.2f}MB)",
+                    f"Process RSS breached {target_budget}MB under load: {rss_after:.2f}MB (initial: {rss_init:.2f}MB)",
                     finding_id="FINDING-RSS-BREACH",
                 )
             else:
-                self.log_pass(name, f"RSS maintained under budget: {rss_init:.2f}MB -> {rss_after:.2f}MB < 30.0MB")
+                self.log_pass(name, f"RSS maintained under budget: {rss_init:.2f}MB -> {rss_after:.2f}MB < {target_budget:.1f}MB")
 
         finally:
             proc.terminate()

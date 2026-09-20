@@ -817,6 +817,9 @@ class TaskDispatcher:
                     except Exception as pid_err:
                         logger.debug("Failed to record execution pid %s: %s", proc.pid, pid_err)
 
+                MAX_COLLECTOR_LINES = 500
+                MAX_STREAM_LINE_CHARS = 65536
+
                 async def read_stream(reader: Optional[asyncio.StreamReader], stream_name: str, collector: list[str]) -> None:
                     if not reader:
                         return
@@ -825,6 +828,10 @@ class TaskDispatcher:
                         if not line_bytes:
                             break
                         line_str = line_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
+                        if len(line_str) > MAX_STREAM_LINE_CHARS:
+                            line_str = line_str[:MAX_STREAM_LINE_CHARS] + " ... [truncated]"
+                        if len(collector) >= MAX_COLLECTOR_LINES:
+                            collector.pop(0)
                         collector.append(line_str)
                         self._record_log(task_id, stream_name, line_str, execution_id=execution_id)
                         await self._broadcast_log(task_id, stream_name, line_str)

@@ -2035,7 +2035,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
             </div>
             <div class="agent-telemetry-item">
               <span class="agent-telemetry-label">Memory Budget</span>
-              <span class="agent-telemetry-val" style="color: var(--status-success);" id="sentinelMemoryBudget">&lt; 30.0 MB RSS</span>
+              <span class="agent-telemetry-val" style="color: var(--status-success);" id="sentinelMemoryBudget">&lt; 128.0 MB RSS</span>
             </div>
             <div class="agent-telemetry-item">
               <span class="agent-telemetry-label">Runs Tracked</span>
@@ -2954,6 +2954,11 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       const mins = Math.floor((uptimeSec % 3600) / 60);
       const secs = uptimeSec % 60;
       document.getElementById('telemetryUptime').innerText = hours + 'h ' + mins + 'm ' + secs + 's';
+
+      const sentinelBudgetEl = document.getElementById('sentinelMemoryBudget');
+      if (sentinelBudgetEl) {
+        sentinelBudgetEl.innerText = '< ' + budgetMb.toFixed(1) + ' MB RSS';
+      }
     }}
 
     function renderTasksTable() {{

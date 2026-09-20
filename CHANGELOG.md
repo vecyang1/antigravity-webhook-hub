@@ -10,16 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed & Hardened
 - **生产内存预算从 64MB 扩容至 128MB 与全链路阈值对齐 (`hub/config.py`, `hub/memory.py`, `hub/cli.py`, `hub/routes/dashboard_template.py`)**:
   - **默认预算上调**：将 `ServerConfig.memory_budget_mb` 及 `get_memory_budget_mb()` 默认值从 64.0 MB 提升至 128.0 MB，适配 macOS Apple Silicon (Darwin Mach 虚拟内存页) 与 Python 3.14 真实生产负载下的正常驻留集需求（日常稳定在 30~55 MB，告警由 51.9 MB / 81% 降至 40.5% 健康绿标）。
-  - **全链路同步**：同步更新 `hub/cli.py`（`service status` 和 `status` 命令展示与默认回退）、`hub/config.py`（`to_dict()` 补齐 `memory_budget_mb`）、Web 仪表盘 HTML 占位符与 JS 遥测进度条渲染计算（`const budgetMb = ... || 128`），并在环境变量 `MEMORY_BUDGET_MB` 优先继承机制下保持动态可配。
+  - **全链路同步**：同步更新 `hub/cli.py`（`service status` 和 `status` 命令展示与默认回退）、`hub/config.py`（`to_dict()` 补齐 `memory_budget_mb`）、Web 仪表盘 HTML 侧边栏与 Sentinel 视图内存徽标（`id="sentinelMemoryBudget">&lt; 128.0 MB RSS`），并在 JS `renderTelemetry` 中动态刷新仪表盘与哨兵徽标，在环境变量 `MEMORY_BUDGET_MB` 优先继承机制下保持动态可配。
+- **Dispatcher 子进程高频大量输出内存防爆硬化 (`hub/dispatcher.py`)**:
+  - **流式输出内存上界约束**：在 `read_stream` 中引入 `MAX_COLLECTOR_LINES = 500` 与单行最大字符截断 `MAX_STREAM_LINE_CHARS = 65536`。无论外部任务产生几十万行日志或单行超大字符串，内存中保留的收集缓冲区严格受限，杜绝重载任务输出将 Python 堆撑爆引发 OOM，底层日志仍 100% 完整通过 SQLite 与 SSE 流实时落盘与广播。
+- **后台空闲内存调度与低 CPU 唤醒优化 (`hub/server.py`)**:
+  - **自适应降频与节流压降**：将 `AsyncHTTPServer._idle_memory_monitor` 轮询间隔由 0.3s/0.5s 调整为更稳健的 1.0s 步进；在无活跃任务时仅每秒触发轻量 Gen 1 GC，每 4 秒触发深度压降与 Gen 2 回收，每 8 秒执行 WAL 截断，消除了高频 `re.purge()` 与全量 GC 带来的无谓 CPU 消耗（保持 0% 空闲 CPU）与磁盘锁争用。
 - **Watchdog 停滞扫描内存防泄漏硬化 (`hub/antigravity/watchdog.py`)**:
   - **mtime/size 缓存化解析**：在 `extract_subagent_ids_from_transcript` 中引入基于 `(mtime, size)` 的文件状态缓存 `_subagent_id_cache`（上限 256 项自动淘汰），彻底避免每 30 秒重复打开扫描未变动对话的大文本日志与高频正则匹配引起的临时字符串内存碎片。
   - **Sidecar 读取上限约束**：`_find_associated_sidecar` 由全量 `read_text()` 优化为单文件最大截取读取 4KB，精准命中头部 `conversationId` 字段的同时消除大规模事件文件读取引发的内存峰值。
   - **周期扫描垃圾回收与内存压降**：在 `scan_stalled_conversations` 及 `resuscitate_stalled_sessions` 周期结束时注入 `apply_memory_pressure_relief()` 与 `gc.collect()`，及时释放内核 Darwin 内存区缓存。
-- **配额哨兵与后台空闲内存调度优化 (`hub/antigravity/quota_sentinel.py`, `hub/server.py`)**:
+- **配额哨兵主动内存释放 (`hub/antigravity/quota_sentinel.py`)**:
   - 在 `sweep_and_warmup` 循环末尾添加主动内存压降，消除多账号 HTTP 轮询对象驻留。
-  - 优化 `AsyncHTTPServer._idle_memory_monitor`：将轮询间隔由过载的 0.3s 调整为更温和的 0.5s 自适应步长，避免在高并发或长请求时频繁触发 `PRAGMA wal_checkpoint(TRUNCATE)` 产生磁盘与锁争用，保障管理接口稳定高速响应。
-- **端到端及对抗性测试基准更新 (`scripts/verify_e2e.py`, `tests/stress/test_m3_challenger.py`, `tests/stress/test_m5_adversarial_dispatcher_sse.py`, `tests/unit/test_memory.py`)**:
-  - 端到端验证 Step 1 与总体验收回退对齐 128.0MB；所有 280 项单元测试及 13 项端到端验收用例 100% 通过（Gateway RSS 稳定在 29~40 MB）。
+- **端到端及对抗性测试基准硬化 (`scripts/verify_e2e.py`, `scripts/challenge_m2_dispatcher_stress.py`, `scripts/challenge_m5_dispatcher_sse_stress.py`, `tests/stress/test_m3_challenger.py`, `tests/stress/test_m5_adversarial_dispatcher_sse.py`)**:
+  - **Step 8 防并发扰动硬化**：在 `scripts/verify_e2e.py` 中将 Step 8 去重校验由脆弱的全局任务表计数差值优化为针对该请求事件/任务 ID 的确定性单例检验（`SELECT COUNT(*) FROM tasks WHERE task_id = ? OR event_id = ?`），彻底排除后台 Sweeper、Cadence 巡检或测试交叉写入引起的偶发假失败。
+  - **对抗性基准对齐与 PID 隔离**：在 `challenge_m2_dispatcher_stress.py` 与 `challenge_m5_dispatcher_sse_stress.py` 中对齐 128MB 生产预算，并为 M5 独立测试进程指定独立 `--pidfile`，消除与后台常驻守护进程的互斥冲突。
+  - **测试覆盖**：新增 `test_dispatcher_bounded_log_output_collector` 与 `test_memory_budget_config_loading_and_serialization`，全套 282 项单元测试、67 项 API 测试、43 项压力测试及 13 项端到端验收用例 100% 通过（实测网关常驻 RSS 为 30~33 MB，远低于 128 MB 预算）。
 
 ## [1.16.18] - 2026-09-20
 

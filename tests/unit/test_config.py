@@ -88,3 +88,26 @@ def test_validation():
     assert len(issues) >= 2
     assert any("port" in i for i in issues)
     assert any("auth_mode" in i for i in issues)
+
+
+def test_memory_budget_config_loading_and_serialization():
+    # 1. Default value
+    cfg = AppConfig()
+    assert cfg.server.memory_budget_mb == 128.0
+
+    # 2. Serialization in to_dict()
+    d = cfg.to_dict()
+    assert "server" in d
+    assert d["server"]["memory_budget_mb"] == 128.0
+
+    # 3. Environment variable loading
+    old_env = os.environ.get("MEMORY_BUDGET_MB")
+    try:
+        os.environ["MEMORY_BUDGET_MB"] = "96.5"
+        loaded_cfg = load_config(env_path="")
+        assert loaded_cfg.server.memory_budget_mb == 96.5
+    finally:
+        if old_env is None:
+            os.environ.pop("MEMORY_BUDGET_MB", None)
+        else:
+            os.environ["MEMORY_BUDGET_MB"] = old_env

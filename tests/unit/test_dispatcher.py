@@ -183,3 +183,24 @@ async def test_cli_command_stdin_devnull_safe(dispatcher_instance: Any):
     assert result.exit_code == 0
     assert result.status == "succeeded"
     assert "stdin_readable: True" in result.stdout
+
+
+async def test_dispatcher_bounded_log_output_collector(dispatcher_instance: Any):
+    """Tier 1: Subprocess execution bounds in-memory collector to MAX_COLLECTOR_LINES (500)."""
+    dispatcher, db = dispatcher_instance
+    task_id = "tsk_disp_heavy_output"
+    db.tasks[task_id] = {
+        "task_id": task_id,
+        "action_type": "cli",
+        "command": "python3 -c \"for i in range(600): print(f'line_{i}')\"",
+        "status": "queued",
+        "timeout_seconds": 10,
+    }
+
+    result = await dispatcher.execute_task(task_id)
+    assert result.exit_code == 0
+    assert result.status == "succeeded"
+    lines = result.stdout.strip().splitlines()
+    assert len(lines) <= 500
+    assert "line_599" in lines
+    assert "line_0" not in lines  # Oldest lines evicted from memory buffer

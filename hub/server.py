@@ -764,13 +764,17 @@ class AsyncHTTPServer:
         tick_count = 0
         while self._is_running:
             try:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1.0)
                 tick_count += 1
-                gc.collect(1 if (tick_count % 4 != 0) else 2)
-                self._pressure_relief()
-                if self._db is not None and hasattr(self._db, "shrink_memory"):
-                    truncate = (tick_count % 4 == 0) and not self._active_tasks
-                    self._db.shrink_memory(truncate_wal=truncate)
+                if not self._active_tasks:
+                    if tick_count % 4 == 0:
+                        gc.collect(2)
+                        self._pressure_relief()
+                    else:
+                        gc.collect(1)
+                    if self._db is not None and hasattr(self._db, "shrink_memory"):
+                        truncate = (tick_count % 8 == 0)
+                        self._db.shrink_memory(truncate_wal=truncate)
             except asyncio.CancelledError:
                 break
             except Exception:

@@ -497,12 +497,21 @@ class E2EVerifier:
                 status2 = resp2.status
 
             time.sleep(0.2)
-            task_count_after = self._get_table_count("tasks")
-            tasks_created = task_count_after - task_count_before
+            event_id_req1 = res1.get("event_id") or ""
+            task_id_req1 = res1.get("task_id") or ""
+            task_id_req2 = res2.get("task_id") or ""
+            same_task_id = bool(task_id_req1 and task_id_req1 == task_id_req2)
+
+            # Query exact task count in DB matching this deduplication test event/task
+            matching_tasks = self._query_db(
+                "SELECT * FROM tasks WHERE task_id = ? OR event_id = ?",
+                (task_id_req1, event_id_req1),
+            )
+            exact_one_task_in_db = len(matching_tasks) == 1
 
             is_dup = res2.get("duplicate") is True or res2.get("deduplicated") is True
-            step8_pass = (status1 == 202) and (status2 in (200, 202)) and is_dup and (tasks_created == 1)
-            step8_detail = f"Req1: {status1}, Req2: {status2} (dup={is_dup}), DB tasks created: {tasks_created}"
+            step8_pass = (status1 == 202) and (status2 in (200, 202)) and is_dup and same_task_id and exact_one_task_in_db
+            step8_detail = f"Req1: {status1}, Req2: {status2} (dup={is_dup}, same_task={same_task_id}), DB tasks for event: {len(matching_tasks)}"
         except Exception as e:
             step8_detail = f"Error: {e}"
         results.append(step8_pass)
