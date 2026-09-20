@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.20] - 2026-09-21
+
+### Fixed
+- **修复 Web 仪表盘模板 f-string 单花括号转义缺陷导致的 CI 构建与测试失败 (`hub/routes/dashboard_template.py`)**:
+  - **语法转义纠正**：修复 `dashboard_template.py` 中 `renderTelemetry` 的 `if (sentinelBudgetEl)` 条件判断中因单花括号未转义为双花括号 `{{...}}` 导致的 Python `SyntaxError: f-string: expecting '!', or ':', or '}'`。
+  - **CI/CD 绿灯保障**：彻底恢复 GitHub Actions CI / CD 工作流中的 `test` 与 `verify-e2e`（Step 11）正常通过，消除了由于模板编译失败引发的 HTTP 500 Internal Server Error。
+
 ## [1.16.19] - 2026-09-20
 
 ### Changed & Hardened

@@ -2956,9 +2956,9 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       document.getElementById('telemetryUptime').innerText = hours + 'h ' + mins + 'm ' + secs + 's';
 
       const sentinelBudgetEl = document.getElementById('sentinelMemoryBudget');
-      if (sentinelBudgetEl) {
+      if (sentinelBudgetEl) {{
         sentinelBudgetEl.innerText = '< ' + budgetMb.toFixed(1) + ' MB RSS';
-      }
+      }}
     }}
 
     function renderTasksTable() {{
