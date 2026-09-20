@@ -22,6 +22,7 @@ from hub.antigravity.prompt_builder import (
     extract_slash_commands,
 )
 from hub.antigravity.result_delivery import (
+    cancel_active_watcher,
     get_latest_step_index,
     watch_and_deliver_result,
 )
@@ -173,6 +174,8 @@ async def execute_antigravity_task(
                         snippet=payload.text or payload.voice_transcript or "已同步附件",
                         files_count=len(downloaded_images),
                     )
+                    # Cancel any prior active watcher for this session
+                    cancel_active_watcher(convo_id)
                     # Launch background watcher for follow-up progress and result delivery
                     asyncio.create_task(
                         watch_and_deliver_result(
@@ -183,7 +186,7 @@ async def execute_antigravity_task(
                             task_id=task_id,
                             start_time=start_time,
                             is_follow_up=True,
-                            start_step=latest_step,
+                            start_step=latest_step + 1,
                             broker=broker,
                         )
                     )
@@ -363,6 +366,7 @@ async def execute_antigravity_task(
 
     # Launch background watcher for live execution progress and true result delivery
     if should_notify_slack and channel and root_ts:
+        cancel_active_watcher(convo_id)
         asyncio.create_task(
             watch_and_deliver_result(
                 notifier=notifier,

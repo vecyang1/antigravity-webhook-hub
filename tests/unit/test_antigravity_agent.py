@@ -3,6 +3,7 @@ Unit Tests: Antigravity Agent Mobile Intake, Prompt Synthesis, Thread Transparen
 """
 
 import asyncio
+from datetime import datetime, timezone
 import json
 import sqlite3
 import tempfile
@@ -121,6 +122,37 @@ class TestPromptBuilder(unittest.TestCase):
         self.assertIn("[用户追问 / User Follow-up]:", follow_up)
         self.assertIn("第二张图里的配色换成深色系", follow_up)
         self.assertIn(STRATEGIC_COMPACT_DIRECTIVE, follow_up)
+
+    def test_build_follow_up_prompt_preserves_boost_and_goal(self):
+        payload = AntigravityTaskPayload(
+            text="继续推进该目标 /boost /goal",
+            channel="C0C1B86AMCN",
+            thread_ts="1789200000.100",
+            ts="1789200500.200",
+            is_follow_up=True,
+        )
+        follow_up = build_follow_up_prompt(payload)
+        self.assertIn("[/boost](slashCommand;boost)", follow_up)
+        self.assertIn("[/goal](slashCommand;goal)", follow_up)
+        self.assertIn("[用户追问 / User Follow-up]:", follow_up)
+        self.assertIn("继续推进该目标", follow_up)
+        self.assertIn(BOOST_DIRECTIVE, follow_up)
+        self.assertIn(GOAL_DIRECTIVE, follow_up)
+
+    def test_build_follow_up_prompt_with_payload_slash_commands(self):
+        payload = AntigravityTaskPayload(
+            text="追问内容",
+            slash_commands=["boost", "goal"],
+            channel="C0C1B86AMCN",
+            thread_ts="1789200000.100",
+            ts="1789200500.200",
+            is_follow_up=True,
+        )
+        follow_up = build_follow_up_prompt(payload)
+        self.assertIn("[/boost](slashCommand;boost)", follow_up)
+        self.assertIn("[/goal](slashCommand;goal)", follow_up)
+        self.assertIn(BOOST_DIRECTIVE, follow_up)
+        self.assertIn(GOAL_DIRECTIVE, follow_up)
 
 
 class TestThreadNotifier(unittest.TestCase):
@@ -309,6 +341,60 @@ class TestSessionManagerAndDatabase(unittest.TestCase):
 
             # Verify notifier follow up called
             mock_notifier.notify_follow_up.assert_called_once()
+
+        asyncio.run(_run())
+
+    def test_follow_up_execution_launches_watcher_with_next_step(self):
+        self._seed_task("tsk_parent_01")
+        self._seed_task("tsk_followup_02")
+
+        async def _run():
+            self.db.upsert_session_thread({
+                "thread_key": "C0C1B86AMCN:1789200000.300",
+                "channel_id": "C0C1B86AMCN",
+                "root_ts": "1789200000.300",
+                "task_id": "tsk_parent_01",
+                "conversation_id": "conv-target-1234",
+                "source": "slack_agent",
+                "model_tier": "pro",
+                "title": "测试初始会话",
+                "status": "active",
+            })
+
+            mock_client = MagicMock()
+            mock_client.send_message = AsyncMock(return_value=(True, '{"status":"ok"}', None))
+            mock_notifier = MagicMock()
+
+            follow_up_task = {
+                "task_id": "tsk_followup_02",
+                "source": "slack_agent",
+                "action_type": "antigravity",
+                "action_params_json": json.dumps({
+                    "text": "测试追问 /boost",
+                    "channel": "C0C1B86AMCN",
+                    "thread_ts": "1789200000.300",
+                    "ts": "1789200500.400",
+                }),
+            }
+
+            with patch("hub.antigravity.session_manager.get_latest_step_index", return_value=7), \
+                 patch("hub.antigravity.session_manager.watch_and_deliver_result", new_callable=AsyncMock) as mock_watch, \
+                 patch("hub.antigravity.session_manager.cancel_active_watcher") as mock_cancel:
+                res = await execute_antigravity_task(
+                    task_data=follow_up_task,
+                    db=self.db,
+                    agentapi_client=mock_client,
+                    thread_notifier=mock_notifier,
+                )
+                self.assertTrue(res["success"])
+                self.assertTrue(res["is_follow_up"])
+                mock_cancel.assert_called_once_with("conv-target-1234")
+                # Ensure start_step was passed as latest_step + 1 = 8
+                mock_watch.assert_called_once()
+                w_kwargs = mock_watch.call_args[1]
+                self.assertEqual(w_kwargs.get("start_step"), 8)
+                self.assertTrue(w_kwargs.get("is_follow_up"))
+                self.assertEqual(w_kwargs.get("conversation_id"), "conv-target-1234")
 
         asyncio.run(_run())
 
@@ -887,6 +973,165 @@ class TestProgressTrackingAndResultDelivery(unittest.TestCase):
             self.assertEqual(res["conversation_id"], convo_id)
             mock_notifier.notify_result_delivery.assert_called_once()
             mock_broker.publish.assert_called()
+
+        asyncio.run(_run())
+
+    def test_follow_up_start_step_ignores_prior_completed_step(self):
+        from hub.antigravity.result_delivery import parse_transcript_events
+        convo_id = "test-convo-followup-start-step"
+        steps = [
+            {"step_index": 0, "source": "USER", "type": "USER_INPUT", "status": "DONE", "content": "任务1初始请求"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "任务1已完成的回复内容",
+            },
+        ]
+        transcript_file = self._create_fake_transcript(convo_id, steps)
+
+        # In a follow-up, latest_step index was 1.
+        # With start_step = latest_step + 1 = 2:
+        actions, content, is_done, has_error = parse_transcript_events(transcript_file, start_step=2)
+        self.assertIsNone(content)
+        self.assertFalse(is_done)
+
+        # Later, follow-up steps (2: USER, 3: MODEL) are appended
+        steps.extend([
+            {"step_index": 2, "source": "USER", "type": "USER_INPUT", "status": "DONE", "content": "任务2追问请求"},
+            {
+                "step_index": 3,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "任务2追问的全新回复内容",
+            },
+        ])
+        transcript_file = self._create_fake_transcript(convo_id, steps)
+        actions, content, is_done, has_error = parse_transcript_events(transcript_file, start_step=2)
+        self.assertEqual(content, "任务2追问的全新回复内容")
+        self.assertTrue(is_done)
+
+    def test_temporal_guard_rejects_stale_created_at(self):
+        from hub.antigravity.result_delivery import parse_transcript_events
+        convo_id = "test-convo-stale-temporal"
+        now = time.time()
+        stale_time = now - 60.0
+        steps = [
+            {
+                "step_index": 0,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": datetime.fromtimestamp(stale_time, tz=timezone.utc).isoformat(),
+                "content": "旧回合残留响应内容",
+            }
+        ]
+        transcript_file = self._create_fake_transcript(convo_id, steps)
+
+        # Without temporal guard (min_created_at=None), step 0 is parsed
+        _, old_content, old_done, _ = parse_transcript_events(transcript_file, start_step=0, min_created_at=None)
+        self.assertTrue(old_done)
+        self.assertEqual(old_content, "旧回合残留响应内容")
+
+        # With temporal guard (min_created_at=now), the stale step is rejected
+        actions, content, is_done, has_error = parse_transcript_events(
+            transcript_file, start_step=0, min_created_at=now
+        )
+        self.assertIsNone(content)
+        self.assertFalse(is_done)
+
+    def test_temporal_guard_clock_skew_tolerance(self):
+        from hub.antigravity.result_delivery import parse_transcript_events
+        convo_id = "test-convo-clock-skew"
+        start_time = time.time()
+        # Event 0.5s before start_time: within 1.0s tolerance -> accepted
+        steps_ok = [
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": start_time - 0.5,
+                "content": "容差内有效响应",
+            }
+        ]
+        file_ok = self._create_fake_transcript(convo_id, steps_ok)
+        _, content_ok, done_ok, _ = parse_transcript_events(file_ok, start_step=0, min_created_at=start_time)
+        self.assertTrue(done_ok)
+        self.assertEqual(content_ok, "容差内有效响应")
+
+        # Event 2.0s before start_time: strictly older than start_time - 1.0 -> rejected
+        steps_stale = [
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": start_time - 2.0,
+                "content": "超限过期响应",
+            }
+        ]
+        file_stale = self._create_fake_transcript(convo_id, steps_stale)
+        _, content_stale, done_stale, _ = parse_transcript_events(file_stale, start_step=0, min_created_at=start_time)
+        self.assertFalse(done_stale)
+        self.assertIsNone(content_stale)
+
+    def test_active_watcher_cancellation(self):
+        from hub.antigravity.result_delivery import (
+            _ACTIVE_WATCHERS,
+            cancel_active_watcher,
+            watch_and_deliver_result,
+        )
+        convo_id = "test-convo-cancel-watcher"
+        mock_notifier = MagicMock()
+
+        async def _run():
+            # Launch watcher 1
+            task1 = asyncio.create_task(
+                watch_and_deliver_result(
+                    notifier=mock_notifier,
+                    channel="C0C1B86AMCN",
+                    thread_ts="1789200000.100",
+                    conversation_id=convo_id,
+                    task_id="tsk_w1",
+                    start_time=time.time(),
+                    max_wait_seconds=10.0,
+                    poll_interval=0.05,
+                    brain_root=self.brain_dir,
+                )
+            )
+            await asyncio.sleep(0.02)
+            self.assertIn(convo_id, _ACTIVE_WATCHERS)
+            self.assertIs(_ACTIVE_WATCHERS[convo_id], task1)
+            self.assertFalse(task1.done())
+
+            # Launch watcher 2 for same convo_id -> should cancel watcher 1
+            task2 = asyncio.create_task(
+                watch_and_deliver_result(
+                    notifier=mock_notifier,
+                    channel="C0C1B86AMCN",
+                    thread_ts="1789200000.100",
+                    conversation_id=convo_id,
+                    task_id="tsk_w2",
+                    start_time=time.time(),
+                    max_wait_seconds=10.0,
+                    poll_interval=0.05,
+                    brain_root=self.brain_dir,
+                )
+            )
+            await asyncio.sleep(0.02)
+            # Task 1 must be cancelled or done
+            self.assertTrue(task1.cancelled() or task1.done())
+            self.assertIs(_ACTIVE_WATCHERS[convo_id], task2)
+
+            # Test cancel_active_watcher helper
+            cancelled = cancel_active_watcher(convo_id)
+            self.assertTrue(cancelled)
+            await asyncio.sleep(0.02)
+            self.assertTrue(task2.cancelled() or task2.done())
+            self.assertNotIn(convo_id, _ACTIVE_WATCHERS)
 
         asyncio.run(_run())
 

@@ -7,6 +7,7 @@ to Slack threads, and delivers the actual markdown results directly into Slack t
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -18,6 +19,56 @@ if TYPE_CHECKING:
     from hub.antigravity.thread_notifier import ThreadNotifier
 
 logger = logging.getLogger("hub.antigravity.result_delivery")
+
+# Active conversation result delivery watcher tasks
+_ACTIVE_WATCHERS: dict[str, asyncio.Task] = {}
+
+
+def get_active_watchers() -> dict[str, asyncio.Task]:
+    """Return a copy of the currently active watcher tasks."""
+    return dict(_ACTIVE_WATCHERS)
+
+
+def cancel_active_watcher(conversation_id: str) -> bool:
+    """
+    Cancel any active watcher task for the given conversation_id.
+    Returns True if an active watcher was found and cancelled, False otherwise.
+    """
+    task = _ACTIVE_WATCHERS.get(conversation_id)
+    if task and not task.done():
+        logger.info("Cancelling active watcher task for conversation %s", conversation_id)
+        task.cancel()
+        return True
+    return False
+
+
+def _parse_timestamp(val: Any) -> Optional[float]:
+    """
+    Parse a timestamp representation into epoch float seconds.
+    Supports Unix timestamps (int/float/numeric string) and ISO-8601 strings.
+    """
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        val = val.strip()
+        if not val:
+            return None
+        try:
+            return float(val)
+        except ValueError:
+            pass
+        try:
+            cleaned = val.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(cleaned)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        except Exception:
+            return None
+    return None
+
 
 # Brain root directory for conversation transcripts
 DEFAULT_BRAIN_ROOT = Path(
@@ -83,9 +134,16 @@ def get_latest_step_index(conversation_id: str, brain_root: Optional[Path] = Non
 def parse_transcript_events(
     transcript_path: Path,
     start_step: int = 0,
+    min_created_at: Optional[float] = None,
 ) -> Tuple[List[str], Optional[str], bool, bool]:
     """
     Parse a conversation transcript starting from start_step.
+    
+    Args:
+        transcript_path: Path to the transcript JSONL file.
+        start_step: Minimum step index to process.
+        min_created_at: Minimum creation timestamp (seconds since epoch). Events strictly
+            older than min_created_at (with 1.0s clock skew tolerance) are rejected.
     
     Returns:
         (actions, final_content, is_done, has_error)
@@ -115,6 +173,11 @@ def parse_transcript_events(
                 idx = step.get("step_index", 0)
                 if idx < start_step:
                     continue
+
+                step_time = _parse_timestamp(step.get("created_at") or step.get("timestamp"))
+                if min_created_at is not None and step_time is not None:
+                    if step_time < (min_created_at - 1.0):
+                        continue
 
                 source = step.get("source", "")
                 step_type = step.get("type", "")
@@ -182,10 +245,20 @@ async def watch_and_deliver_result(
     emits progress milestones into the Slack thread during tool execution,
     and delivers the full generated result directly into the Slack thread upon completion.
     """
+    current_task = asyncio.current_task()
+    if conversation_id in _ACTIVE_WATCHERS:
+        old_task = _ACTIVE_WATCHERS[conversation_id]
+        if old_task is not None and not old_task.done() and old_task is not current_task:
+            logger.info("Cancelling prior active watcher for conversation %s", conversation_id)
+            old_task.cancel()
+
+    if current_task is not None:
+        _ACTIVE_WATCHERS[conversation_id] = current_task
+
     last_reported_action: Optional[str] = None
     last_progress_time: float = 0.0
     last_activity_time: float = time.time()
-    last_seen_step: int = start_step
+    last_seen_step: int = max(0, start_step - 1)
     start_loop = time.time()
 
     logger.info(
@@ -198,144 +271,153 @@ async def watch_and_deliver_result(
         start_step,
     )
 
-    while True:
-        now = time.time()
-        if (now - start_loop) >= max_wait_seconds:
-            logger.warning("Conversation watcher reached hard max_wait_seconds (%.1fs) for %s", max_wait_seconds, conversation_id)
-            break
-
-        if (now - last_activity_time) >= inactivity_timeout:
-            logger.warning("Conversation watcher detected inactivity (no progress for %.1fs) for %s", inactivity_timeout, conversation_id)
-            break
-
-        await asyncio.sleep(poll_interval)
-        elapsed = time.time() - start_time
-
-        transcript_path = resolve_transcript_path(conversation_id, brain_root)
-        if not transcript_path:
-            continue
-
-        # Check for step progress to renew liveness lease
-        current_highest_step = get_latest_step_index(conversation_id, brain_root)
-        if current_highest_step > last_seen_step:
-            last_seen_step = current_highest_step
-            last_activity_time = time.time()
-
-        actions, final_content, is_done, has_error = parse_transcript_events(
-            transcript_path,
-            start_step=start_step,
-        )
-
-        # 1. Live Progress milestone updates
-        if actions:
-            latest_action = actions[-1]
+    try:
+        while True:
             now = time.time()
-            if (
-                latest_action != last_reported_action
-                and (now - last_progress_time) >= min_progress_interval
-                and not is_done
-            ):
-                last_reported_action = latest_action
-                last_progress_time = now
-                logger.debug("Emitting progress update for %s: %s", conversation_id, latest_action)
-                notifier.notify_progress(
+            if (now - start_loop) >= max_wait_seconds:
+                logger.warning("Conversation watcher reached hard max_wait_seconds (%.1fs) for %s", max_wait_seconds, conversation_id)
+                break
+
+            if (now - last_activity_time) >= inactivity_timeout:
+                logger.warning("Conversation watcher detected inactivity (no progress for %.1fs) for %s", inactivity_timeout, conversation_id)
+                break
+
+            await asyncio.sleep(poll_interval)
+            elapsed = time.time() - start_time
+
+            transcript_path = resolve_transcript_path(conversation_id, brain_root)
+            if not transcript_path:
+                continue
+
+            # Check for step progress to renew liveness lease
+            current_highest_step = get_latest_step_index(conversation_id, brain_root)
+            if current_highest_step > last_seen_step:
+                last_seen_step = current_highest_step
+                last_activity_time = time.time()
+
+            actions, final_content, is_done, has_error = parse_transcript_events(
+                transcript_path,
+                start_step=start_step,
+                min_created_at=start_time,
+            )
+
+            # 1. Live Progress milestone updates
+            if actions:
+                latest_action = actions[-1]
+                now = time.time()
+                if (
+                    latest_action != last_reported_action
+                    and (now - last_progress_time) >= min_progress_interval
+                    and not is_done
+                ):
+                    last_reported_action = latest_action
+                    last_progress_time = now
+                    logger.debug("Emitting progress update for %s: %s", conversation_id, latest_action)
+                    notifier.notify_progress(
+                        channel=channel,
+                        thread_ts=thread_ts,
+                        action_summary=latest_action,
+                        elapsed_seconds=elapsed,
+                    )
+
+            # 2. Result Delivery on completion
+            if is_done and final_content:
+                logger.info("Delivering final Antigravity result for %s to Slack thread %s:%s", conversation_id, channel, thread_ts)
+                notifier.notify_result_delivery(
                     channel=channel,
                     thread_ts=thread_ts,
-                    action_summary=latest_action,
+                    conversation_id=conversation_id,
+                    content=final_content,
                     elapsed_seconds=elapsed,
+                    is_follow_up=is_follow_up,
                 )
 
-        # 2. Result Delivery on completion
-        if is_done and final_content:
-            logger.info("Delivering final Antigravity result for %s to Slack thread %s:%s", conversation_id, channel, thread_ts)
+                if broker:
+                    evt_data = {
+                        "event": "antigravity_result_delivered",
+                        "task_id": task_id,
+                        "conversation_id": conversation_id,
+                        "channel": channel,
+                        "thread_ts": thread_ts,
+                        "elapsed_seconds": elapsed,
+                        "is_follow_up": is_follow_up,
+                        "content_length": len(final_content),
+                    }
+                    try:
+                        await broker.publish("events", evt_data)
+                        await broker.publish(f"task.{task_id}", evt_data)
+                    except Exception as b_err:
+                        logger.debug("Failed to publish result delivery event: %s", b_err)
+
+                return {
+                    "delivered": True,
+                    "conversation_id": conversation_id,
+                    "elapsed_seconds": elapsed,
+                    "content_preview": final_content[:100],
+                }
+
+            # 3. Terminal Error Handling
+            if has_error and not final_content:
+                logger.warning("Antigravity conversation %s encountered a terminal error step", conversation_id)
+                notifier.notify_failed(
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    task_id=task_id,
+                    error_message="Antigravity 会话在执行过程中遭遇异常中断",
+                )
+                return {
+                    "delivered": False,
+                    "conversation_id": conversation_id,
+                    "error": "terminal_error_step",
+                }
+
+        # Watcher timed out - do one final check on the transcript
+        elapsed_total = time.time() - start_time
+        transcript_path = resolve_transcript_path(conversation_id, brain_root)
+        if transcript_path:
+            _, final_content_last, is_done_last, _ = parse_transcript_events(
+                transcript_path,
+                start_step=start_step,
+                min_created_at=start_time,
+            )
+            if final_content_last:
+                final_content = final_content_last
+
+        logger.warning("Conversation watcher timed out after %.1fs for %s", elapsed_total, conversation_id)
+        
+        # If final content was captured, deliver it
+        if final_content:
             notifier.notify_result_delivery(
                 channel=channel,
                 thread_ts=thread_ts,
                 conversation_id=conversation_id,
                 content=final_content,
-                elapsed_seconds=elapsed,
+                elapsed_seconds=elapsed_total,
                 is_follow_up=is_follow_up,
             )
-
-            if broker:
-                evt_data = {
-                    "event": "antigravity_result_delivered",
-                    "task_id": task_id,
-                    "conversation_id": conversation_id,
-                    "channel": channel,
-                    "thread_ts": thread_ts,
-                    "elapsed_seconds": elapsed,
-                    "is_follow_up": is_follow_up,
-                    "content_length": len(final_content),
-                }
-                try:
-                    await broker.publish("events", evt_data)
-                    await broker.publish(f"task.{task_id}", evt_data)
-                except Exception as b_err:
-                    logger.debug("Failed to publish result delivery event: %s", b_err)
-
             return {
                 "delivered": True,
                 "conversation_id": conversation_id,
-                "elapsed_seconds": elapsed,
-                "content_preview": final_content[:100],
+                "elapsed_seconds": elapsed_total,
+                "timed_out": True,
             }
 
-        # 3. Terminal Error Handling
-        if has_error and not final_content:
-            logger.warning("Antigravity conversation %s encountered a terminal error step", conversation_id)
-            notifier.notify_failed(
-                channel=channel,
-                thread_ts=thread_ts,
-                task_id=task_id,
-                error_message="Antigravity 会话在执行过程中遭遇异常中断",
-            )
-            return {
-                "delivered": False,
-                "conversation_id": conversation_id,
-                "error": "terminal_error_step",
-            }
-
-    # Watcher timed out - do one final check on the transcript
-    elapsed_total = time.time() - start_time
-    transcript_path = resolve_transcript_path(conversation_id, brain_root)
-    if transcript_path:
-        _, final_content_last, is_done_last, _ = parse_transcript_events(
-            transcript_path,
-            start_step=start_step,
-        )
-        if final_content_last:
-            final_content = final_content_last
-
-    logger.warning("Conversation watcher timed out after %.1fs for %s", elapsed_total, conversation_id)
-    
-    # If final content was captured, deliver it
-    if final_content:
-        notifier.notify_result_delivery(
+        # Notify failure to avoid silent thread abandonment
+        notifier.notify_failed(
             channel=channel,
             thread_ts=thread_ts,
-            conversation_id=conversation_id,
-            content=final_content,
-            elapsed_seconds=elapsed_total,
-            is_follow_up=is_follow_up,
+            task_id=task_id,
+            error_message=f"Antigravity 会话处理超时（持续运行超过 {int(elapsed_total)}s 未产生终态），请检查桌面端运行状态。",
         )
+
         return {
-            "delivered": True,
+            "delivered": False,
             "conversation_id": conversation_id,
-            "elapsed_seconds": elapsed_total,
-            "timed_out": True,
+            "error": "timed_out",
         }
-
-    # Notify failure to avoid silent thread abandonment
-    notifier.notify_failed(
-        channel=channel,
-        thread_ts=thread_ts,
-        task_id=task_id,
-        error_message=f"Antigravity 会话处理超时（持续运行超过 {int(elapsed_total)}s 未产生终态），请检查桌面端运行状态。",
-    )
-
-    return {
-        "delivered": False,
-        "conversation_id": conversation_id,
-        "error": "timed_out",
-    }
+    except asyncio.CancelledError:
+        logger.info("Watcher for conversation %s was cancelled", conversation_id)
+        raise
+    finally:
+        if current_task is not None and _ACTIVE_WATCHERS.get(conversation_id) is current_task:
+            _ACTIVE_WATCHERS.pop(conversation_id, None)

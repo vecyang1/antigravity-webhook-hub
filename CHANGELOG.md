@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.18] - 2026-09-20
+
+### Fixed & Hardened
+- **Antigravity 追问 (Follow-up) 偶发需发两次与历史响应穿透修复 (`hub/antigravity/session_manager.py`, `hub/antigravity/result_delivery.py`)**:
+  - **Off-by-one 步数修正**：在 `session_manager.py` 分发追问任务时，将后台 Watcher 初始步数由 `start_step=latest_step` 纠正为 `start_step=latest_step + 1`。彻底消除 Watcher 首轮轮询误读上一轮已完成状态（`status="DONE"`）导致将旧回复即时推送给用户的缺陷。
+  - **时间窗口防穿透 (Temporal Guarding)**：在 `parse_transcript_events` 中引入 `min_created_at`（支持秒级/浮点及 ISO-8601 UTC）与 1.0s 时钟偏移容差。严格过滤早于当前任务 `start_time` 的历史陈旧响应与工具事件，杜绝陈旧步骤被当作终态结果或步骤进展交付。
+  - **活跃 Watcher 单例治理与优雅取消**：在 `result_delivery.py` 中引入 `_ACTIVE_WATCHERS` 映射表与 `cancel_active_watcher`，在新追问进入时自动取消同一会话先前的残留 Watcher，防止并发轮询导致的 Slack 消息重复推送。
+  - **活动检测步数基准修正**：在 `watch_and_deliver_result` 中将 `last_seen_step` 初始化修正为 `max(0, start_step - 1)`，确保追问的第一步产生时即时触发活跃时间刷新。
+- **追问提示词 Rich 格式 Slash 命令保留 (`hub/antigravity/prompt_builder.py`)**:
+  - 在 `build_follow_up_prompt` 中补充 `[/boost](slashCommand;boost)` 与 `[/goal](slashCommand;goal)` 等富文本前缀及对应指令块（如 `BOOST_DIRECTIVE`、`GOAL_DIRECTIVE`），确保追问时携带的 `/boost` 与 `/goal` 正确激活自治闭环与算力推进模式。
+
 ## [1.16.17] - 2026-09-20
 
 ### Fixed & Hardened

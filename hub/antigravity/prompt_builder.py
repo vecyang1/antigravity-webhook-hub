@@ -197,7 +197,33 @@ def build_follow_up_prompt(
     if clean_text.strip().lower() in ("agentapi new-conversation", "agentapi run", "agentapi"):
         clean_text = ""
 
-    prompt_parts: list[str] = ["[用户追问 / User Follow-up]:"]
+    # Combine with any already declared slash commands or active skills
+    all_commands = list(dict.fromkeys(payload.slash_commands + commands))
+    all_directives = list(directives)
+    if "psychological-copywriter" in all_commands and PSYCHOLOGICAL_COPYWRITER_DIRECTIVE not in all_directives:
+        all_directives.append(PSYCHOLOGICAL_COPYWRITER_DIRECTIVE)
+    if "strategic-compact" in all_commands and STRATEGIC_COMPACT_DIRECTIVE not in all_directives:
+        all_directives.append(STRATEGIC_COMPACT_DIRECTIVE)
+    if "boost" in all_commands and BOOST_DIRECTIVE not in all_directives:
+        all_directives.append(BOOST_DIRECTIVE)
+    if "goal" in all_commands and GOAL_DIRECTIVE not in all_directives:
+        all_directives.append(GOAL_DIRECTIVE)
+    if "teamwork-preview" in all_commands and TEAMWORK_PREVIEW_DIRECTIVE not in all_directives:
+        all_directives.append(TEAMWORK_PREVIEW_DIRECTIVE)
+    if "scheduled-task-rescheduler" in all_commands and SCHEDULED_TASK_RESCHEDULER_DIRECTIVE not in all_directives:
+        all_directives.append(SCHEDULED_TASK_RESCHEDULER_DIRECTIVE)
+
+    # Antigravity Slash Command Prefix (Rich format to activate Goal Mode / Boost Mode)
+    rich_prefixes: list[str] = []
+    if "goal" in all_commands:
+        rich_prefixes.append("[/goal](slashCommand;goal)")
+    if "boost" in all_commands:
+        rich_prefixes.append("[/boost](slashCommand;boost)")
+
+    prefix_header = (" ".join(rich_prefixes) + " ") if rich_prefixes else ""
+
+    follow_up_header = f"{prefix_header}[用户追问 / User Follow-up]:" if prefix_header else "[用户追问 / User Follow-up]:"
+    prompt_parts: list[str] = [follow_up_header]
 
     voice_tx = (payload.voice_transcript or "").strip()
     if clean_text and voice_tx and voice_tx not in clean_text:
@@ -216,7 +242,7 @@ def build_follow_up_prompt(
             img_section.append(f"- {p}")
         prompt_parts.append("\n".join(img_section))
 
-    if directives:
-        prompt_parts.append("\n" + "\n\n".join(directives))
+    if all_directives:
+        prompt_parts.append("\n" + "\n\n".join(all_directives))
 
     return "\n\n".join(prompt_parts).strip()
