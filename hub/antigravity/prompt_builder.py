@@ -123,7 +123,8 @@ def build_antigravity_prompt(
         clean_text = ""
 
     # Combine with any already declared slash commands or active skills
-    all_commands = list(dict.fromkeys(payload.slash_commands + commands))
+    normalized_payload_cmds = [c.lstrip("/") for c in payload.slash_commands]
+    all_commands = list(dict.fromkeys(normalized_payload_cmds + commands))
     all_directives = list(directives)
     if "psychological-copywriter" in all_commands and PSYCHOLOGICAL_COPYWRITER_DIRECTIVE not in all_directives:
         all_directives.append(PSYCHOLOGICAL_COPYWRITER_DIRECTIVE)
@@ -198,7 +199,8 @@ def build_follow_up_prompt(
         clean_text = ""
 
     # Combine with any already declared slash commands or active skills
-    all_commands = list(dict.fromkeys(payload.slash_commands + commands))
+    normalized_payload_cmds = [c.lstrip("/") for c in payload.slash_commands]
+    all_commands = list(dict.fromkeys(normalized_payload_cmds + commands))
     all_directives = list(directives)
     if "psychological-copywriter" in all_commands and PSYCHOLOGICAL_COPYWRITER_DIRECTIVE not in all_directives:
         all_directives.append(PSYCHOLOGICAL_COPYWRITER_DIRECTIVE)

@@ -9,12 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed & Hardened
 - **Antigravity 追问 (Follow-up) 偶发需发两次与历史响应穿透修复 (`hub/antigravity/session_manager.py`, `hub/antigravity/result_delivery.py`)**:
-  - **Off-by-one 步数修正**：在 `session_manager.py` 分发追问任务时，将后台 Watcher 初始步数由 `start_step=latest_step` 纠正为 `start_step=latest_step + 1`。彻底消除 Watcher 首轮轮询误读上一轮已完成状态（`status="DONE"`）导致将旧回复即时推送给用户的缺陷。
-  - **时间窗口防穿透 (Temporal Guarding)**：在 `parse_transcript_events` 中引入 `min_created_at`（支持秒级/浮点及 ISO-8601 UTC）与 1.0s 时钟偏移容差。严格过滤早于当前任务 `start_time` 的历史陈旧响应与工具事件，杜绝陈旧步骤被当作终态结果或步骤进展交付。
-  - **活跃 Watcher 单例治理与优雅取消**：在 `result_delivery.py` 中引入 `_ACTIVE_WATCHERS` 映射表与 `cancel_active_watcher`，在新追问进入时自动取消同一会话先前的残留 Watcher，防止并发轮询导致的 Slack 消息重复推送。
-  - **活动检测步数基准修正**：在 `watch_and_deliver_result` 中将 `last_seen_step` 初始化修正为 `max(0, start_step - 1)`，确保追问的第一步产生时即时触发活跃时间刷新。
-- **追问提示词 Rich 格式 Slash 命令保留 (`hub/antigravity/prompt_builder.py`)**:
-  - 在 `build_follow_up_prompt` 中补充 `[/boost](slashCommand;boost)` 与 `[/goal](slashCommand;goal)` 等富文本前缀及对应指令块（如 `BOOST_DIRECTIVE`、`GOAL_DIRECTIVE`），确保追问时携带的 `/boost` 与 `/goal` 正确激活自治闭环与算力推进模式。
+  - *(注：调度任务单提请版本号 1.16.12 已于 2026-09-16 发布，依据 SemVer 规范递增至 1.16.18)*
+  - **Off-by-one 步数修正**：在 `session_manager.py` 分发追问任务时，将后台 Watcher 初始步数由 `start_step=latest_step` 纠正为 `start_step=max(0, latest_step + 1)`。彻底消除 Watcher 首轮轮询误读上一轮已完成状态（`status="DONE"`）导致将旧回复即时推送给用户的缺陷。
+  - **空/首步步数基准归一化**：重构 `get_latest_step_index`，空日志/不存在会话返回 `-1`，`start_step` 归一为 `0`；`watch_and_deliver_result` 中 `last_seen_step` 初始化为 `start_step - 1`（`start_step=0` 时为 `-1`），确保 step 0 产生时即刻被识别为活跃事件并刷新租约。
+  - **时间窗口防穿透 (Temporal Guarding)**：在 `parse_transcript_events` 中引入 `min_created_at` 与 1.0s 时钟偏移容差。严格过滤早于当前任务 `start_time` 的历史陈旧响应与工具事件。
+  - **时区安全解析**：`_parse_timestamp` 针对无时区信息的本地时间字符串使用 `dt.astimezone()` 精确对齐系统时区，避免硬替换 UTC 引发的 8 小时偏移误判。
+  - **活跃 Watcher 单例治理与前置取消**：在 `session_manager.py` 分发追问前立即调用 `cancel_active_watcher(convo_id)`，消除 `send_message` 网络往返期间前序 Watcher 发生超时或错误交付的竞争窗口；`get_active_watchers` 自动剔除已结束任务。
+  - **超时终态 Broker 事件补齐**：当 Watcher 达到超时兜底并成功提取 `final_content` 交付时，同步向 `broker` 投递 `antigravity_result_delivered` 事件，保持系统事件流闭环。
+- **追问提示词 Rich 格式 Slash 命令保留与前缀归一化 (`hub/antigravity/prompt_builder.py`)**:
+  - 在 `build_follow_up_prompt` 与 `build_antigravity_prompt` 中对 `payload.slash_commands` 统一执行 `.lstrip('/')` 归一化，不论传入 `["/boost"]` 还是 `["boost"]` 均能正确匹配。
+  - 补充 `[/boost](slashCommand;boost)` 与 `[/goal](slashCommand;goal)` 等富文本前缀及对应指令块（如 `BOOST_DIRECTIVE`、`GOAL_DIRECTIVE`），确保追问时携带的 `/boost` 与 `/goal` 正确激活自治闭环与算力推进模式。
 
 ## [1.16.17] - 2026-09-20
 

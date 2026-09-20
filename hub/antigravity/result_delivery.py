@@ -26,6 +26,9 @@ _ACTIVE_WATCHERS: dict[str, asyncio.Task] = {}
 
 def get_active_watchers() -> dict[str, asyncio.Task]:
     """Return a copy of the currently active watcher tasks."""
+    for cid, t in list(_ACTIVE_WATCHERS.items()):
+        if t.done():
+            _ACTIVE_WATCHERS.pop(cid, None)
     return dict(_ACTIVE_WATCHERS)
 
 
@@ -35,10 +38,13 @@ def cancel_active_watcher(conversation_id: str) -> bool:
     Returns True if an active watcher was found and cancelled, False otherwise.
     """
     task = _ACTIVE_WATCHERS.get(conversation_id)
-    if task and not task.done():
-        logger.info("Cancelling active watcher task for conversation %s", conversation_id)
-        task.cancel()
-        return True
+    if task:
+        if not task.done():
+            logger.info("Cancelling active watcher task for conversation %s", conversation_id)
+            task.cancel()
+            return True
+        else:
+            _ACTIVE_WATCHERS.pop(conversation_id, None)
     return False
 
 
@@ -63,7 +69,7 @@ def _parse_timestamp(val: Any) -> Optional[float]:
             cleaned = val.replace("Z", "+00:00")
             dt = datetime.fromisoformat(cleaned)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.astimezone()
             return dt.timestamp()
         except Exception:
             return None
@@ -107,12 +113,12 @@ def resolve_transcript_path(conversation_id: str, brain_root: Optional[Path] = N
 
 
 def get_latest_step_index(conversation_id: str, brain_root: Optional[Path] = None) -> int:
-    """Return the highest step_index currently recorded in the conversation transcript."""
+    """Return the highest step_index currently recorded in the conversation transcript (-1 if empty or missing)."""
     transcript_path = resolve_transcript_path(conversation_id, brain_root)
     if not transcript_path or not transcript_path.exists():
-        return 0
+        return -1
 
-    latest_idx = 0
+    latest_idx = -1
     try:
         with open(transcript_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -258,7 +264,7 @@ async def watch_and_deliver_result(
     last_reported_action: Optional[str] = None
     last_progress_time: float = 0.0
     last_activity_time: float = time.time()
-    last_seen_step: int = max(0, start_step - 1)
+    last_seen_step: int = start_step - 1
     start_loop = time.time()
 
     logger.info(
@@ -395,6 +401,24 @@ async def watch_and_deliver_result(
                 elapsed_seconds=elapsed_total,
                 is_follow_up=is_follow_up,
             )
+            if broker:
+                evt_data = {
+                    "event": "antigravity_result_delivered",
+                    "task_id": task_id,
+                    "conversation_id": conversation_id,
+                    "channel": channel,
+                    "thread_ts": thread_ts,
+                    "elapsed_seconds": elapsed_total,
+                    "is_follow_up": is_follow_up,
+                    "content_length": len(final_content),
+                    "timed_out": True,
+                }
+                try:
+                    await broker.publish("events", evt_data)
+                    await broker.publish(f"task.{task_id}", evt_data)
+                except Exception as b_err:
+                    logger.debug("Failed to publish result delivery event: %s", b_err)
+
             return {
                 "delivered": True,
                 "conversation_id": conversation_id,

@@ -148,6 +148,9 @@ async def execute_antigravity_task(
             convo_id = existing_session["conversation_id"]
             log(f"Found existing Antigravity session: {convo_id}. Dispatching follow-up prompt...")
 
+            # Cancel any prior active watcher for this session immediately to prevent stale delivery while send_message is in flight
+            cancel_active_watcher(convo_id)
+
             follow_up_prompt = build_follow_up_prompt(payload, downloaded_images=downloaded_images)
             latest_step = get_latest_step_index(convo_id)
             success, resp_str, err_msg = await client.send_message(
@@ -174,8 +177,6 @@ async def execute_antigravity_task(
                         snippet=payload.text or payload.voice_transcript or "已同步附件",
                         files_count=len(downloaded_images),
                     )
-                    # Cancel any prior active watcher for this session
-                    cancel_active_watcher(convo_id)
                     # Launch background watcher for follow-up progress and result delivery
                     asyncio.create_task(
                         watch_and_deliver_result(
@@ -186,7 +187,7 @@ async def execute_antigravity_task(
                             task_id=task_id,
                             start_time=start_time,
                             is_follow_up=True,
-                            start_step=latest_step + 1,
+                            start_step=max(0, latest_step + 1),
                             broker=broker,
                         )
                     )

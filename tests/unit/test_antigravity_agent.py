@@ -154,6 +154,21 @@ class TestPromptBuilder(unittest.TestCase):
         self.assertIn(BOOST_DIRECTIVE, follow_up)
         self.assertIn(GOAL_DIRECTIVE, follow_up)
 
+    def test_build_follow_up_prompt_with_payload_slash_commands_with_leading_slashes(self):
+        payload = AntigravityTaskPayload(
+            text="追问内容，请全力推进",
+            slash_commands=["/boost", "/goal"],
+            channel="C0C1B86AMCN",
+            thread_ts="1789200000.100",
+            ts="1789200500.200",
+            is_follow_up=True,
+        )
+        follow_up = build_follow_up_prompt(payload)
+        self.assertIn("[/boost](slashCommand;boost)", follow_up)
+        self.assertIn("[/goal](slashCommand;goal)", follow_up)
+        self.assertIn(BOOST_DIRECTIVE, follow_up)
+        self.assertIn(GOAL_DIRECTIVE, follow_up)
+
 
 class TestThreadNotifier(unittest.TestCase):
     """Test Slack milestone comment dispatcher."""
@@ -1132,6 +1147,149 @@ class TestProgressTrackingAndResultDelivery(unittest.TestCase):
             await asyncio.sleep(0.02)
             self.assertTrue(task2.cancelled() or task2.done())
             self.assertNotIn(convo_id, _ACTIVE_WATCHERS)
+
+        asyncio.run(_run())
+
+    def test_parse_timestamp_comprehensive(self):
+        from hub.antigravity.result_delivery import _parse_timestamp
+
+        # Numeric int / float
+        self.assertEqual(_parse_timestamp(1789200000), 1789200000.0)
+        self.assertEqual(_parse_timestamp(1789200000.5), 1789200000.5)
+        # String float
+        self.assertEqual(_parse_timestamp("1789200000.5"), 1789200000.5)
+        # UTC ISO string
+        self.assertEqual(_parse_timestamp("1970-01-01T00:00:10Z"), 10.0)
+        # Naive ISO string (local) matches local timestamp
+        now = time.time()
+        naive_str = datetime.fromtimestamp(now).strftime("%Y-%m-%dT%H:%M:%S")
+        parsed = _parse_timestamp(naive_str)
+        self.assertIsNotNone(parsed)
+        self.assertAlmostEqual(parsed, int(now), delta=2.0)
+        # Invalid / Empty / None
+        self.assertIsNone(_parse_timestamp(None))
+        self.assertIsNone(_parse_timestamp(""))
+        self.assertIsNone(_parse_timestamp("invalid-date-format"))
+
+    def test_get_latest_step_index_empty_and_missing(self):
+        from hub.antigravity.result_delivery import get_latest_step_index
+
+        # Missing conversation returns -1
+        self.assertEqual(get_latest_step_index("nonexistent-convo-xyz", brain_root=self.brain_dir), -1)
+
+        # Empty transcript file returns -1
+        convo_id = "test-convo-empty"
+        self._create_fake_transcript(convo_id, [])
+        self.assertEqual(get_latest_step_index(convo_id, brain_root=self.brain_dir), -1)
+
+        # Transcript with single step 0 returns 0
+        convo_step0 = "test-convo-step0"
+        self._create_fake_transcript(convo_step0, [{"step_index": 0}])
+        self.assertEqual(get_latest_step_index(convo_step0, brain_root=self.brain_dir), 0)
+
+    def test_watch_and_deliver_result_follow_up_e2e(self):
+        from hub.antigravity.result_delivery import watch_and_deliver_result
+        convo_id = "test-convo-followup-e2e"
+        now = time.time()
+        # Pre-populate turn 1 (steps 0 and 1) completed in the past
+        steps = [
+            {
+                "step_index": 0,
+                "source": "USER",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "created_at": datetime.fromtimestamp(now - 30, tz=timezone.utc).isoformat(),
+                "content": "Turn 1 request",
+            },
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": datetime.fromtimestamp(now - 28, tz=timezone.utc).isoformat(),
+                "content": "Turn 1 completed response",
+            },
+            # Turn 2 (steps 2 and 3)
+            {
+                "step_index": 2,
+                "source": "USER",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "created_at": datetime.fromtimestamp(now - 2, tz=timezone.utc).isoformat(),
+                "content": "Turn 2 follow-up request",
+            },
+            {
+                "step_index": 3,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": datetime.fromtimestamp(now - 1, tz=timezone.utc).isoformat(),
+                "content": "Turn 2 follow-up new answer",
+            },
+        ]
+        self._create_fake_transcript(convo_id, steps)
+
+        mock_notifier = MagicMock()
+        mock_notifier.notify_result_delivery = MagicMock(return_value=True)
+
+        async def _run():
+            res = await watch_and_deliver_result(
+                notifier=mock_notifier,
+                channel="C0C1B86AMCN",
+                thread_ts="1789200000.100",
+                conversation_id=convo_id,
+                task_id="tsk_followup_e2e",
+                start_time=now - 5,  # Follow-up started at now - 5
+                is_follow_up=True,
+                start_step=2,  # Must ignore steps 0 and 1
+                max_wait_seconds=5.0,
+                poll_interval=0.05,
+                brain_root=self.brain_dir,
+            )
+            self.assertTrue(res["delivered"])
+            mock_notifier.notify_result_delivery.assert_called_once()
+            args, kwargs = mock_notifier.notify_result_delivery.call_args
+            self.assertEqual(kwargs.get("content"), "Turn 2 follow-up new answer")
+            self.assertTrue(kwargs.get("is_follow_up"))
+
+        asyncio.run(_run())
+
+    def test_watch_and_deliver_result_detects_step_0_activity(self):
+        from hub.antigravity.result_delivery import watch_and_deliver_result
+        convo_id = "test-convo-step0-activity"
+        mock_notifier = MagicMock()
+        mock_notifier.notify_result_delivery = MagicMock(return_value=True)
+
+        # Start with empty transcript
+        self._create_fake_transcript(convo_id, [])
+
+        async def _run():
+            task = asyncio.create_task(
+                watch_and_deliver_result(
+                    notifier=mock_notifier,
+                    channel="C0C1B86AMCN",
+                    thread_ts="1789200000.100",
+                    conversation_id=convo_id,
+                    task_id="tsk_step0",
+                    start_time=time.time(),
+                    is_follow_up=False,
+                    start_step=0,
+                    max_wait_seconds=5.0,
+                    poll_interval=0.05,
+                    brain_root=self.brain_dir,
+                )
+            )
+            await asyncio.sleep(0.08)
+            # Write step 0 and 1
+            self._create_fake_transcript(
+                convo_id,
+                [
+                    {"step_index": 0, "source": "USER", "type": "USER_INPUT", "status": "DONE"},
+                    {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Done 0"},
+                ],
+            )
+            res = await task
+            self.assertTrue(res["delivered"])
 
         asyncio.run(_run())
 
