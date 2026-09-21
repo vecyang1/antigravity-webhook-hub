@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added & Hardened
 - **TypeSafe AI Jev 毫秒级告警防刷与降噪过滤器 (`hub/alert_filter.py`, `hub/routes/uptime_kuma.py`, `hub/config.py`, `hub/cli.py`)**:
-  - **Jev `noul` 概率原语深度集成**：接入 TypeSafe AI System One Jev 模型（通过 1Password `Agent Automation` 无人值守解析凭证），利用 `is_critical: noul` 原语在 ~50ms 内给出 0.0~1.0 的置信度评估，精准区分瞬时巡检抖动（如 GlintMuse Blog 关键词不匹配）与真实基础设施严重宕机（如 PostgreSQL 数据库连接耗尽）。
+  - **Jev `noul` 概率原语深度集成**：接入 TypeSafe AI System One Jev 模型（通过 1Password `Agent Automation` 无人值守解析凭证），利用 `is_critical: noul` 原语在 ~50ms 内给出 0.0~1.0 的置信度评估，精准区分瞬时巡检抖动（如 GlintMuse Blog 关键词不匹配，noul ~0.16）与真实基础设施严重宕机（如 PostgreSQL 数据库连接耗尽，noul ~0.87）。
   - **90% 运维噪音抑制与智能升级**：低于阈值（默认 0.70）的瞬时健康检查告警直接标记为 `suppress` 并入库归档，不再触发桌面通知、手机或 Slack 推送；高于阈值的严重故障即刻标记为 `escalate` 并在 <100ms 内触发最高优先级告警。
-  - **故障降级与容灾保证 (Fail-Open)**：在 TypeSafe API 超时或网络异常时，系统自动触发 `fail_open` 策略直接升级告警，确保真实严重故障绝不漏报。
+  - **故障降级与容灾保证 (Fail-Open)**：在 TypeSafe API 超时或网络异常时，系统自动触发 `fail_open` 策略直接升级告警，内置 50 条近期告警历史 Ring Buffer，确保真实严重故障绝不漏报。
   - **诊断优先与透明可观测性 (Diagnostic-First)**：
     - 新增 `webhook-hub alert-diagnose` CLI 对账命令，支持直接输入监控服务名与告警日志即时验算 Jev 评估决策、概率分值与判定理由。
     - 在 HTTP 网关新增 `/api/alerts/diagnose`（实时试算）、`/api/alerts/metrics`（环形缓冲区与抑制率统计）与 `/api/alerts/config`（运行时动态调整阈值）。
