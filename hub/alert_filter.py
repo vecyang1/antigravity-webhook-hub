@@ -213,9 +213,18 @@ class JevAlertFilter:
                 with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     dur = (time.perf_counter() - t0) * 1000.0
-                    model_used = data.get("model", self.model)
-                    answers = data.get("answers", {})
-                    noul_val = float(answers.get("is_critical", {}).get("noul", 0.5))
+                    model_used = data.get("model", self.model) if isinstance(data, dict) else self.model
+                    answers = data.get("answers") if isinstance(data, dict) else {}
+                    if not isinstance(answers, dict):
+                        answers = {}
+                    is_crit_data = answers.get("is_critical")
+                    if not isinstance(is_crit_data, dict):
+                        is_crit_data = {}
+                    raw_noul = is_crit_data.get("noul")
+                    try:
+                        noul_val = float(raw_noul) if raw_noul is not None else 0.5
+                    except (ValueError, TypeError):
+                        noul_val = 0.5
 
                     is_critical = noul_val >= threshold
                     action = "escalate" if is_critical else "suppress"
@@ -373,8 +382,14 @@ class JevAlertFilter:
 _default_filter: Optional[JevAlertFilter] = None
 
 
+def reset_default_alert_filter() -> None:
+    """Reset the singleton instance cache (primarily for tests)."""
+    global _default_filter
+    _default_filter = None
+
+
 def get_default_alert_filter(config: Optional[Any] = None) -> JevAlertFilter:
-    """Retrieve or initialize the singleton JevAlertFilter."""
+    """Retrieve, initialize, or re-synchronize the singleton JevAlertFilter."""
     global _default_filter
     if _default_filter is None:
         if config and hasattr(config, "alert_filter"):
@@ -398,4 +413,13 @@ def get_default_alert_filter(config: Optional[Any] = None) -> JevAlertFilter:
                 timeout_seconds=timeout_s,
                 fallback_mode=fallback,
             )
+    elif config and hasattr(config, "alert_filter"):
+        af_cfg = config.alert_filter
+        _default_filter.enabled = af_cfg.enabled
+        _default_filter.critical_threshold = af_cfg.critical_threshold
+        _default_filter.timeout_seconds = af_cfg.timeout_seconds
+        _default_filter.fallback_mode = af_cfg.fallback_mode
+        if af_cfg.api_key:
+            _default_filter._explicit_key = af_cfg.api_key
+
     return _default_filter

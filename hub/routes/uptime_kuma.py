@@ -21,7 +21,7 @@ import time
 import uuid
 from typing import Any, Callable, Optional
 
-from hub.alert_filter import JevAlertFilter, get_default_alert_filter
+from hub.alert_filter import AlertFilterResult, JevAlertFilter, get_default_alert_filter
 from hub.config import AppConfig
 from hub.models import HTTPRequest, HTTPResponse
 from hub.security import compute_payload_hash, validate_request_security, verify_bearer_token
@@ -122,10 +122,8 @@ def register_uptime_kuma_routes(
     active_probe_fn = probe_fn or probe_url_liveness
     if alert_filter is not None:
         active_alert_filter = alert_filter
-    elif config and getattr(config, "alert_filter", None) and config.alert_filter.enabled:
-        active_alert_filter = get_default_alert_filter(config)
     else:
-        active_alert_filter = None
+        active_alert_filter = get_default_alert_filter(config)
 
     async def handle_uptime_kuma_webhook(req: HTTPRequest) -> HTTPResponse:
         # 1. Authentication & Security Validation
@@ -475,12 +473,24 @@ def register_uptime_kuma_routes(
             }, status_code=200)
 
         # Run Jev Intelligent Alert Filter
-        filter_res = await active_alert_filter.evaluate_alert_async(
-            service=service_name,
-            message=alert_msg,
-            url=alert_url,
-            context=body_dict,
-        )
+        if active_alert_filter and getattr(active_alert_filter, "enabled", True):
+            filter_res = await active_alert_filter.evaluate_alert_async(
+                service=service_name,
+                message=alert_msg,
+                url=alert_url,
+                context=body_dict,
+            )
+        else:
+            filter_res = AlertFilterResult(
+                is_critical=True,
+                noul=1.0,
+                threshold=getattr(active_alert_filter, "critical_threshold", 0.70) if active_alert_filter else 0.70,
+                action="escalate",
+                reason="Alert filter disabled or not configured; escalated for safety.",
+                model="disabled",
+                duration_ms=0.0,
+                eval_source="fallback",
+            )
 
         event_id = f"evt_{uuid.uuid4().hex[:16]}"
         payload_hash = compute_payload_hash(req.body)
@@ -558,6 +568,10 @@ def register_uptime_kuma_routes(
 
     async def handle_alert_diagnose(req: HTTPRequest) -> HTTPResponse:
         """Diagnostic Endpoint: Test any alert against live Jev System One model."""
+        nonlocal active_alert_filter
+        if not active_alert_filter:
+            active_alert_filter = get_default_alert_filter(config)
+
         if not req.body:
             return HTTPResponse.error("Request body is empty", status_code=400, reason="empty_body")
         try:
@@ -565,11 +579,19 @@ def register_uptime_kuma_routes(
         except Exception:
             return HTTPResponse.error("Malformed JSON payload", status_code=400, reason="malformed_json")
 
+        if not isinstance(body_dict, dict):
+            return HTTPResponse.error("Payload must be a JSON object", status_code=400, reason="invalid_json_type")
+
         service_name = str(body_dict.get("service") or "Diagnostic Test")
         alert_msg = str(body_dict.get("message") or body_dict.get("msg") or "")
         alert_url = str(body_dict.get("url") or "")
         custom_thresh = body_dict.get("threshold")
-        thresh_val = float(custom_thresh) if custom_thresh is not None else None
+        thresh_val = None
+        if custom_thresh is not None:
+            try:
+                thresh_val = float(custom_thresh)
+            except (ValueError, TypeError):
+                return HTTPResponse.error("threshold must be a valid float", status_code=400)
 
         res = await active_alert_filter.evaluate_alert_async(
             service=service_name,
@@ -582,22 +604,55 @@ def register_uptime_kuma_routes(
 
     async def handle_alert_metrics(req: HTTPRequest) -> HTTPResponse:
         """Observability Endpoint: Return alert suppression and escalation statistics."""
+        nonlocal active_alert_filter
+        if not active_alert_filter:
+            active_alert_filter = get_default_alert_filter(config)
         return HTTPResponse.json(active_alert_filter.get_metrics(), status_code=200)
 
     async def handle_alert_config(req: HTTPRequest) -> HTTPResponse:
         """Config Endpoint: Inspect (GET) or update (POST) alert filter runtime configuration."""
+        nonlocal active_alert_filter
+        if not active_alert_filter:
+            active_alert_filter = get_default_alert_filter(config)
+
         if req.method == "POST":
-            if req.body:
+            if not req.body:
+                return HTTPResponse.error("Request body is empty", status_code=400)
+            try:
+                data = json.loads(req.body.decode("utf-8"))
+            except Exception as e:
+                return HTTPResponse.error(f"Malformed JSON: {e}", status_code=400)
+
+            if not isinstance(data, dict):
+                return HTTPResponse.error("Config payload must be a JSON object", status_code=400)
+
+            if "critical_threshold" in data:
                 try:
-                    data = json.loads(req.body.decode("utf-8"))
-                    if "critical_threshold" in data:
-                        active_alert_filter.critical_threshold = float(data["critical_threshold"])
-                    if "enabled" in data:
-                        active_alert_filter.enabled = bool(data["enabled"])
-                    if "fallback_mode" in data:
-                        active_alert_filter.fallback_mode = str(data["fallback_mode"]).lower()
-                except Exception as e:
-                    return HTTPResponse.error(f"Invalid config payload: {e}", status_code=400)
+                    ct = float(data["critical_threshold"])
+                    if not (0.0 <= ct <= 1.0):
+                        return HTTPResponse.error("critical_threshold must be between 0.0 and 1.0", status_code=400)
+                    active_alert_filter.critical_threshold = ct
+                except (ValueError, TypeError):
+                    return HTTPResponse.error("critical_threshold must be a valid float", status_code=400)
+
+            if "enabled" in data:
+                active_alert_filter.enabled = bool(data["enabled"])
+
+            if "fallback_mode" in data:
+                fb = str(data["fallback_mode"]).lower().strip()
+                if fb not in ("fail_open", "fail_closed", "heuristic"):
+                    return HTTPResponse.error("fallback_mode must be one of: 'fail_open', 'fail_closed', 'heuristic'", status_code=400)
+                active_alert_filter.fallback_mode = fb
+
+            if "timeout_seconds" in data:
+                try:
+                    to_s = float(data["timeout_seconds"])
+                    if not (0.1 <= to_s <= 60.0):
+                        return HTTPResponse.error("timeout_seconds must be between 0.1 and 60.0", status_code=400)
+                    active_alert_filter.timeout_seconds = to_s
+                except (ValueError, TypeError):
+                    return HTTPResponse.error("timeout_seconds must be a valid float", status_code=400)
+
         return HTTPResponse.json({
             "enabled": active_alert_filter.enabled,
             "critical_threshold": active_alert_filter.critical_threshold,

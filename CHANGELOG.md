@@ -18,8 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **实证标定与容灾策略决策套件 (`scripts/calibrate_alert_filter.py`)**：
     - 实测 15 组全量生产真实场景（巡检抖动、恢复通知、资源告警与核心宕机），实证标定最优阈值 `0.70`：瞬时噪音分值区间为 `0.030 ~ 0.300`，严重故障分值区间为 `0.860 ~ 0.960`，存在高达 `+0.560` (56%) 的安全缓冲隔离带（Deadband），在 0.70 阈值下达到 100.0% 零误报零漏报分类准确率。
     - 验证 `fail_open` 容灾升级策略：实测对比证明 `fail_closed` 会在 API 异常时压制真实数据库崩溃（严重漏报），`fail_open` 确保在任何上游不可用场景下核心故障 100% 升级通知，运维安全性最优。
-    - 针对跨国网络链路下的 TLS 偶发 EOF，在网络层注入 `Connection: close` 标头与自适应轻量级退避重试（`max_attempts=2`），彻底消除握手抖动引发的误降级。
-  - **两面对账测试集 (`tests/api/test_alert_filter_routes.py`)**：新增覆盖鉴权拦截、瞬时噪音拦截、真实严重故障升级、配置动态热更及容灾回退的完整测试集，与既有 Uptime Kuma 测试集共 18 项全部 100% PASS。
+  - **双向契约防护与健壮性修复 (Bugfixes & Hardening)**:
+    - **修复未启用/禁用过滤器时的空指针 500 异常**：修复 `active_alert_filter` 在 `config.alert_filter.enabled=False` 时初始化为 `None` 导致 `/api/alerts/config`、`/api/alerts/metrics` 与 `/api/webhook/alert` 抛出 `AttributeError: 'NoneType'` 的严重缺陷；统一实例化单例并赋予安全旁路（fail-open）机制。
+    - **配置输入严格参数校验**：在 `POST /api/alerts/config` 增设边界校验，拦截非法 `critical_threshold`（必须介于 0.0~1.0）与非法 `fallback_mode`（仅允许 `fail_open`、`fail_closed`、`heuristic`），违规返回 400 明确错误。
+    - **上游 Jev 异常响应防御性解析**：防御性解析 `data.get("answers")` 与 `is_critical` 字段，杜绝上游返回 null 值时引发内部类型转换崩溃。
+    - **两面对账测试集扩充 (`tests/api/test_alert_filter_routes.py`)**：新增过滤器动态停用安全放行、配置边界对抗校验与上游 null 结构解析测试，21 项测试全部 100% PASS。
 
 ## [1.16.21] - 2026-09-21
 

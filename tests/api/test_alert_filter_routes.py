@@ -306,3 +306,74 @@ async def test_alert_metrics_and_config_endpoints(alert_server_harness: Any):
         assert post_resp.status_code == 200
         assert post_resp.json()["critical_threshold"] == 0.85
         assert mock_filter.critical_threshold == 0.85
+
+
+async def test_alert_config_validation_failures(alert_server_harness: Any):
+    """Adversarial: Invalid config values must return 400 Bad Request with clear error."""
+    base_url, server, config, db, dispatcher, mock_filter = alert_server_harness
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        # Negative threshold
+        r1 = await client.post(f"{base_url}/api/alerts/config", json={"critical_threshold": -0.5})
+        assert r1.status_code == 400
+        assert "between 0.0 and 1.0" in r1.json().get("message", "")
+
+        # Threshold > 1.0
+        r2 = await client.post(f"{base_url}/api/alerts/config", json={"critical_threshold": 1.5})
+        assert r2.status_code == 400
+        assert "between 0.0 and 1.0" in r2.json().get("message", "")
+
+        # Invalid fallback mode
+        r3 = await client.post(f"{base_url}/api/alerts/config", json={"fallback_mode": "invalid_mode"})
+        assert r3.status_code == 400
+        assert "fallback_mode must be one of" in r3.json().get("message", "")
+
+        # Invalid timeout
+        r4 = await client.post(f"{base_url}/api/alerts/config", json={"timeout_seconds": 999.0})
+        assert r4.status_code == 400
+        assert "timeout_seconds must be between" in r4.json().get("message", "")
+
+
+async def test_alert_filter_disabled_graceful_bypass(alert_server_harness: Any):
+    """Resilience: When filter is dynamically disabled, alerts safely bypass without throwing 500."""
+    base_url, server, config, db, dispatcher, mock_filter = alert_server_harness
+    headers = {"Authorization": f"Bearer {config.security.bearer_token}"}
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        # Disable filter via config endpoint
+        cfg_resp = await client.post(f"{base_url}/api/alerts/config", json={"enabled": False})
+        assert cfg_resp.status_code == 200
+        assert cfg_resp.json()["enabled"] is False
+
+        # Send alert: should safely escalate to critical without crashing
+        payload = {
+            "service": "Bypassed Service",
+            "message": "Some flapping noise",
+            "status": "down",
+        }
+        resp = await client.post(f"{base_url}/api/webhook/alert", json=payload, headers=headers)
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["status"] == "escalated_critical"
+        assert data["is_critical"] is True
+
+        # Re-enable filter
+        await client.post(f"{base_url}/api/alerts/config", json={"enabled": True})
+
+
+def test_alert_filter_robust_parsing_null_answers():
+    """Unit: JevAlertFilter safely parses responses where is_critical is None or null."""
+    from unittest.mock import MagicMock, patch
+    from hub.alert_filter import JevAlertFilter
+
+    f = JevAlertFilter(enabled=True, api_key="test-key")
+    fake_resp = MagicMock()
+    fake_resp.read.return_value = b'{"model": "jev-1.13.0", "answers": {"is_critical": null}}'
+    fake_resp.__enter__.return_value = fake_resp
+
+    with patch("urllib.request.urlopen", return_value=fake_resp):
+        res = f.evaluate_alert("test", "msg")
+        assert res.model == "jev-1.13.0"
+        assert res.noul == 0.5  # safe default
+        assert res.eval_source == "jev"
+
