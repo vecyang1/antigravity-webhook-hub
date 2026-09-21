@@ -207,7 +207,7 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
             _lazy_loaded.add("agent_activities")
             from hub.routes.agent_activities import register_agent_activities_routes
             register_agent_activities_routes(server, config, db_mgr, broker, dispatcher)
-        elif ("uptime-kuma" in p) and "kuma" not in _lazy_loaded:
+        elif ("uptime-kuma" in p or "alert" in p or "coolify" in p) and "kuma" not in _lazy_loaded:
             _lazy_loaded.add("kuma")
             from hub.routes.uptime_kuma import register_uptime_kuma_routes
             register_uptime_kuma_routes(server, config, db_mgr, dispatcher, broker)

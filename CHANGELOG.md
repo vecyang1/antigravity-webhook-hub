@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - **修复未启用/禁用过滤器时的空指针 500 异常**：修复 `active_alert_filter` 在 `config.alert_filter.enabled=False` 时初始化为 `None` 导致 `/api/alerts/config`、`/api/alerts/metrics` 与 `/api/webhook/alert` 抛出 `AttributeError: 'NoneType'` 的严重缺陷；统一实例化单例并赋予安全旁路（fail-open）机制。
     - **配置输入严格参数校验**：在 `POST /api/alerts/config` 增设边界校验，拦截非法 `critical_threshold`（必须介于 0.0~1.0）与非法 `fallback_mode`（仅允许 `fail_open`、`fail_closed`、`heuristic`），违规返回 400 明确错误。
     - **上游 Jev 异常响应防御性解析**：防御性解析 `data.get("answers")` 与 `is_critical` 字段，杜绝上游返回 null 值时引发内部类型转换崩溃。
+    - **修复动态路由解析器中 Alert 与 Coolify 路由未触发懒加载缺陷 (`hub/cli.py`)**：在 `_dynamic_route_resolver` 中扩展对 `alert` 与 `coolify` 路由路径的命中匹配，修复直接访问 `/api/alerts/metrics`、`/api/alerts/diagnose`、`/api/alerts/config` 时因未包含 "uptime-kuma" 关键字而返回 404 Route Not Found 的缺陷。
     - **两面对账测试集扩充 (`tests/api/test_alert_filter_routes.py`)**：新增过滤器动态停用安全放行、配置边界对抗校验与上游 null 结构解析测试，21 项测试全部 100% PASS。
 
 ## [1.16.21] - 2026-09-21
