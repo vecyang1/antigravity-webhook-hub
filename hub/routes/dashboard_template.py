@@ -1810,6 +1810,13 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
               </div>
               <span class="nav-count" id="countWatchdogStalled" style="background: rgba(59, 130, 246, 0.15); color: var(--accent-blue);">0</span>
             </li>
+            <li class="nav-item" id="navItemSchedules" data-nav="schedules" onclick="switchMainView('schedules', this)" title="Scheduled &amp; Delayed Tasks, recurring crons, sleep-resilient loop">
+              <div class="nav-item-left">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <span>Scheduled Tasks</span>
+              </div>
+              <span class="nav-count" id="countSchedules" style="background: rgba(139, 92, 246, 0.15); color: #a78bfa;">0</span>
+            </li>
           </ul>
         </div>
 
@@ -2443,6 +2450,91 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
             </div>
           </div>
         </div>
+
+        <!-- View 7: Scheduled & Delayed Tasks (SSOT Engine) -->
+        <div id="viewContainerSchedules" class="view-panel" style="display: none;">
+          <!-- Telemetry Banner -->
+          <div class="agent-telemetry-banner" style="margin-bottom: 20px;">
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Total Schedules</span>
+              <span class="agent-telemetry-val" id="schedStatTotal">0</span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Active Delayed</span>
+              <span class="agent-telemetry-val" style="color: #60a5fa;" id="schedStatOnce">0</span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Recurring Crons</span>
+              <span class="agent-telemetry-val" style="color: #a78bfa;" id="schedStatRecurring">0</span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Next Due Execution</span>
+              <span class="agent-telemetry-val" style="color: #34d399;" id="schedStatNextDue">--</span>
+            </div>
+            <div class="agent-telemetry-item">
+              <span class="agent-telemetry-label">Beat Recovery Status</span>
+              <span class="agent-telemetry-val" style="color: var(--status-success);" id="schedStatBeat">
+                <span class="badge badge-succeeded" style="font-size: 10px;">Zero Missed Beats</span>
+              </span>
+            </div>
+          </div>
+
+          <!-- Controls & Actions Toolbar -->
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
+            <div class="filter-pill-group">
+              <button type="button" class="filter-pill active" id="schedFilterAll" onclick="setScheduleFilter('all', this)">
+                <span>All</span>
+                <span class="pill-badge" id="schedCountAll">0</span>
+              </button>
+              <button type="button" class="filter-pill" id="schedFilterActive" onclick="setScheduleFilter('active', this)">
+                <span>Active</span>
+                <span class="pill-badge" id="schedCountActive">0</span>
+              </button>
+              <button type="button" class="filter-pill" id="schedFilterPaused" onclick="setScheduleFilter('paused', this)">
+                <span>Paused</span>
+                <span class="pill-badge" id="schedCountPaused">0</span>
+              </button>
+              <button type="button" class="filter-pill" id="schedFilterCompleted" onclick="setScheduleFilter('completed', this)">
+                <span>Completed</span>
+                <span class="pill-badge" id="schedCountCompleted">0</span>
+              </button>
+            </div>
+
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <button class="btn btn-secondary" onclick="sweepSchedulesNow(this)" title="Execute on-demand sweep of all due schedules">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <span>Sweep Due Now</span>
+              </button>
+              <button class="btn btn-primary" onclick="openScheduleModal()" title="Create a new one-off delayed or recurring schedule">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                <span>New Schedule</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Schedules Table Container -->
+          <div class="table-container">
+            <table class="table" id="schedulesTable">
+              <thead>
+                <tr>
+                  <th style="width: 260px;">Schedule &amp; Target</th>
+                  <th style="width: 140px;">Type &amp; Cadence</th>
+                  <th style="width: 180px;">Next Execution</th>
+                  <th style="width: 160px;">Last Run &amp; Total</th>
+                  <th style="width: 110px;">Status</th>
+                  <th style="width: 180px; text-align: right;">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="schedulesTableBody">
+                <tr>
+                  <td colspan="6" style="padding: 40px; text-align: center; color: var(--text-muted);">
+                    Loading scheduled tasks from SQLite SSOT...
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </main>
   </div>
@@ -2691,6 +2783,101 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           <span>Copy Prompt</span>
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create Schedule Modal -->
+  <div class="modal-overlay" id="scheduleModalOverlay" onclick="if (event.target === this) closeScheduleModal()">
+    <div class="modal" style="max-width: 580px;">
+      <div class="modal-header">
+        <div style="font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #a78bfa;"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <span>Create Scheduled Task</span>
+        </div>
+        <button class="drawer-close" onclick="closeScheduleModal()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px;">
+        <div>
+          <label class="form-label">Schedule Name / Description *</label>
+          <input type="text" class="form-input" id="schedInputName" placeholder="e.g. Daily CRM sync or Anker warranty check" required>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div>
+            <label class="form-label">Schedule Type</label>
+            <select class="form-select" id="schedInputType" onchange="toggleScheduleTypeInputs(this.value)">
+              <option value="once">One-off Delayed Task</option>
+              <option value="recurring">Recurring Cron Job</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Action Target Type</label>
+            <select class="form-select" id="schedInputActionType">
+              <option value="cli">CLI Command</option>
+              <option value="antigravity">Antigravity AgentAPI Call</option>
+              <option value="contact_review">Notion Contact Review</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="schedDelayRow">
+          <label class="form-label">Delay or Target Date/Time (UTC or +08:00)</label>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" class="form-input" id="schedInputDelay" placeholder="e.g. 2d, 1h, 30m or 2026-09-23T16:18:00+08:00" style="flex: 1;">
+            <select class="form-select" style="width: 140px;" onchange="if (this.value) document.getElementById('schedInputDelay').value = this.value;">
+              <option value="">Quick Delay...</option>
+              <option value="30s">30 Seconds</option>
+              <option value="5m">5 Minutes</option>
+              <option value="15m">15 Minutes</option>
+              <option value="1h">1 Hour</option>
+              <option value="12h">12 Hours</option>
+              <option value="1d">1 Day</option>
+              <option value="2d">2 Days</option>
+              <option value="7d">1 Week</option>
+            </select>
+          </div>
+          <div style="font-size: 11px; color: var(--text-subtle); margin-top: 4px;">Supports relative delays (2d, 12h, 30m, 60s) or ISO 8601 timestamps.</div>
+        </div>
+
+        <div id="schedCronRow" style="display: none;">
+          <label class="form-label">Cron Expression (5 Fields: min hour day month dow)</label>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" class="form-input" id="schedInputCron" placeholder="e.g. 0 9 * * * (Daily at 9 AM)" style="flex: 1; font-family: var(--font-mono);">
+            <select class="form-select" style="width: 160px;" onchange="if (this.value) document.getElementById('schedInputCron').value = this.value;">
+              <option value="">Presets...</option>
+              <option value="* * * * *">Every Minute</option>
+              <option value="*/5 * * * *">Every 5 Minutes</option>
+              <option value="*/15 * * * *">Every 15 Minutes</option>
+              <option value="0 * * * *">Every Hour</option>
+              <option value="0 */4 * * *">Every 4 Hours</option>
+              <option value="0 9 * * *">Daily at 09:00</option>
+              <option value="0 0 * * 1">Weekly on Monday</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label class="form-label">Command / Target Action / Prompt</label>
+          <textarea class="form-textarea" id="schedInputCommand" rows="3" placeholder="Enter shell command, CLI action, or AgentAPI prompt" style="font-family: var(--font-mono); font-size: 12px;"></textarea>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div>
+            <label class="form-label">Source Identifier</label>
+            <input type="text" class="form-input" id="schedInputSource" value="scheduler" placeholder="scheduler">
+          </div>
+          <div>
+            <label class="form-label">Timezone</label>
+            <input type="text" class="form-input" id="schedInputTz" value="Asia/Bangkok">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeScheduleModal()">Cancel</button>
+        <button class="btn btn-primary" id="btnSubmitSchedule" onclick="submitNewSchedule(this)">Create Schedule</button>
       </div>
     </div>
   </div>
@@ -3115,7 +3302,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           viewName === 'sentinels' ? 'navItemSentinels' :
           viewName === 'signals' ? 'navItemSignals' :
           viewName === 'pulses' ? 'navItemPulses' :
-          viewName === 'watchdog' ? 'navItemWatchdog' : 'navItemAll'
+          viewName === 'watchdog' ? 'navItemWatchdog' :
+          viewName === 'schedules' ? 'navItemSchedules' : 'navItemAll'
         );
         if (targetNav) targetNav.classList.add('active');
       }}
@@ -3127,7 +3315,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         sentinels: document.getElementById('viewContainerSentinels'),
         signals: document.getElementById('viewContainerSignals'),
         pulses: document.getElementById('viewContainerPulses'),
-        watchdog: document.getElementById('viewContainerWatchdog')
+        watchdog: document.getElementById('viewContainerWatchdog'),
+        schedules: document.getElementById('viewContainerSchedules')
       }};
 
       Object.keys(panels).forEach(key => {{
@@ -3176,6 +3365,11 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         if (toggleFilterBtn) toggleFilterBtn.style.display = 'none';
         if (searchInput) searchInput.placeholder = 'Search stalled sessions, resuscitations...';
         loadWatchdogStatus();
+      }} else if (viewName === 'schedules') {{
+        if (titleEl) titleEl.innerText = 'Scheduled Tasks & Recurring Crons (SSOT)';
+        if (toggleFilterBtn) toggleFilterBtn.style.display = 'none';
+        if (searchInput) searchInput.placeholder = 'Search schedules, crons, actions...';
+        loadSchedules();
       }} else {{
         if (titleEl) titleEl.innerText = 'All Activities';
         if (toggleFilterBtn) toggleFilterBtn.style.display = 'inline-flex';
@@ -3212,10 +3406,458 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           loadPulses();
         }} else if (state.currentMainView === 'watchdog') {{
           renderWatchdogStatus();
+        }} else if (state.currentMainView === 'schedules') {{
+          renderSchedules();
         }} else {{
           refreshTasksAuthoritative();
         }}
       }}, 250);
+    }}
+
+    // ==========================================
+    // Scheduled & Delayed Tasks (SSOT Engine)
+    // ==========================================
+    state.schedules = [];
+    state.schedulesFilter = 'all';
+
+    function formatDateTimeLocal(str) {{
+      if (!str) return 'Never';
+      return escapeHtml(str).replace('T', ' ').substring(0, 19);
+    }}
+
+    async function loadSchedules() {{
+      try {{
+        const resp = await fetch('/schedules?limit=100');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        state.schedules = data.schedules || [];
+        const stats = data.stats || {{}};
+
+        // Update badge in sidebar
+        const navCount = document.getElementById('countSchedules');
+        if (navCount) navCount.innerText = stats.active !== undefined ? stats.active : state.schedules.filter(s => s.status === 'active').length;
+
+        // Update Telemetry Banner
+        const totalEl = document.getElementById('schedStatTotal');
+        if (totalEl) totalEl.innerText = stats.total !== undefined ? stats.total : state.schedules.length;
+
+        const onceEl = document.getElementById('schedStatOnce');
+        if (onceEl) onceEl.innerText = stats.once !== undefined ? stats.once : state.schedules.filter(s => s.schedule_type === 'once' && s.status === 'active').length;
+
+        const recEl = document.getElementById('schedStatRecurring');
+        if (recEl) recEl.innerText = stats.recurring !== undefined ? stats.recurring : state.schedules.filter(s => s.schedule_type === 'recurring' && s.status === 'active').length;
+
+        // Find nearest next_run_at
+        const activeRuns = state.schedules
+          .filter(s => s.status === 'active' && s.next_run_at)
+          .map(s => s.next_run_at)
+          .sort();
+        const nextDueEl = document.getElementById('schedStatNextDue');
+        if (nextDueEl) {{
+          if (activeRuns.length > 0) {{
+            nextDueEl.innerHTML = `<span class="sched-countdown-wrap" data-countdown-iso="${{activeRuns[0]}}" data-status="active">Loading...</span>`;
+          }} else {{
+            nextDueEl.innerText = 'None pending';
+          }}
+        }}
+
+        // Update filter tabs counts
+        const cntAll = document.getElementById('schedCountAll');
+        if (cntAll) cntAll.innerText = state.schedules.length;
+
+        const cntAct = document.getElementById('schedCountActive');
+        if (cntAct) cntAct.innerText = state.schedules.filter(s => s.status === 'active').length;
+
+        const cntPsd = document.getElementById('schedCountPaused');
+        if (cntPsd) cntPsd.innerText = state.schedules.filter(s => s.status === 'paused').length;
+
+        const cntCmp = document.getElementById('schedCountCompleted');
+        if (cntCmp) cntCmp.innerText = state.schedules.filter(s => s.status === 'completed').length;
+
+        renderSchedules();
+        tickSchedulesCountdowns();
+      }} catch (err) {{
+        console.error('Failed to load schedules:', err);
+      }}
+    }}
+
+    let loadSchedulesDebounceTimeout = null;
+    function loadSchedulesDebounced(delayMs = 150) {{
+      clearTimeout(loadSchedulesDebounceTimeout);
+      loadSchedulesDebounceTimeout = setTimeout(loadSchedules, delayMs);
+    }}
+
+    function setScheduleFilter(filter, el) {{
+      state.schedulesFilter = filter;
+      document.querySelectorAll('#viewContainerSchedules .filter-pill').forEach(btn => btn.classList.remove('active'));
+      if (el) el.classList.add('active');
+      renderSchedules();
+    }}
+
+    function renderSchedules() {{
+      const tbody = document.getElementById('schedulesTableBody');
+      if (!tbody) return;
+
+      const q = (state.searchQuery || '').trim().toLowerCase();
+      const filter = state.schedulesFilter || 'all';
+
+      const filtered = state.schedules.filter(s => {{
+        if (filter !== 'all' && s.status !== filter) return false;
+        if (!q) return true;
+        const searchBlob = `${{s.name || ''}} ${{s.schedule_id || ''}} ${{s.source || ''}} ${{s.cron_expression || ''}} ${{s.command || ''}} ${{s.target_action || ''}}`.toLowerCase();
+        return searchBlob.includes(q);
+      }});
+
+      if (filtered.length === 0) {{
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="6" style="padding: 48px; text-align: center; color: var(--text-muted);">
+              <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color: var(--text-subtle);"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <div style="font-size: 13px; font-weight: 600; color: #ffffff;">No schedules found</div>
+                <div style="font-size: 11px; color: var(--text-subtle);">Click "+ New Schedule" or submit an incoming webhook with "schedule_at" / "cron"</div>
+              </div>
+            </td>
+          </tr>`;
+        return;
+      }}
+
+      tbody.innerHTML = filtered.map(s => {{
+        const isRec = s.schedule_type === 'recurring';
+        const typeBadge = isRec
+          ? `<span class="badge" style="background: rgba(167, 139, 250, 0.15); color: #c4b5fd; border: 1px solid rgba(167, 139, 250, 0.3); font-family: var(--font-mono); font-size: 10px; display: inline-flex; align-items: center; gap: 4px;">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+              ${{escapeHtml(s.cron_expression || 'cron')}}
+            </span>`
+          : `<span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3); font-size: 10px; display: inline-flex; align-items: center; gap: 4px;">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              One-off
+            </span>`;
+
+        let statusBadge = '';
+        if (s.status === 'active') {{
+          statusBadge = '<span class="badge badge-succeeded">active</span>';
+        }} else if (s.status === 'paused') {{
+          statusBadge = '<span class="badge badge-retry" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24;">paused</span>';
+        }} else if (s.status === 'completed') {{
+          statusBadge = '<span class="badge badge-test">completed</span>';
+        }} else if (s.status === 'cancelled') {{
+          statusBadge = '<span class="badge badge-failed" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8;">cancelled</span>';
+        }} else {{
+          statusBadge = `<span class="badge badge-failed">${{escapeHtml(s.status)}}</span>`;
+        }}
+
+        const actionText = escapeHtml(s.command || s.target_action || 'No command specified');
+        const sourceText = escapeHtml(s.source || 'scheduler');
+
+        const nextRunUtc = s.next_run_at || '--';
+        const nextRunFormatted = s.next_run_at ? formatDateTimeLocal(s.next_run_at) : 'None';
+        const lastRunFormatted = s.last_run_at ? formatDateTimeLocal(s.last_run_at) : 'Never';
+
+        const isPaused = s.status === 'paused';
+        const isDone = s.status === 'completed' || s.status === 'cancelled';
+
+        return `
+          <tr class="task-row">
+            <td style="padding: 12px 14px;">
+              <div style="display: flex; flex-direction: column; gap: 2px;">
+                <div style="font-weight: 600; font-size: 13px; color: #ffffff; display: flex; align-items: center; gap: 6px;">
+                  <span>${{escapeHtml(s.name)}}</span>
+                  <span class="badge badge-source" style="font-size: 9px;">${{sourceText}}</span>
+                </div>
+                <div style="font-family: var(--font-mono); font-size: 10px; color: var(--text-subtle);">
+                  ${{escapeHtml(s.schedule_id)}} &bull; <span style="color: #93c5fd;">${{escapeHtml(s.action_type || 'cli')}}</span>
+                </div>
+                <div style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${{actionText}}">
+                  ${{actionText}}
+                </div>
+              </div>
+            </td>
+            <td style="padding: 12px 14px;">
+              <div style="display: flex; flex-direction: column; gap: 4px;">
+                ${{typeBadge}}
+                <span style="font-size: 10px; color: var(--text-subtle);">${{escapeHtml(s.timezone || 'Asia/Bangkok')}}</span>
+              </div>
+            </td>
+            <td style="padding: 12px 14px;">
+              <div style="display: flex; flex-direction: column; gap: 3px;">
+                <div class="sched-countdown-wrap" data-countdown-iso="${{nextRunUtc}}" data-status="${{s.status}}" style="font-weight: 600; font-size: 12px; color: #34d399;">
+                  --
+                </div>
+                <div style="font-size: 10px; color: var(--text-subtle); font-family: var(--font-mono);" title="Authoritative next_run_at: ${{nextRunUtc}}">
+                  ${{nextRunFormatted}}
+                </div>
+              </div>
+            </td>
+            <td style="padding: 12px 14px;">
+              <div style="display: flex; flex-direction: column; gap: 2px;">
+                <span style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">${{lastRunFormatted}}</span>
+                <span style="font-size: 10px; color: var(--text-subtle);">${{s.total_runs || 0}} run(s) executed</span>
+              </div>
+            </td>
+            <td style="padding: 12px 14px;">
+              ${{statusBadge}}
+            </td>
+            <td style="padding: 12px 14px; text-align: right;">
+              <div style="display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end;">
+                <button class="btn btn-secondary" style="padding: 3px 8px; font-size: 11px; color: #38bdf8;" onclick="triggerScheduleNow('${{escapeJsString(s.schedule_id)}}', this)" title="Trigger immediate on-demand execution">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                  <span>Trigger</span>
+                </button>
+                ${{!isDone ? (isPaused ? `
+                  <button class="btn btn-secondary" style="padding: 3px 8px; font-size: 11px; color: #10b981;" onclick="resumeSchedule('${{escapeJsString(s.schedule_id)}}', this)" title="Resume schedule">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                    <span>Resume</span>
+                  </button>
+                ` : `
+                  <button class="btn btn-secondary" style="padding: 3px 8px; font-size: 11px; color: #f59e0b;" onclick="pauseSchedule('${{escapeJsString(s.schedule_id)}}', this)" title="Pause schedule">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                    <span>Pause</span>
+                  </button>
+                `) : ''}}
+                <button class="btn btn-secondary" style="padding: 3px 6px; font-size: 11px; color: #ef4444;" onclick="deleteSchedule('${{escapeJsString(s.schedule_id)}}', this)" title="Cancel and delete schedule">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }}).join('');
+    }}
+
+    function tickSchedulesCountdowns() {{
+      const now = Date.now();
+      document.querySelectorAll('.sched-countdown-wrap').forEach(el => {{
+        const iso = el.getAttribute('data-countdown-iso');
+        const status = el.getAttribute('data-status');
+        if (!iso || iso === '--') {{
+          el.innerText = '--';
+          return;
+        }}
+        if (status === 'completed') {{
+          el.innerHTML = '<span style="color: var(--text-subtle);">Completed</span>';
+          return;
+        }}
+        if (status === 'paused') {{
+          el.innerHTML = '<span style="color: #f59e0b;">Paused</span>';
+          return;
+        }}
+        if (status === 'cancelled') {{
+          el.innerHTML = '<span style="color: var(--text-subtle);">Cancelled</span>';
+          return;
+        }}
+
+        const target = Date.parse(iso);
+        if (isNaN(target)) {{
+          el.innerText = iso;
+          return;
+        }}
+
+        const diff = target - now;
+        if (diff <= 0) {{
+          el.innerHTML = '<span style="color: #f59e0b; font-weight: 700;">Due / Processing</span>';
+        }} else if (diff < 60000) {{
+          el.innerHTML = `<span style="color: #34d399; font-weight: 700;">in ${{Math.max(1, Math.floor(diff / 1000))}}s</span>`;
+        }} else if (diff < 3600000) {{
+          const m = Math.floor(diff / 60000);
+          const s = Math.floor((diff % 60000) / 1000);
+          el.innerHTML = `<span style="color: #34d399;">in ${{m}}m ${{s}}s</span>`;
+        }} else if (diff < 86400000) {{
+          const h = Math.floor(diff / 3600000);
+          const m = Math.floor((diff % 3600000) / 60000);
+          el.innerHTML = `<span style="color: #60a5fa;">in ${{h}}h ${{m}}m</span>`;
+        }} else {{
+          const d = Math.floor(diff / 86400000);
+          const h = Math.floor((diff % 86400000) / 3600000);
+          el.innerHTML = `<span style="color: #93c5fd;">in ${{d}}d ${{h}}h</span>`;
+        }}
+      }});
+    }}
+
+    async function triggerScheduleNow(scheduleId, btn) {{
+      if (btn) btn.disabled = true;
+      try {{
+        const resp = await fetch(`/schedules/${{scheduleId}}/trigger`, {{ method: 'POST' }});
+        const data = await resp.json();
+        if (resp.ok) {{
+          showToast(`Schedule triggered! Enqueued task ${{data.result?.task_id || ''}}`, 'info');
+          loadSchedules();
+          setTimeout(refreshTasksAuthoritative, 200);
+        }} else {{
+          showToast(`Trigger failed: ${{data.error || resp.statusText}}`, 'error');
+        }}
+      }} catch (err) {{
+        showToast(`Trigger error: ${{err.message}}`, 'error');
+      }} finally {{
+        if (btn) btn.disabled = false;
+      }}
+    }}
+
+    async function pauseSchedule(scheduleId, btn) {{
+      if (btn) btn.disabled = true;
+      try {{
+        const resp = await fetch(`/schedules/${{scheduleId}}/pause`, {{ method: 'POST' }});
+        if (resp.ok) {{
+          showToast('Schedule paused', 'info');
+          loadSchedules();
+        }} else {{
+          const data = await resp.json().catch(() => ({{}}));
+          showToast(`Failed pausing schedule: ${{data.error || resp.statusText}}`, 'error');
+        }}
+      }} catch (err) {{
+        showToast(`Pause error: ${{err.message}}`, 'error');
+      }} finally {{
+        if (btn) btn.disabled = false;
+      }}
+    }}
+
+    async function resumeSchedule(scheduleId, btn) {{
+      if (btn) btn.disabled = true;
+      try {{
+        const resp = await fetch(`/schedules/${{scheduleId}}/resume`, {{ method: 'POST' }});
+        if (resp.ok) {{
+          showToast('Schedule resumed with recalculated next run', 'info');
+          loadSchedules();
+        }} else {{
+          const data = await resp.json().catch(() => ({{}}));
+          showToast(`Failed resuming schedule: ${{data.error || resp.statusText}}`, 'error');
+        }}
+      }} catch (err) {{
+        showToast(`Resume error: ${{err.message}}`, 'error');
+      }} finally {{
+        if (btn) btn.disabled = false;
+      }}
+    }}
+
+    async function deleteSchedule(scheduleId, btn) {{
+      if (!confirm(`Are you sure you want to cancel and remove schedule ${{scheduleId}}?`)) return;
+      if (btn) btn.disabled = true;
+      try {{
+        const resp = await fetch(`/schedules/${{scheduleId}}`, {{ method: 'DELETE' }});
+        if (resp.ok) {{
+          showToast('Schedule deleted successfully', 'info');
+          loadSchedules();
+        }} else {{
+          const data = await resp.json().catch(() => ({{}}));
+          showToast(`Failed deleting schedule: ${{data.error || resp.statusText}}`, 'error');
+        }}
+      }} catch (err) {{
+        showToast(`Delete error: ${{err.message}}`, 'error');
+      }} finally {{
+        if (btn) btn.disabled = false;
+      }}
+    }}
+
+    async function sweepSchedulesNow(btn) {{
+      if (btn) btn.disabled = true;
+      showToast('Executing due schedule sweep...', 'info');
+      try {{
+        const resp = await fetch('/schedules/sweep', {{ method: 'POST' }});
+        const data = await resp.json();
+        if (resp.ok) {{
+          const count = data.sweep?.triggered_count || 0;
+          showToast(`Sweep complete: ${{count}} due schedule(s) triggered`, 'info');
+          loadSchedules();
+          setTimeout(refreshTasksAuthoritative, 200);
+        }} else {{
+          showToast(`Sweep error: ${{data.error || resp.statusText}}`, 'error');
+        }}
+      }} catch (err) {{
+        showToast(`Sweep failed: ${{err.message}}`, 'error');
+      }} finally {{
+        if (btn) btn.disabled = false;
+      }}
+    }}
+
+    function openScheduleModal() {{
+      const modal = document.getElementById('scheduleModalOverlay');
+      if (modal) modal.classList.add('open');
+    }}
+
+    function closeScheduleModal() {{
+      const modal = document.getElementById('scheduleModalOverlay');
+      if (modal) modal.classList.remove('open');
+    }}
+
+    function toggleScheduleTypeInputs(val) {{
+      const delayRow = document.getElementById('schedDelayRow');
+      const cronRow = document.getElementById('schedCronRow');
+      if (val === 'recurring') {{
+        if (delayRow) delayRow.style.display = 'none';
+        if (cronRow) cronRow.style.display = 'block';
+      }} else {{
+        if (delayRow) delayRow.style.display = 'block';
+        if (cronRow) cronRow.style.display = 'none';
+      }}
+    }}
+
+    async function submitNewSchedule(btn) {{
+      const name = (document.getElementById('schedInputName')?.value || '').trim();
+      if (!name) {{
+        showToast('Please enter a schedule name', 'error');
+        return;
+      }}
+
+      const schedType = document.getElementById('schedInputType')?.value || 'once';
+      const actionType = document.getElementById('schedInputActionType')?.value || 'cli';
+      const command = (document.getElementById('schedInputCommand')?.value || '').trim();
+      const delay = (document.getElementById('schedInputDelay')?.value || '').trim();
+      const cron = (document.getElementById('schedInputCron')?.value || '').trim();
+      const source = (document.getElementById('schedInputSource')?.value || 'scheduler').trim();
+      const tz = (document.getElementById('schedInputTz')?.value || 'Asia/Bangkok').trim();
+
+      if (schedType === 'recurring' && !cron) {{
+        showToast('Please provide a cron expression for recurring schedule', 'error');
+        return;
+      }}
+
+      const payload = {{
+        name: name,
+        schedule_type: schedType,
+        action_type: actionType,
+        command: command,
+        target_action: command,
+        source: source,
+        timezone: tz,
+      }};
+
+      if (schedType === 'recurring') {{
+        payload.cron_expression = cron;
+      }} else {{
+        if (delay) {{
+          if (delay.includes('T') || delay.includes('-')) {{
+            payload.scheduled_at = delay;
+          }} else {{
+            payload.delay = delay;
+          }}
+        }} else {{
+          payload.delay = '60s';
+        }}
+      }}
+
+      if (btn) btn.disabled = true;
+      try {{
+        const resp = await fetch('/schedules', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify(payload)
+        }});
+
+        const data = await resp.json();
+        if (resp.status === 201 || resp.ok) {{
+          showToast(`Schedule created! Next run: ${{data.next_run_at || ''}}`, 'info');
+          closeScheduleModal();
+          if (document.getElementById('schedInputName')) document.getElementById('schedInputName').value = '';
+          if (document.getElementById('schedInputCommand')) document.getElementById('schedInputCommand').value = '';
+          loadSchedules();
+        }} else {{
+          showToast(`Failed creating schedule: ${{data.error || resp.statusText}}`, 'error');
+        }}
+      }} catch (err) {{
+        showToast(`Create error: ${{err.message}}`, 'error');
+      }} finally {{
+        if (btn) btn.disabled = false;
+      }}
     }}
 
     // Sentinel AI Runs Logic
@@ -4703,6 +5345,24 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       sse.addEventListener('event', onEventUpdate);
       sse.addEventListener('message', onEventUpdate);
 
+      // Schedules SSE events
+      sse.addEventListener('schedule_created', (e) => {{
+        loadSchedulesDebounced(100);
+        showToast('New scheduled task registered in SSOT', 'info');
+      }});
+      sse.addEventListener('schedule_triggered', (e) => {{
+        loadSchedulesDebounced(100);
+        refreshTasksDebounced(150);
+        showToast('Scheduled task triggered into execution queue', 'info');
+      }});
+      sse.addEventListener('schedule_paused', () => loadSchedulesDebounced(100));
+      sse.addEventListener('schedule_resumed', () => loadSchedulesDebounced(100));
+      sse.addEventListener('schedule_cancelled', () => loadSchedulesDebounced(100));
+      sse.addEventListener('schedules_swept', (e) => {{
+        loadSchedulesDebounced(100);
+        refreshTasksDebounced(150);
+      }});
+
       sse.addEventListener('sweeper_run', (e) => {{
         refreshTasksDebounced(100);
         showToast('Auto-picker sweeper executed recovery pass', 'info');
@@ -5886,11 +6546,16 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       setupGlobalEventSource();
       loadWatchdogStatus();
       loadQuota();
+      loadSchedules();
+      // Realtime countdown ticker
+      setInterval(tickSchedulesCountdowns, 1000);
       // Periodic fallback polling every 10s if SSE reconnects
       setInterval(refreshTasksAuthoritative, 10000);
       setInterval(loadWatchdogStatus, 15000);
       setInterval(() => {{
-        if (state.currentMainView === 'quota') {{
+        if (state.currentMainView === 'schedules') {{
+          loadSchedules();
+        }} else if (state.currentMainView === 'quota') {{
           loadQuota(false);
         }}
       }}, 30000);

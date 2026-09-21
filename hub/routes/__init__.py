@@ -9,6 +9,7 @@ __all__ = [
     "register_agent_activities_routes",
     "register_dashboard_routes",
     "register_observability_routes",
+    "register_schedule_routes",
     "register_sse_routes",
     "register_task_routes",
     "register_uptime_kuma_routes",
@@ -26,6 +27,9 @@ def __getattr__(name: str) -> Any:
     elif name == "register_observability_routes":
         from hub.routes.observability import register_observability_routes
         return register_observability_routes
+    elif name == "register_schedule_routes":
+        from hub.routes.schedules import register_schedule_routes
+        return register_schedule_routes
     elif name == "register_sse_routes":
         from hub.routes.sse import register_sse_routes
         return register_sse_routes

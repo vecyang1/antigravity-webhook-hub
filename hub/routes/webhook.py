@@ -28,6 +28,7 @@ def register_webhook_routes(
     db: Optional[Any] = None,
     dispatcher: Optional[Any] = None,
     broker: Optional[Any] = None,
+    scheduler: Optional[Any] = None,
 ) -> None:
     """Register POST /webhook and POST /webhook/{source} ingress endpoints."""
 
@@ -116,6 +117,13 @@ def register_webhook_routes(
             # Fallback deterministic key: hash(source:path:payload_hash)
             idemp_key = compute_payload_hash(f"{source}:{req.path}:{payload_hash}".encode())
 
+        # 4. Check for Scheduling Parameters (Delayed once or Recurring Cron)
+        sched_at = req.header("x-schedule-at") or req.header("schedule-at") or body_dict.get("schedule_at") or body_dict.get("scheduled_at")
+        delay_sec = req.header("x-delay-seconds") or req.header("delay-seconds") or body_dict.get("delay_seconds")
+        delay_str = req.header("x-delay") or req.header("delay") or body_dict.get("delay")
+        cron_expr = req.header("x-cron") or req.header("cron") or body_dict.get("cron") or body_dict.get("cron_expression")
+        is_scheduled = bool(sched_at or delay_sec is not None or delay_str or cron_expr)
+
         # 5. Dual-Layer Deduplication Check in Database
         if db is not None:
             existing_task = None
@@ -143,7 +151,105 @@ def register_webhook_routes(
                     status_code=200,
                 )
 
-        # 6. Persist to SQLite SSOT
+        # 6. Handle Scheduled Webhook Ingress
+        if is_scheduled:
+            event_id = f"evt_sch_{uuid.uuid4().hex[:14]}"
+            if db is not None:
+                event_record = {
+                    "event_id": event_id,
+                    "source": source,
+                    "idempotency_key": idemp_key,
+                    "payload_hash": payload_hash,
+                    "headers_json": json.dumps(dict(req.headers)),
+                    "raw_payload": req.text(),
+                    "method": req.method,
+                    "path": req.path,
+                    "remote_addr": req.remote_addr,
+                    "status": "scheduled",
+                }
+                inserted = db.insert_webhook_event(event_record)
+                if asyncio.iscoroutine(inserted):
+                    await inserted
+
+            sched_name = (
+                body_dict.get("name")
+                or body_dict.get("title")
+                or f"Webhook {source} ({action_type})"
+            )
+            schedule_type = "recurring" if cron_expr else "once"
+            timezone = body_dict.get("timezone") or req.header("x-timezone") or "Asia/Bangkok"
+            sched_engine = scheduler or getattr(server, "_scheduler", None)
+
+            if sched_engine is not None:
+                sched_obj = await sched_engine.create_schedule(
+                    name=sched_name,
+                    schedule_type=schedule_type,
+                    scheduled_at=sched_at,
+                    delay_seconds=delay_sec,
+                    delay=delay_str,
+                    cron_expression=cron_expr,
+                    action_type=action_type,
+                    command=command,
+                    target_action=command or "",
+                    action_params=body_dict,
+                    source=source,
+                    timezone=timezone,
+                    max_runs=body_dict.get("max_runs"),
+                )
+                sched_data = sched_obj.to_dict()
+            elif db is not None:
+                from hub.scheduler import compute_next_cron_run, format_iso_utc, parse_schedule_time
+                import datetime
+                now_dt = datetime.datetime.now(datetime.timezone.utc)
+                if schedule_type == "recurring":
+                    next_dt = compute_next_cron_run(cron_expr, start_dt=now_dt, tz_name=timezone)
+                    next_run_iso = format_iso_utc(next_dt)
+                    scheduled_at_iso = None
+                else:
+                    target_dt = parse_schedule_time(
+                        scheduled_at=sched_at,
+                        delay_seconds=delay_sec,
+                        delay=delay_str,
+                        base_dt=now_dt,
+                    )
+                    next_run_iso = format_iso_utc(target_dt)
+                    scheduled_at_iso = next_run_iso
+
+                sched_data = {
+                    "name": sched_name,
+                    "source": source,
+                    "schedule_type": schedule_type,
+                    "cron_expression": cron_expr,
+                    "scheduled_at": scheduled_at_iso,
+                    "next_run_at": next_run_iso,
+                    "timezone": timezone,
+                    "action_type": action_type,
+                    "command": command or "",
+                    "target_action": command or "",
+                    "action_params": body_dict,
+                    "status": "active",
+                    "max_runs": 1 if schedule_type == "once" else body_dict.get("max_runs"),
+                }
+                sch_id = db.insert_schedule(sched_data)
+                if asyncio.iscoroutine(sch_id):
+                    sch_id = await sch_id
+                sched_data["schedule_id"] = sch_id
+            else:
+                return HTTPResponse.error("Database or scheduler not available", status_code=500)
+
+            return HTTPResponse.json(
+                {
+                    "status": "scheduled",
+                    "event_id": event_id,
+                    "schedule_id": sched_data.get("schedule_id"),
+                    "schedule_type": sched_data.get("schedule_type"),
+                    "next_run_at": sched_data.get("next_run_at"),
+                    "scheduled_at": sched_data.get("scheduled_at"),
+                    "cron_expression": sched_data.get("cron_expression"),
+                    "source": source,
+                },
+                status_code=202,
+            )
         event_id = f"evt_{uuid.uuid4().hex[:16]}"
         task_id = f"tsk_{uuid.uuid4().hex[:16]}"
         is_duplicate = False

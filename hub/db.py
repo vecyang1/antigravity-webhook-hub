@@ -425,6 +425,54 @@ class DatabaseManager:
                 """
             )
 
+            # 11. Scheduled Tasks Table (Delayed Tasks & Cron Triggers SSOT)
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                    schedule_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'scheduler',
+                    schedule_type TEXT NOT NULL DEFAULT 'once',
+                    cron_expression TEXT,
+                    scheduled_at TEXT,
+                    next_run_at TEXT NOT NULL,
+                    last_run_at TEXT,
+                    timezone TEXT NOT NULL DEFAULT 'Asia/Bangkok',
+                    action_type TEXT NOT NULL DEFAULT 'cli',
+                    command TEXT,
+                    target_action TEXT,
+                    action_params_json TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    max_runs INTEGER,
+                    total_runs INTEGER NOT NULL DEFAULT 0,
+                    last_task_id TEXT,
+                    last_error TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT chk_schedule_type CHECK(schedule_type IN ('once', 'recurring')),
+                    CONSTRAINT chk_schedule_status CHECK(status IN ('active', 'paused', 'completed', 'cancelled', 'failed'))
+                );
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_poll
+                    ON scheduled_tasks (status, next_run_at ASC);
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_type
+                    ON scheduled_tasks (schedule_type, status);
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_created
+                    ON scheduled_tasks (created_at DESC);
+                """
+            )
+
             self._migrate_schema()
 
             self._conn.commit()
@@ -475,6 +523,20 @@ class DatabaseManager:
                 self._conn.execute("CREATE INDEX IF NOT EXISTS idx_antigravity_resuscitations_convo ON antigravity_resuscitations (conversation_id, resuscitated_at DESC);")
                 self._conn.execute("CREATE INDEX IF NOT EXISTS idx_antigravity_resuscitations_status ON antigravity_resuscitations (status);")
                 self._conn.execute("PRAGMA foreign_keys = ON;")
+
+            # Ensure tasks table has schedule_id and scheduled_at columns
+            try:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN schedule_id TEXT;")
+            except Exception:
+                pass
+            try:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN scheduled_at TIMESTAMP;")
+            except Exception:
+                pass
+            try:
+                self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_schedule_id ON tasks (schedule_id);")
+            except Exception:
+                pass
         except Exception as e:
             logger.debug("Schema migration notice: %s", e)
 
@@ -2286,6 +2348,375 @@ class DatabaseManager:
                 }
             finally:
                 cur.close()
+
+    # --- Scheduled Tasks & Delayed Triggers SSOT ---
+
+    def insert_schedule(self, schedule_dict: dict[str, Any] | Any) -> str:
+        """Insert a scheduled / delayed task definition into scheduled_tasks table."""
+        if hasattr(schedule_dict, "to_dict"):
+            schedule_dict = schedule_dict.to_dict()
+
+        with self._lock:
+            schedule_id = schedule_dict.get("schedule_id") or f"sch_{uuid.uuid4().hex[:16]}"
+            name = schedule_dict.get("name") or "Unnamed Schedule"
+            source = schedule_dict.get("source") or "scheduler"
+            schedule_type = schedule_dict.get("schedule_type") or "once"
+            cron_expression = schedule_dict.get("cron_expression")
+            scheduled_at = schedule_dict.get("scheduled_at")
+            next_run_at = schedule_dict.get("next_run_at") or scheduled_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            last_run_at = schedule_dict.get("last_run_at")
+            timezone = schedule_dict.get("timezone") or "Asia/Bangkok"
+            action_type = schedule_dict.get("action_type") or "cli"
+            command = schedule_dict.get("command")
+            target_action = schedule_dict.get("target_action") or command
+            
+            raw_params = schedule_dict.get("action_params_json") or schedule_dict.get("action_params")
+            if isinstance(raw_params, dict):
+                action_params_json = json.dumps(raw_params)
+            elif isinstance(raw_params, str):
+                action_params_json = raw_params
+            else:
+                action_params_json = "{}"
+
+            status = schedule_dict.get("status") or "active"
+            max_runs = schedule_dict.get("max_runs")
+            total_runs = int(schedule_dict.get("total_runs", 0))
+            last_task_id = schedule_dict.get("last_task_id")
+            last_error = schedule_dict.get("last_error")
+
+            self._conn.execute(
+                """
+                INSERT INTO scheduled_tasks (
+                    schedule_id, name, source, schedule_type, cron_expression,
+                    scheduled_at, next_run_at, last_run_at, timezone, action_type,
+                    command, target_action, action_params_json, status, max_runs,
+                    total_runs, last_task_id, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    schedule_id, name, source, schedule_type, cron_expression,
+                    scheduled_at, next_run_at, last_run_at, timezone, action_type,
+                    command, target_action, action_params_json, status, max_runs,
+                    total_runs, last_task_id, last_error,
+                ),
+            )
+            self._commit_and_shrink()
+            return schedule_id
+
+    def get_schedule(self, schedule_id: str) -> Optional[dict[str, Any]]:
+        """Fetch authoritative scheduled task record by schedule_id."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute("SELECT * FROM scheduled_tasks WHERE schedule_id = ?", (schedule_id,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                data = dict(row)
+                raw_p = data.get("action_params_json")
+                try:
+                    data["action_params"] = json.loads(raw_p) if raw_p else {}
+                except Exception:
+                    data["action_params"] = {}
+                return data
+            finally:
+                cur.close()
+
+    def list_schedules(
+        self,
+        status: Optional[str] = None,
+        schedule_type: Optional[str] = None,
+        search: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """List scheduled tasks with filtering, search query, and pagination."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                where_clauses: list[str] = []
+                params: list[Any] = []
+
+                if status:
+                    where_clauses.append("status = ?")
+                    params.append(status)
+                if schedule_type:
+                    where_clauses.append("schedule_type = ?")
+                    params.append(schedule_type)
+                if search:
+                    where_clauses.append(
+                        "(schedule_id LIKE ? OR name LIKE ? OR command LIKE ? OR target_action LIKE ?)"
+                    )
+                    pat = f"%{search.strip()}%"
+                    params.extend([pat, pat, pat, pat])
+
+                where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+                cur.execute(f"SELECT COUNT(*) FROM scheduled_tasks {where_sql}", tuple(params))
+                total = cur.fetchone()[0]
+
+                query_sql = f"""
+                    SELECT * FROM scheduled_tasks
+                    {where_sql}
+                    ORDER BY 
+                        CASE WHEN status = 'active' THEN 0 WHEN status = 'paused' THEN 1 ELSE 2 END,
+                        next_run_at ASC, created_at DESC
+                    LIMIT ? OFFSET ?
+                """
+                fetch_params = list(params) + [limit, offset]
+                cur.execute(query_sql, tuple(fetch_params))
+                rows = cur.fetchall()
+
+                schedules = []
+                for r in rows:
+                    item = dict(r)
+                    raw_p = item.get("action_params_json")
+                    try:
+                        item["action_params"] = json.loads(raw_p) if raw_p else {}
+                    except Exception:
+                        item["action_params"] = {}
+                    schedules.append(item)
+
+                return schedules, total
+            finally:
+                cur.close()
+
+    def get_due_schedules(self, as_of_iso: Optional[str] = None) -> list[dict[str, Any]]:
+        """Fetch all active schedules due for execution on or before as_of_iso (UTC)."""
+        if not as_of_iso:
+            import datetime
+            as_of_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT * FROM scheduled_tasks
+                    WHERE status = 'active' AND (next_run_at <= ? OR datetime(next_run_at) <= datetime(?))
+                    ORDER BY next_run_at ASC
+                    """,
+                    (as_of_iso, as_of_iso),
+                )
+                rows = cur.fetchall()
+                res = []
+                for r in rows:
+                    item = dict(r)
+                    raw_p = item.get("action_params_json")
+                    try:
+                        item["action_params"] = json.loads(raw_p) if raw_p else {}
+                    except Exception:
+                        item["action_params"] = {}
+                    res.append(item)
+                return res
+            finally:
+                cur.close()
+
+    def update_schedule_status(
+        self,
+        schedule_id: str,
+        status: str,
+        last_error: Optional[str] = None,
+    ) -> bool:
+        """Update schedule lifecycle status (active, paused, completed, cancelled, failed)."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                if last_error is not None:
+                    cur.execute(
+                        """
+                        UPDATE scheduled_tasks
+                        SET status = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE schedule_id = ?
+                        """,
+                        (status, last_error, schedule_id),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        UPDATE scheduled_tasks
+                        SET status = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE schedule_id = ?
+                        """,
+                        (status, schedule_id),
+                    )
+                affected = cur.rowcount > 0
+                self._commit_and_shrink()
+                return affected
+            finally:
+                cur.close()
+
+    def record_schedule_execution(
+        self,
+        schedule_id: str,
+        task_id: str,
+        next_run_at: Optional[str] = None,
+        status: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> bool:
+        """Record execution of a schedule, updating total_runs, last_run_at, next_run_at, and last_task_id."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    UPDATE scheduled_tasks
+                    SET total_runs = total_runs + 1,
+                        last_run_at = CURRENT_TIMESTAMP,
+                        last_task_id = ?,
+                        next_run_at = COALESCE(?, next_run_at),
+                        status = COALESCE(?, status),
+                        last_error = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE schedule_id = ?
+                    """,
+                    (task_id, next_run_at, status, error, schedule_id),
+                )
+                affected = cur.rowcount > 0
+                self._commit_and_shrink()
+                return affected
+            finally:
+                cur.close()
+
+    def update_schedule(self, schedule_id: str, updates: dict[str, Any]) -> bool:
+        """Apply arbitrary field updates to a schedule record."""
+        if not updates:
+            return False
+
+        allowed_fields = {
+            "name", "source", "schedule_type", "cron_expression", "scheduled_at",
+            "next_run_at", "timezone", "action_type", "command", "target_action",
+            "action_params_json", "status", "max_runs", "last_error"
+        }
+
+        set_clauses: list[str] = []
+        params: list[Any] = []
+
+        for k, v in updates.items():
+            if k == "action_params" and "action_params_json" not in updates:
+                set_clauses.append("action_params_json = ?")
+                params.append(json.dumps(v) if isinstance(v, dict) else str(v))
+            elif k in allowed_fields:
+                set_clauses.append(f"{k} = ?")
+                if k == "action_params_json" and isinstance(v, dict):
+                    params.append(json.dumps(v))
+                else:
+                    params.append(v)
+
+        if not set_clauses:
+            return False
+
+        set_clauses.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(schedule_id)
+
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    f"UPDATE scheduled_tasks SET {', '.join(set_clauses)} WHERE schedule_id = ?",
+                    tuple(params),
+                )
+                affected = cur.rowcount > 0
+                self._commit_and_shrink()
+                return affected
+            finally:
+                cur.close()
+
+    def delete_schedule(self, schedule_id: str) -> bool:
+        """Delete a schedule from scheduled_tasks table."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute("DELETE FROM scheduled_tasks WHERE schedule_id = ?", (schedule_id,))
+                affected = cur.rowcount > 0
+                self._commit_and_shrink()
+                return affected
+            finally:
+                cur.close()
+
+    def get_schedule_history(self, schedule_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Query execution history for a schedule from tasks table."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT * FROM tasks
+                    WHERE schedule_id = ?
+                       OR action_params_json LIKE ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (schedule_id, f'%"schedule_id": "{schedule_id}"%', limit),
+                )
+                return [dict(r) for r in cur.fetchall()]
+            finally:
+                cur.close()
+
+    def get_schedule_summary_stats(self) -> dict[str, Any]:
+        """Summary metrics across all scheduled tasks."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute("SELECT COUNT(*) FROM scheduled_tasks")
+                total_schedules = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM scheduled_tasks WHERE status = 'active'")
+                active_schedules = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM scheduled_tasks WHERE status = 'paused'")
+                paused_schedules = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM scheduled_tasks WHERE status = 'completed'")
+                completed_schedules = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM scheduled_tasks WHERE schedule_type = 'once'")
+                once_schedules = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM scheduled_tasks WHERE schedule_type = 'recurring'")
+                recurring_schedules = cur.fetchone()[0]
+
+                cur.execute("SELECT COALESCE(SUM(total_runs), 0) FROM scheduled_tasks")
+                total_runs = cur.fetchone()[0]
+
+                cur.execute(
+                    "SELECT next_run_at FROM scheduled_tasks WHERE status = 'active' ORDER BY next_run_at ASC LIMIT 1"
+                )
+                next_row = cur.fetchone()
+                next_run_at = next_row[0] if next_row else None
+
+                return {
+                    "total": total_schedules,
+                    "total_schedules": total_schedules,
+                    "active": active_schedules,
+                    "active_schedules": active_schedules,
+                    "paused": paused_schedules,
+                    "paused_schedules": paused_schedules,
+                    "completed": completed_schedules,
+                    "completed_schedules": completed_schedules,
+                    "once": once_schedules,
+                    "recurring": recurring_schedules,
+                    "total_runs": total_runs,
+                    "next_run_at": next_run_at,
+                }
+            except Exception as e:
+                logger.error("Failed to get schedule summary stats: %s", e)
+                return {
+                    "total": 0,
+                    "total_schedules": 0,
+                    "active": 0,
+                    "active_schedules": 0,
+                    "paused": 0,
+                    "paused_schedules": 0,
+                    "completed": 0,
+                    "completed_schedules": 0,
+                    "once": 0,
+                    "recurring": 0,
+                    "total_runs": 0,
+                    "next_run_at": None,
+                }
+            finally:
+                cur.close()
+
 
 
 

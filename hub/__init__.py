@@ -76,6 +76,11 @@ __all__ = [
     "TaskStatus",
     "TaskExecution",
     "ExecutionLog",
+    "ScheduledTask",
+    "ScheduleStatus",
+    "ScheduleType",
+    # Scheduler
+    "TaskScheduler",
     # Config
     "AppConfig",
     "ServerConfig",
@@ -111,6 +116,11 @@ _LAZY_MODULES: dict[str, tuple[str, str]] = {
     "TaskStatus": ("hub.models", "TaskStatus"),
     "TaskExecution": ("hub.models", "TaskExecution"),
     "ExecutionLog": ("hub.models", "ExecutionLog"),
+    "ScheduledTask": ("hub.models", "ScheduledTask"),
+    "ScheduleStatus": ("hub.models", "ScheduleStatus"),
+    "ScheduleType": ("hub.models", "ScheduleType"),
+    # Scheduler
+    "TaskScheduler": ("hub.scheduler", "TaskScheduler"),
     # Config
     "AppConfig": ("hub.config", "AppConfig"),
     "ServerConfig": ("hub.config", "ServerConfig"),

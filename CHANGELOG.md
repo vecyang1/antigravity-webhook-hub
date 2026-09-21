@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] - 2026-09-21
+
+### Added
+- **TaskScheduler 引擎与计划/延迟调度中枢 ("Don't Miss the Beat") (`hub/scheduler.py`, `hub/db.py`, `hub/models.py`)**:
+  - **SSOT 强一致持久化**：新增 `scheduled_tasks` 数据库表及索引，支持 `once`（单次定时/相对延迟）与 `recurring`（标准 5 段 Cron 循环表达式），状态涵盖 `active`、`paused`、`completed`、`failed`。
+  - **纯 Python 5 段 Cron 表达式解析器**：内置 `compute_next_cron_run`，支持 `*`、`*/N` 步长、离散逗号枚举、范围切片及星期（0-6 / 1-7）匹配，零外部重型依赖。
+  - **相对延迟与自然时间解析器**：内置 `parse_schedule_time`，支持相对秒数、`+10m` / `+2h` / `+1d` 时间切片、标准 ISO-8601 UTC 及带时区字符串转换。
+  - **抗休眠时钟跃迁与漏检自愈机制 ("Don't Miss the Beat")**：后台巡检协程采用单调时钟 `time.monotonic()` 探测 macOS 睡眠/唤醒跃迁（`elapsed > tick_interval + 10.0`），唤醒即刻自动触发补偿扫描（Catch-up Sweep），彻底杜绝系统休眠错过定时任务。
+  - **启动巡检与主动触发**：守护进程启动时自动执行启动补偿巡检；提供 `trigger_now` 接口支持外部按需即时重发或强制执行。
+- **Webhook Ingress 定时/延迟摄取能力 (`hub/routes/webhook.py`)**:
+  - **透明 HTTP 标头与载荷调度**：支持 `X-Schedule-At`、`X-Delay-Seconds`、`X-Delay`、`X-Cron` HTTP 标头以及载荷内 `schedule_at`、`delay_seconds`、`delay`、`cron` 字段。
+  - **非阻塞式延迟摄取**：命中定时/延迟参数后立即在 SQLite SSOT 中登记计划任务，并返回 HTTP 202 `{"status": "scheduled", "schedule_id": "...", "next_run_at": "..."}`，安全隔离即时执行流水线。
+- **RESTful Schedules API 路由集 (`hub/routes/schedules.py`, `hub/routes/__init__.py`, `hub/cli.py`, `hub/server.py`)**:
+  - 提供全功能管理端点：`GET /schedules`、`GET /schedules/summary`、`POST /schedules`、`GET /schedules/{id}`、`POST /schedules/{id}/trigger`、`POST /schedules/{id}/pause`、`POST /schedules/{id}/resume`、`DELETE /schedules/{id}`、`POST /schedules/sweep`。
+  - 动态路由解析器中扩展 `/schedules` 自动懒加载绑定，支持 CLI 与 Webhook Hub 服务全生命周期无缝集成。
+- **Web 仪表盘计划任务可视化视图与实时倒计时 (`hub/routes/dashboard_template.py`)**:
+  - **导航与看板集成**：侧边栏新增 "Schedules" 导航入口与独立 `#viewContainerSchedules` 视图，内置指标卡片（Total / Active / Paused / Completed / Recurring）与状态过滤药丸。
+  - **实时倒计时动态渲染器**：前端毫秒级实时计算并高亮即将执行的任务倒计时（如 `in 1d 23h 14m` 或 `Overdue`）。
+  - **模态交互与一键创建**：新增 `#scheduleModalOverlay` 调度配置模态框，内置单次与 Cron 循环模式切换、常用预设（+5m, +15m, +1h, 每日 09:00 等）、执行动作切换（CLI / AgentAPI）与时区配置。
+  - **SSE 响应式推送刷新**：订阅并监听 `schedule_created`、`schedule_triggered`、`schedule_paused`、`schedule_resumed`、`schedules_swept` 事件，数据变动秒级自动重绘。
+- **Spark 邮件保修回复毫秒级巡检脚本 (`scripts/check_anker_reminder.py`)**:
+  - **CoreData SQLite 极速探针**：直读 Spark 本地 CoreData 数据库（`messages.sqlite`），以只读模式在 <2ms 内比对邮件 724913（会话 1115945）针对安克 737 120W (SN: `AFZWC61F13100681`) 的官方回复状态。
+  - **多通道通知与定时注册**：支持 `--notify-slack`（推送到 Slack 频道 `C096KR96AF7`）与 `--register-schedule`（自动将 2026-09-23 巡检任务持久化至 Webhook Hub SQLite SSOT）。
+- **两面对账测试套件 (`tests/unit/test_scheduler.py`, `tests/api/test_schedules_api.py`, `tests/e2e/test_scheduler_e2e.py`)**:
+  - **单元测试**：覆盖 Cron 解析边界、闰年/星期、相对时间解析、生命周期 CRUD、状态迁移、休眠自愈补发与即时触发（10/10 PASS）。
+  - **API 测试**：覆盖 `/schedules` 增删改查、输入验证拒绝、端点鉴权与状态过滤（5/5 PASS）。
+  - **端到端测试**：贯彻两面对账原则，完整覆盖延迟 Webhook 摄取 -> 调度器巡检执行 -> 状态落盘，以及伪造签名/残缺 JSON 的对抗性零落盘校验与休眠跃迁恢复（3/3 PASS）。
+
 ## [1.16.22] - 2026-09-21
 
 ### Added & Hardened

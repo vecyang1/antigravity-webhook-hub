@@ -212,6 +212,7 @@ class AsyncHTTPServer:
         self._active_transports: set[asyncio.BaseTransport] = set()
         self._memory_monitor_task: Optional[asyncio.Task] = None
         self._db: Optional[Any] = None
+        self._scheduler: Optional[Any] = None
         self._fallback_route_resolver: Optional[Callable[[str, str], None]] = None
 
     # --- Routing Registration API ---

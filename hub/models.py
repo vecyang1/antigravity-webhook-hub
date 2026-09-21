@@ -23,10 +23,51 @@ class TaskStatus(str, Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
+    SCHEDULED = "scheduled"
 
     @classmethod
     def terminal_statuses(cls) -> set[str]:
-        return {cls.SUCCEEDED.value, cls.FAILED.value, cls.TIMED_OUT.value}
+        return {cls.SUCCEEDED.value, cls.FAILED.value, cls.TIMED_OUT.value, cls.CANCELLED.value}
+
+    @classmethod
+    def is_terminal(cls, status: str) -> bool:
+        return status in cls.terminal_statuses()
+
+    @classmethod
+    def valid_transitions(cls) -> dict[str, set[str]]:
+        return {
+            cls.RECEIVED.value: {cls.QUEUED.value, cls.RUNNING.value, cls.FAILED.value, cls.CANCELLED.value, cls.SCHEDULED.value},
+            cls.SCHEDULED.value: {cls.QUEUED.value, cls.RUNNING.value, cls.CANCELLED.value, cls.FAILED.value},
+            cls.QUEUED.value: {cls.RUNNING.value, cls.FAILED.value, cls.CANCELLED.value},
+            cls.RUNNING.value: {cls.SUCCEEDED.value, cls.FAILED.value, cls.TIMED_OUT.value, cls.CANCELLED.value},
+            cls.SUCCEEDED.value: set(),
+            cls.FAILED.value: {cls.QUEUED.value},
+            cls.TIMED_OUT.value: {cls.QUEUED.value},
+            cls.CANCELLED.value: {cls.QUEUED.value},
+        }
+
+    @classmethod
+    def can_transition(cls, from_status: str, to_status: str) -> bool:
+        valid = cls.valid_transitions().get(from_status, set())
+        return to_status in valid
+
+
+class ScheduleType(str, Enum):
+    """Supported schedule recurrence types."""
+
+    ONCE = "once"
+    RECURRING = "recurring"
+
+
+class ScheduleStatus(str, Enum):
+    """Authoritative lifecycle status for scheduled tasks."""
+
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
 
     @classmethod
     def is_terminal(cls, status: str) -> bool:
@@ -373,6 +414,92 @@ class ExecutionLog:
             timestamp=data.get("timestamp", time.time()),
             stream=data.get("stream", "stdout"),
             message=data.get("message", ""),
+        )
+
+
+@dataclass(slots=True)
+class ScheduledTask:
+    """Authoritative scheduled / delayed task definition persisted to SQLite SSOT."""
+
+    schedule_id: str
+    name: str
+    source: str = "scheduler"
+    schedule_type: str = ScheduleType.ONCE.value
+    cron_expression: Optional[str] = None
+    scheduled_at: Optional[str] = None
+    next_run_at: str = ""
+    last_run_at: Optional[str] = None
+    timezone: str = "Asia/Bangkok"
+    action_type: str = "cli"
+    command: Optional[str] = None
+    target_action: Optional[str] = None
+    action_params: dict[str, Any] = field(default_factory=dict)
+    status: str = ScheduleStatus.ACTIVE.value
+    max_runs: Optional[int] = None
+    total_runs: int = 0
+    last_task_id: Optional[str] = None
+    last_error: Optional[str] = None
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schedule_id": self.schedule_id,
+            "name": self.name,
+            "source": self.source,
+            "schedule_type": self.schedule_type,
+            "cron_expression": self.cron_expression,
+            "scheduled_at": self.scheduled_at,
+            "next_run_at": self.next_run_at,
+            "last_run_at": self.last_run_at,
+            "timezone": self.timezone,
+            "action_type": self.action_type,
+            "command": self.command,
+            "target_action": self.target_action,
+            "action_params": self.action_params,
+            "status": self.status,
+            "max_runs": self.max_runs,
+            "total_runs": self.total_runs,
+            "last_task_id": self.last_task_id,
+            "last_error": self.last_error,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ScheduledTask:
+        raw_params = data.get("action_params") or data.get("action_params_json") or {}
+        if isinstance(raw_params, str):
+            try:
+                params_dict = json.loads(raw_params)
+            except Exception:
+                params_dict = {}
+        elif isinstance(raw_params, dict):
+            params_dict = raw_params
+        else:
+            params_dict = {}
+
+        return cls(
+            schedule_id=data["schedule_id"],
+            name=data.get("name", "Unnamed Schedule"),
+            source=data.get("source", "scheduler"),
+            schedule_type=data.get("schedule_type", ScheduleType.ONCE.value),
+            cron_expression=data.get("cron_expression"),
+            scheduled_at=data.get("scheduled_at"),
+            next_run_at=data.get("next_run_at", ""),
+            last_run_at=data.get("last_run_at"),
+            timezone=data.get("timezone", "Asia/Bangkok"),
+            action_type=data.get("action_type", "cli"),
+            command=data.get("command"),
+            target_action=data.get("target_action"),
+            action_params=params_dict,
+            status=data.get("status", ScheduleStatus.ACTIVE.value),
+            max_runs=data.get("max_runs"),
+            total_runs=data.get("total_runs", 0),
+            last_task_id=data.get("last_task_id"),
+            last_error=data.get("last_error"),
+            created_at=float(data.get("created_at", time.time()) if not isinstance(data.get("created_at"), str) else time.time()),
+            updated_at=float(data.get("updated_at", time.time()) if not isinstance(data.get("updated_at"), str) else time.time()),
         )
 
 

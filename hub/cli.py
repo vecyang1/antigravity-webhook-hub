@@ -178,9 +178,20 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
     )
     await dispatcher.start()
 
+    # 3.5. Initialize Resilient Task Scheduler (SSOT + Monotonic Sleep/Wake Recovery)
+    from hub.scheduler import TaskScheduler
+    scheduler = TaskScheduler(
+        db=db_mgr,
+        dispatcher=dispatcher,
+        broker=broker,
+        config=config,
+    )
+    await scheduler.start()
+
     # 4. Initialize Lightweight HTTP/1.1 Server
     server = AsyncHTTPServer(config.server)
     server._db = db_mgr
+    server._scheduler = scheduler
 
     # Lazily wire management routes on demand to maintain minimal RSS footprint (<30MB)
     _lazy_loaded: set[str] = set()
@@ -191,6 +202,10 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
             _lazy_loaded.add("tasks")
             from hub.routes.tasks import register_task_routes
             register_task_routes(server, config, db_mgr, dispatcher, broker)
+        elif (p.startswith("/schedules") or p.startswith("/api/v1/schedules") or p.startswith("/webhook/scheduler") or p.startswith("/webhook/cron")) and "schedules" not in _lazy_loaded:
+            _lazy_loaded.add("schedules")
+            from hub.routes.schedules import register_schedule_routes
+            register_schedule_routes(server, config, db_mgr, scheduler, dispatcher, broker)
         elif (p in ("/healthz", "/ready", "/metrics", "/health")) and "obs" not in _lazy_loaded:
             _lazy_loaded.add("obs")
             from hub.routes.observability import register_observability_routes
@@ -216,7 +231,7 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
 
     # 5. Wire System Routes
     # Webhook routes are eagerly wired for immediate ingress availability
-    register_webhook_routes(server, config, db_mgr, dispatcher, broker)
+    register_webhook_routes(server, config, db_mgr, dispatcher, broker, scheduler)
 
     # 6. Start HTTP Server
     try:
@@ -263,6 +278,7 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
         await stop_event.wait()
     finally:
         print("\nStopping Antigravity Webhook Hub...")
+        await scheduler.stop()
         await server.stop()
         await dispatcher.stop()
         db_mgr.close()
