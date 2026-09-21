@@ -13,7 +13,9 @@ from hub.antigravity.models import AntigravityTaskPayload
 from hub.antigravity.prompt_builder import build_antigravity_prompt
 from hub.antigravity.reconciler import (
     SlackReconciler,
+    is_collection_notice,
     is_delivery_completion,
+    is_failure_notice,
     is_offline_notice,
     is_reconcile_notice,
 )
@@ -227,3 +229,114 @@ class TestSlackReconcilerAndContractNormalization(unittest.TestCase):
         prompt = build_follow_up_prompt(payload)
         self.assertNotIn("agentapi new-conversation", prompt)
         self.assertIn("用户补充了新的素材附件", prompt)
+
+    def test_notice_detection_collection_and_failure(self):
+        """Verify regex detection for collection notices and failure notices."""
+        col_text = ":inbox_tray: *[已采集 · Task Collected]*\n• *任务ID*: `tsk_123`"
+        self.assertTrue(is_collection_notice(col_text))
+        self.assertFalse(is_delivery_completion(col_text))
+
+        fail_text = "❌ *[执行异常 · Task Failed]*\n• 原因: syntax error"
+        self.assertTrue(is_failure_notice(fail_text))
+        self.assertFalse(is_collection_notice(fail_text))
+
+    def test_reconciler_detects_stalled_collection_fixed_response(self):
+        """
+        Anti-Ghost Logic: If thread only received [已采集] collection notice and task in DB failed
+        without any completion delivery, reconciler must flag it as unfulfilled!
+        """
+        reconciler = SlackReconciler(db=self.db, token="xoxb-fake-token")
+
+        # 1. Insert DB event and failed task
+        self.db.insert_webhook_event({
+            "event_id": "evt_stalled_1",
+            "source": "slack_agent",
+            "idempotency_key": "idemp_stalled_1",
+            "payload_hash": "hash_stalled_1",
+            "status": "received",
+        })
+        self.db.insert_task({
+            "task_id": "tsk_stalled_1",
+            "event_id": "evt_stalled_1",
+            "source": "slack_agent",
+            "action_type": "antigravity",
+            "command": "agentapi new-conversation",
+            "action_params_json": json.dumps({"channel": "C0C1B86AMCN", "thread_ts": "1789999000.111"}),
+            "status": "failed",
+            "error_message": "unindent error in result_delivery",
+        })
+
+        # Mock Slack API responses
+        # History: 1 root message with 1 reply
+        fake_history = {
+            "ok": True,
+            "messages": [{
+                "ts": "1789999000.111",
+                "user": "U_REAL_USER",
+                "text": "How to make AI video realistic?",
+                "reply_count": 1,
+            }]
+        }
+        # Replies: User prompt followed by ONLY collection notice (no completion!)
+        fake_replies = {
+            "ok": True,
+            "messages": [
+                {
+                    "ts": "1789999000.111",
+                    "user": "U_REAL_USER",
+                    "text": "How to make AI video realistic?",
+                },
+                {
+                    "ts": "1789999005.222",
+                    "bot_id": "B_BOT",
+                    "text": ":inbox_tray: *[已采集 · Task Collected]*\n• *任务ID*: `tsk_stalled_1`",
+                }
+            ]
+        }
+
+        with patch.object(reconciler, "_slack_api_call") as mock_call:
+            mock_call.side_effect = lambda ep, params: fake_history if ep == "conversations.history" else fake_replies
+            unfulfilled = reconciler.scan_unfulfilled_threads(channel="C0C1B86AMCN")
+
+            self.assertEqual(len(unfulfilled), 1)
+            item = unfulfilled[0]
+            self.assertEqual(item["thread_ts"], "1789999000.111")
+            self.assertEqual(item["unfulfilled_reason"], "failed_db_task")
+            self.assertEqual(item["db_task_id"], "tsk_stalled_1")
+
+    def test_reconciler_diagnose_thread_and_inspector(self):
+        """Test Diagnostic-First explain engine for a Slack thread."""
+        from hub.antigravity.diagnostics import DiagnosticInspector
+
+        reconciler = SlackReconciler(db=self.db, token="xoxb-fake-token")
+        inspector = DiagnosticInspector(db=self.db, reconciler=reconciler)
+
+        fake_replies = {
+            "ok": True,
+            "messages": [
+                {
+                    "ts": "1789999000.111",
+                    "user": "U_REAL_USER",
+                    "text": "How to make AI video realistic?",
+                },
+                {
+                    "ts": "1789999005.222",
+                    "bot_id": "B_BOT",
+                    "text": ":inbox_tray: *[已采集 · Task Collected]*",
+                },
+                {
+                    "ts": "1789999020.333",
+                    "bot_id": "B_BOT",
+                    "text": ":tada: *[已完成 · 结果交付]*\nHere is your realistic video guide.",
+                }
+            ]
+        }
+
+        with patch.object(reconciler, "_slack_api_call", return_value=fake_replies):
+            diag = inspector.explain("C0C1B86AMCN:1789999000.111")
+            self.assertEqual(diag.get("target_type"), "slack_thread")
+            self.assertEqual(diag.get("verdict"), "COMPLETED_HEALTHY")
+            self.assertFalse(diag.get("is_unfulfilled"))
+            self.assertTrue(diag.get("milestones", {}).get("has_collection"))
+            self.assertTrue(diag.get("milestones", {}).get("has_completion"))
+

@@ -213,7 +213,7 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
             _lazy_loaded.add("schedules")
             from hub.routes.schedules import register_schedule_routes
             register_schedule_routes(server, config, db_mgr, scheduler, dispatcher, broker)
-        elif (p in ("/healthz", "/ready", "/metrics", "/health")) and "obs" not in _lazy_loaded:
+        elif (p in ("/healthz", "/ready", "/metrics", "/health") or p.startswith("/api/diagnose") or p.startswith("/antigravity/")) and "obs" not in _lazy_loaded:
             _lazy_loaded.add("obs")
             from hub.routes.observability import register_observability_routes
             register_observability_routes(server, config, db_mgr, broker, dispatcher)
@@ -2800,11 +2800,46 @@ def _add_catchup_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--limit", type=int, default=50, help="Maximum number of recent messages to scan")
     parser.add_argument("--dry-run", action="store_true", help="Inspect offline tasks without dispatching")
     parser.add_argument("--execute", action="store_true", help="Execute live catch-up dispatch for unfulfilled tasks")
+    parser.add_argument("--diagnose", action="store_true", help="Display full diagnostic explain report for each thread")
+    parser.add_argument("--thread", default=None, help="Target a specific thread ts for reconciliation")
+    parser.add_argument("--force", action="store_true", help="Force dispatch bypassing cooldown and active check")
+
+
+def _add_explain_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("target", help="Task ID (tsk_...), Event ID (evt_...), Slack Thread (channel:ts or ts), or URL")
+    parser.add_argument("--reconcile", action="store_true", help="Auto-reconcile and re-dispatch if target is unfulfilled")
+    parser.add_argument("--force", action="store_true", help="Force reconcile bypassing cooldown and DB activity check")
+    parser.add_argument("--json", action="store_true", help="Output raw JSON instead of formatted report")
+    parser.add_argument("--db", default=None, help="Database file path")
+
+
+def cmd_explain(args: Any) -> int:
+    """Explain and diagnose execution, SSOT, and rule verification for target."""
+    import json
+    from hub.antigravity.diagnostics import DiagnosticInspector, format_diagnostic_report
+    from hub.db import DatabaseManager
+
+    db_path = getattr(args, "db", None) or "data/webhook_hub.db"
+    db = DatabaseManager(db_path=db_path)
+    inspector = DiagnosticInspector(db=db)
+
+    target = getattr(args, "target", "")
+    reconcile = getattr(args, "reconcile", False)
+    force = getattr(args, "force", False)
+    is_json = getattr(args, "json", False)
+
+    res = inspector.explain(target, reconcile=reconcile, force=force)
+    if is_json:
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+    else:
+        print(format_diagnostic_report(res))
+    return 0
 
 
 def cmd_catchup(args: Any) -> int:
     """Reconcile and catch up unfulfilled offline tasks from Slack #input_agent."""
     from hub.antigravity.reconciler import SlackReconciler
+    from hub.antigravity.diagnostics import format_diagnostic_report
     from hub.db import DatabaseManager
 
     db_path = getattr(args, "db", "data/webhook_hub.db")
@@ -2815,13 +2850,44 @@ def cmd_catchup(args: Any) -> int:
     limit = getattr(args, "limit", 50)
     dry_run = getattr(args, "dry_run", False)
     execute = getattr(args, "execute", False)
-    if not dry_run and not execute:
+    target_thread = getattr(args, "thread", None)
+    diagnose_mode = getattr(args, "diagnose", False)
+    force = getattr(args, "force", False)
+
+    if not dry_run and not execute and not diagnose_mode:
         execute = True
 
-    print(f"🔄 Native Slack Reconciler & Offline Auto Catch-up (channel={channel}, limit={limit}, dry_run={dry_run})")
-    res = reconciler.run_catchup(channel=channel, limit=limit, dry_run=dry_run, execute=execute)
+    if target_thread:
+        # Single thread target mode
+        print(f"🔍 Inspecting single thread {channel}:{target_thread}...")
+        diag = reconciler.diagnose_thread(channel=channel, thread_ts=target_thread)
+        if diagnose_mode or dry_run:
+            diag["target_type"] = "slack_thread"
+            print(format_diagnostic_report(diag))
+            return 0
+        if diag.get("is_unfulfilled") or force:
+            print(f"🚀 Reconciling thread {target_thread} (verdict={diag.get('verdict')})...")
+            res = reconciler.dispatch_reconciled_task(diag, force=force)
+            print(f"Result: {res}")
+            return 0 if res.get("status") == "success" else 1
+        else:
+            print(f"✅ Thread {target_thread} is not unfulfilled (verdict={diag.get('verdict')}).")
+            return 0
 
-    unfulfilled_cnt = res.get("unfulfilled_count", 0)
+    print(f"🔄 Native Slack Reconciler & Offline Auto Catch-up (channel={channel}, limit={limit}, dry_run={dry_run})")
+    unfulfilled = reconciler.scan_unfulfilled_threads(channel=channel, limit=limit)
+    unfulfilled_cnt = len(unfulfilled)
+
+    if diagnose_mode:
+        print(f"📋 Diagnostic Scan for channel {channel} (scanned {limit} messages):")
+        print(f"Found {unfulfilled_cnt} unfulfilled thread(s):")
+        for u in unfulfilled:
+            diag = reconciler.diagnose_thread(channel=u["channel_id"], thread_ts=u["thread_ts"])
+            diag["target_type"] = "slack_thread"
+            print(format_diagnostic_report(diag))
+        return 0
+
+    res = reconciler.run_catchup(channel=channel, limit=limit, dry_run=dry_run, execute=execute)
     dispatched_cnt = len(res.get("dispatched", []))
     skipped_cnt = len(res.get("skipped", []))
 
@@ -3383,6 +3449,13 @@ def build_parser() -> Any:
     )
     _add_alert_diagnose_args(p_alert)
 
+    p_explain = subparsers.add_parser(
+        "explain",
+        aliases=["diagnose", "inspect"],
+        help="Deep diagnostic inspector & explain engine for tasks, threads, events, and URLs",
+    )
+    _add_explain_args(p_explain)
+
     return parser
 
 
@@ -3398,6 +3471,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "dashboard", "ui", "tasks", "schedule", "schedules", "rerun", "setup", "init", "service",
         "antigravity", "ag", "watchdog", "catchup", "reconcile",
         "alert-diagnose", "alert", "diagnose-alert",
+        "explain", "diagnose", "inspect",
         "-h", "--help"
     }
     if argv and argv[0] not in known_commands and argv[0].startswith("-"):
@@ -3567,6 +3641,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         del p
         gc.collect()
         return cmd_alert_diagnose(args)
+
+    elif subcommand in ("explain", "diagnose", "inspect"):
+        p = argparse.ArgumentParser(prog="webhook-hub explain")
+        _add_explain_args(p)
+        args = p.parse_args(sub_args)
+        args.subcommand = "explain"
+        del p
+        gc.collect()
+        return cmd_explain(args)
 
     else:
         parser = build_parser()

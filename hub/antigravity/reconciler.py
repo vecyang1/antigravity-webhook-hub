@@ -75,6 +75,32 @@ def is_reconcile_notice(text: str) -> bool:
     )
 
 
+def is_collection_notice(text: str) -> bool:
+    """Detect if a Slack message contains task collection / queue intake notice."""
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"(?:\[已采集|已采集 · Task Collected|已受理|Task Collected|Task Queued|正在调度启动|:inbox_tray:)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def is_failure_notice(text: str) -> bool:
+    """Detect if a Slack message contains failure or error notice."""
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"(?:\[执行异常|执行异常 · Task Failed|Task Failed|任务失败|:x:|❌)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
 def resolve_hub_bearer_token() -> str:
     """Resolve bearer token to authenticate with local/public Webhook Hub."""
     token = os.getenv("WEBHOOK_HUB_BEARER_TOKEN") or os.getenv("BEARER_TOKEN")
@@ -125,13 +151,57 @@ class SlackReconciler:
         }
         encoded_data = urllib.parse.urlencode(params).encode("utf-8")
         req = urllib.request.Request(url, data=encoded_data, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                return data
-        except Exception as e:
-            logger.error("Slack API error calling %s: %s", endpoint, e)
-            return {"ok": False, "error": str(e)}
+        max_retries = 3
+        last_err = ""
+        for attempt in range(max_retries):
+            try:
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    return data
+            except Exception as e:
+                last_err = str(e)
+                logger.warning("Slack API call %s attempt %d/%d failed: %s", endpoint, attempt + 1, max_retries, e)
+                if attempt < max_retries - 1:
+                    time.sleep(0.5 * (2 ** attempt))
+
+        return {"ok": False, "error": last_err}
+
+    def get_task_for_thread(self, channel: str, thread_ts: str) -> Optional[dict[str, Any]]:
+        """Query SQLite SSOT tasks table for any task associated with this channel and thread_ts."""
+        with self.db._lock:
+            cur = self.db._conn.cursor()
+            cur.execute(
+                """
+                SELECT task_id, event_id, source, action_type, status, error_message, result_json,
+                       created_at, started_at, completed_at, action_params_json
+                FROM tasks
+                WHERE (action_params_json LIKE ? OR action_params_json LIKE ?)
+                ORDER BY created_at DESC LIMIT 1;
+                """,
+                (f"%{channel}%{thread_ts}%", f"%{thread_ts}%{channel}%"),
+            )
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    def get_session_thread_for_thread(self, channel: str, thread_ts: str) -> Optional[dict[str, Any]]:
+        """Query SQLite SSOT session_threads table for this channel and thread_ts."""
+        with self.db._lock:
+            cur = self.db._conn.cursor()
+            cur.execute(
+                """
+                SELECT thread_key, channel_id, root_ts, task_id, conversation_id, status, last_active_at, created_at
+                FROM session_threads
+                WHERE channel_id = ? AND root_ts = ?
+                LIMIT 1;
+                """,
+                (channel, thread_ts),
+            )
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+            return None
 
     def scan_unfulfilled_threads(
         self,
@@ -139,8 +209,11 @@ class SlackReconciler:
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """
-        Scan Slack channel history to find threads that received an offline notice
-        but have not completed yet, extracting prompts, attachments, and timing.
+        Scan Slack channel history to find threads that:
+        1. Received an offline notice and have not completed yet; OR
+        2. Associated task in SQLite failed/timed_out/cancelled and no completion was delivered; OR
+        3. Received a collection placeholder notice but stalled (>120s) without completion delivery; OR
+        4. User root message received 0 bot replies (>30s) and is not completed.
         """
         target_channel = channel or self.channel_id
         history = self._slack_api_call("conversations.history", {"channel": target_channel, "limit": limit})
@@ -150,15 +223,53 @@ class SlackReconciler:
 
         messages = history.get("messages", [])
         unfulfilled: list[dict[str, Any]] = []
-
         now_ts = time.time()
 
         for msg in messages:
-            reply_count = msg.get("reply_count", 0)
             ts = msg.get("ts")
-            if not ts or reply_count == 0:
+            if not ts:
                 continue
 
+            root_user_id = msg.get("user")
+            # Skip automated bot/app root messages
+            if msg.get("bot_id") or msg.get("app_id") or not root_user_id:
+                continue
+
+            reply_count = msg.get("reply_count", 0)
+            msg_time = 0.0
+            try:
+                msg_time = float(ts)
+            except ValueError:
+                pass
+
+            # Query DB task for this thread
+            db_task = self.get_task_for_thread(target_channel, ts)
+
+            # Check 1: 0 replies (missed completely when hub/network was down)
+            if reply_count == 0:
+                if now_ts - msg_time < 15.0:
+                    continue
+                if db_task and db_task.get("status") in ("queued", "running", "succeeded"):
+                    continue
+
+                raw_text = str(msg.get("text") or "").strip()
+                files = msg.get("files", [])
+                unfulfilled.append({
+                    "channel_id": target_channel,
+                    "thread_ts": ts,
+                    "user_id": root_user_id,
+                    "prompt": raw_text,
+                    "files": files,
+                    "last_reconcile_ts": None,
+                    "is_in_cooldown": False,
+                    "thread_message_count": 1,
+                    "unfulfilled_reason": "unanswered_root",
+                    "db_task_id": db_task.get("task_id") if db_task else None,
+                    "db_task_status": db_task.get("status") if db_task else None,
+                })
+                continue
+
+            # Check 2: Thread has replies -> analyze full conversation
             replies_resp = self._slack_api_call("conversations.replies", {"channel": target_channel, "ts": ts})
             if not replies_resp.get("ok"):
                 continue
@@ -167,9 +278,10 @@ class SlackReconciler:
             last_offline_ts: Optional[float] = None
             last_completion_ts: Optional[float] = None
             last_reconcile_ts: Optional[float] = None
+            last_collection_ts: Optional[float] = None
+            last_failure_ts: Optional[float] = None
             user_prompts: list[str] = []
             file_attachments: list[dict[str, Any]] = []
-            root_user_id = msg.get("user")
 
             for m in thread_msgs:
                 mtext = m.get("text", "")
@@ -188,6 +300,12 @@ class SlackReconciler:
                 if is_reconcile_notice(mtext):
                     if last_reconcile_ts is None or mts > last_reconcile_ts:
                         last_reconcile_ts = mts
+                if is_collection_notice(mtext):
+                    if last_collection_ts is None or mts > last_collection_ts:
+                        last_collection_ts = mts
+                if is_failure_notice(mtext):
+                    if last_failure_ts is None or mts > last_failure_ts:
+                        last_failure_ts = mts
 
                 # Collect user content (skip bots and app integration messages)
                 if not m.get("bot_id") and not m.get("app_id") and m.get("user") == root_user_id:
@@ -196,14 +314,27 @@ class SlackReconciler:
                     for f in m.get("files", []):
                         file_attachments.append(f)
 
-            is_unfulfilled = bool(
-                last_offline_ts is not None
-                and (last_completion_ts is None or last_offline_ts > last_completion_ts)
-            )
+            # Determine whether unfulfilled
+            is_unfulfilled = False
+            reason = "none"
+
+            # 1. Has explicit offline notice and no subsequent completion
+            if last_offline_ts is not None and (last_completion_ts is None or last_offline_ts > last_completion_ts):
+                is_unfulfilled = True
+                reason = "offline_notice"
+            # 2. Associated task in DB failed/cancelled/timed_out and no completion was ever delivered
+            elif db_task and db_task.get("status") in ("failed", "timed_out", "cancelled") and last_completion_ts is None:
+                is_unfulfilled = True
+                reason = "failed_db_task"
+            # 3. Thread received collection placeholder notice, but stalled without delivery
+            elif last_collection_ts is not None and last_completion_ts is None:
+                is_db_active = db_task and db_task.get("status") in ("queued", "running")
+                if (now_ts - last_collection_ts > 120) and not is_db_active:
+                    is_unfulfilled = True
+                    reason = "stalled_collection"
 
             if is_unfulfilled:
                 combined_prompt = " ".join(user_prompts).strip() if user_prompts else str(msg.get("text") or "").strip()
-                # If prompt is a generic launcher command, clear it
                 if combined_prompt.lower() in ("agentapi new-conversation", "agentapi run"):
                     combined_prompt = ""
 
@@ -220,9 +351,168 @@ class SlackReconciler:
                     "last_reconcile_ts": last_reconcile_ts,
                     "is_in_cooldown": is_in_cooldown,
                     "thread_message_count": len(thread_msgs),
+                    "unfulfilled_reason": reason,
+                    "db_task_id": db_task.get("task_id") if db_task else None,
+                    "db_task_status": db_task.get("status") if db_task else None,
                 })
 
         return unfulfilled
+
+    def diagnose_thread(self, channel: Optional[str] = None, thread_ts: str = "") -> dict[str, Any]:
+        """
+        Diagnostic-First inspector for a specific Slack thread.
+        Evaluates real thread timeline, SQLite SSOT tasks/session_threads records,
+        milestones detected, and outputs an authoritative diagnostic verdict.
+        """
+        target_channel = channel or self.channel_id
+        now_ts = time.time()
+
+        # 1. Fetch thread replies
+        replies_resp = self._slack_api_call("conversations.replies", {"channel": target_channel, "ts": thread_ts})
+        messages = replies_resp.get("messages", []) if replies_resp.get("ok") else []
+
+        root_msg = messages[0] if messages else {}
+        root_user_id = root_msg.get("user")
+        root_text = root_msg.get("text", "")
+
+        last_offline_ts: Optional[float] = None
+        last_completion_ts: Optional[float] = None
+        last_reconcile_ts: Optional[float] = None
+        last_collection_ts: Optional[float] = None
+        last_failure_ts: Optional[float] = None
+        timeline: list[dict[str, Any]] = []
+        user_prompts: list[str] = []
+        file_attachments: list[dict[str, Any]] = []
+
+        for m in messages:
+            mtext = m.get("text", "")
+            mts_str = m.get("ts", "0")
+            try:
+                mts = float(mts_str)
+            except ValueError:
+                mts = 0.0
+
+            milestone = "user_message"
+            if m.get("bot_id") or m.get("app_id"):
+                milestone = "bot_comment"
+
+            if is_offline_notice(mtext):
+                milestone = "offline_notice"
+                if last_offline_ts is None or mts > last_offline_ts:
+                    last_offline_ts = mts
+            if is_delivery_completion(mtext):
+                milestone = "completion_delivery"
+                if last_completion_ts is None or mts > last_completion_ts:
+                    last_completion_ts = mts
+            if is_reconcile_notice(mtext):
+                milestone = "reconcile_notice"
+                if last_reconcile_ts is None or mts > last_reconcile_ts:
+                    last_reconcile_ts = mts
+            if is_collection_notice(mtext):
+                milestone = "collection_intake"
+                if last_collection_ts is None or mts > last_collection_ts:
+                    last_collection_ts = mts
+            if is_failure_notice(mtext):
+                milestone = "failure_error"
+                if last_failure_ts is None or mts > last_failure_ts:
+                    last_failure_ts = mts
+
+            if not m.get("bot_id") and not m.get("app_id") and m.get("user") == root_user_id:
+                if mtext and not is_offline_notice(mtext) and not is_reconcile_notice(mtext):
+                    user_prompts.append(mtext)
+                for f in m.get("files", []):
+                    file_attachments.append(f)
+
+            preview_text = mtext.replace("\n", " ").strip()
+            if len(preview_text) > 80:
+                preview_text = preview_text[:77] + "..."
+
+            timeline.append({
+                "ts": mts_str,
+                "user": m.get("user") or m.get("bot_id") or "unknown",
+                "milestone": milestone,
+                "text_preview": preview_text,
+            })
+
+        # 2. Query SQLite SSOT
+        db_task = self.get_task_for_thread(target_channel, thread_ts)
+        st_rec = self.get_session_thread_for_thread(target_channel, thread_ts)
+
+        # 3. Determine Verdict
+        verdict = "UNKNOWN"
+        action = "none"
+        is_unfulfilled = False
+
+        if not messages:
+            verdict = "THREAD_NOT_FOUND"
+            action = "check_channel_or_ts"
+        elif last_completion_ts is not None and last_completion_ts >= max(last_offline_ts or 0, last_collection_ts or 0):
+            verdict = "COMPLETED_HEALTHY"
+            action = "none"
+        elif db_task and db_task.get("status") in ("queued", "running"):
+            verdict = "ACTIVE_PROCESSING"
+            action = "wait"
+        elif last_offline_ts is not None and (last_completion_ts is None or last_offline_ts > last_completion_ts):
+            verdict = "OFFLINE_UNFULFILLED"
+            action = "reconcile"
+            is_unfulfilled = True
+        elif db_task and db_task.get("status") in ("failed", "timed_out", "cancelled") and last_completion_ts is None:
+            verdict = "FAILED_UNRECOVERED"
+            action = "reconcile"
+            is_unfulfilled = True
+        elif last_collection_ts is not None and last_completion_ts is None:
+            verdict = "STALLED_FIXED_RESPONSE"
+            action = "reconcile"
+            is_unfulfilled = True
+        elif len(messages) == 1 and (now_ts - float(thread_ts or 0) > 30):
+            verdict = "UNANSWERED_ROOT"
+            action = "reconcile"
+            is_unfulfilled = True
+        else:
+            verdict = "PENDING_OR_IN_FLIGHT"
+            action = "wait"
+
+        is_in_cooldown = bool(
+            last_reconcile_ts and (now_ts - last_reconcile_ts < DEFAULT_RECONCILE_COOLDOWN_SECONDS)
+        )
+
+        combined_prompt = " ".join(user_prompts).strip() if user_prompts else root_text.strip()
+        if combined_prompt.lower() in ("agentapi new-conversation", "agentapi run"):
+            combined_prompt = ""
+
+        return {
+            "target": f"{target_channel}:{thread_ts}",
+            "channel_id": target_channel,
+            "thread_ts": thread_ts,
+            "user_id": root_user_id,
+            "prompt": combined_prompt,
+            "files": file_attachments,
+            "verdict": verdict,
+            "is_unfulfilled": is_unfulfilled,
+            "recommended_action": action,
+            "is_in_cooldown": is_in_cooldown,
+            "milestones": {
+                "has_collection": last_collection_ts is not None,
+                "has_completion": last_completion_ts is not None,
+                "has_failure": last_failure_ts is not None,
+                "has_offline": last_offline_ts is not None,
+                "has_reconcile": last_reconcile_ts is not None,
+                "last_collection_ts": last_collection_ts,
+                "last_completion_ts": last_completion_ts,
+                "last_offline_ts": last_offline_ts,
+                "last_reconcile_ts": last_reconcile_ts,
+            },
+            "db_state": {
+                "task_id": db_task.get("task_id") if db_task else None,
+                "status": db_task.get("status") if db_task else None,
+                "error_message": db_task.get("error_message") if db_task else None,
+                "created_at": db_task.get("created_at") if db_task else None,
+                "completed_at": db_task.get("completed_at") if db_task else None,
+                "session_thread_status": st_rec.get("status") if st_rec else None,
+                "conversation_id": st_rec.get("conversation_id") if st_rec else None,
+            },
+            "timeline": timeline,
+        }
 
     def is_task_already_active_in_db(self, channel: str, thread_ts: str) -> bool:
         """
@@ -266,6 +556,7 @@ class SlackReconciler:
         self,
         thread_info: dict[str, Any],
         sync: bool = False,
+        force: bool = False,
     ) -> dict[str, Any]:
         """
         Dispatches reconciled task into Webhook Hub and announces status in Slack thread.
@@ -281,12 +572,12 @@ class SlackReconciler:
         files = thread_info.get("files", [])
 
         # Check 1: If thread is in cooldown (reconciled within last 15 min), do NOT dispatch or spam!
-        if thread_info.get("is_in_cooldown"):
+        if thread_info.get("is_in_cooldown") and not force:
             logger.info("Skipping dispatch for %s:%s: thread is currently in reconcile cooldown.", channel, thread_ts)
             return {"status": "skipped", "reason": "in_cooldown", "thread_ts": thread_ts}
 
         # Check 2: Check DB idempotency (active tasks or active session)
-        if self.is_task_already_active_in_db(channel, thread_ts):
+        if self.is_task_already_active_in_db(channel, thread_ts) and not force:
             logger.info("Skipping dispatch for %s:%s: task is already queued/running or active in DB.", channel, thread_ts)
             return {"status": "skipped", "reason": "already_active_in_db", "thread_ts": thread_ts}
 

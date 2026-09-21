@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.5] - 2026-09-21
+
+### Added & Hardened
+- **Diagnostic-First 统一自愈与因果追溯引擎 (`hub/antigravity/diagnostics.py`, `hub/cli.py`, `hub/routes/observability.py`)**:
+  - 贯彻“对账器优先（Diagnostic-First）”原则，消除 Ghost Logic 与黑盒静默失效；新增统一追溯分析模块 `DiagnosticInspector` 与 `format_diagnostic_report`。
+  - 新增 CLI 指令 `./bin/webhook-hub explain <target>`（附带别名 `diagnose`, `inspect`），支持从 Task ID (`tsk_...`)、Slack Thread (`channel:ts` 或纯时间戳 `ts`)、Event ID (`evt_...`) 及任意 URL 维度端到端检索 SQLite SSOT、排查会话生命周期瓶颈。
+  - 具备自愈修复能力：CLI 附带 `--reconcile` 与 `--force` 选项，可直接针对未交付或卡死的会话强制触发补发调度，并在输出中提供可复制的即时诊断自愈指令。
+  - 在 HTTP 观察路由中新增 `/api/diagnose?target=...` 及 `/api/diagnose/slack` 端点，支持无缝透传 `--reconcile` 参数，对外提供生产级可观察性接口。
+  - 升级 `hub/cli.py` 内部 `_dynamic_route_resolver`，支持动态挂载 `/api/diagnose`，严格维持启动时 <30MB RSS 极简内存占用预算。
+- **SlackReconciler 漏扫与静默丢失修复 (`hub/antigravity/reconciler.py`)**:
+  - 重构 `scan_unfulfilled_threads` 过滤算法，彻底解决“仅匹配文本含 `[离线提示]`”的漏洞；将检测基石转向 SQLite SSOT 任务数据库与会话记录：
+    - 新增 `stalled_collection` 检测：识别已发送采集提示超过 120 秒但由于工作流崩溃未完成交付的卡死会话。
+    - 新增 `failed_db_task` 检测：关联数据库状态，识别任务执行失败（`failed`/`timed_out`/`cancelled`）但未通知用户的会话。
+    - 新增 `unanswered_root` 检测：自动检测根消息无任何回复（0 replies）且超时静默的会话。
+  - 增强底层 `_slack_api_call`：引入 3 次指数退避重试（1s/2s/4s），全面拦截由于 macOS Socket 偶发瞬断导致的 `UNEXPECTED_EOF_WHILE_READING` (SSL 1082) 报错。
+  - 在 `dispatch_reconciled_task` 中新增 `force: bool = False` 参数，允许运维/诊断通道绕过 120 秒冷却时间强制修复。
+  - 升级 `./bin/webhook-hub catchup` 命令，支持 `--diagnose` 预检模式、`--thread <ts>` 精确补发模式与 `--force` 强制触发模式。
+- **Skill Crystallization: AI 视频逼真度工程与端到端自动化管线 (`seedance-video-generator`)**:
+  - 针对 Slack `#input_agent` 真实业务需求，完成小红书 AI 视频逼真度方法论及端到端自动化管线沉淀，生成参考文档 `references/ai_video_realism_and_automation_pipeline.md` 并写入 `seedance-video-generator` Skill。
+
 ## [1.17.4] - 2026-09-21
 
 ### Fixed & Hardened

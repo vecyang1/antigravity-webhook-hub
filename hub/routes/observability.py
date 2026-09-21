@@ -453,6 +453,30 @@ def register_observability_routes(
         except ImportError:
             pass
 
+    async def handle_diagnose(req: HTTPRequest) -> HTTPResponse:
+        """GET /api/diagnose: Explain and diagnose execution, SSOT state, and Slack milestones."""
+        target = req.query_params.get("target", "").strip()
+        channel = req.query_params.get("channel", "").strip()
+        ts = req.query_params.get("ts", "").strip()
+        reconcile = req.query_params.get("reconcile", "").lower() in ("1", "true", "yes")
+        force = req.query_params.get("force", "").lower() in ("1", "true", "yes")
+
+        if not target and channel and ts:
+            target = f"{channel}:{ts}"
+        elif not target and ts:
+            target = ts
+
+        if not target:
+            return HTTPResponse.json(
+                {"error": "missing_target", "message": "Provide 'target' parameter or 'channel' and 'ts'"},
+                status_code=400,
+            )
+
+        from hub.antigravity.diagnostics import DiagnosticInspector
+        inspector = DiagnosticInspector(db=db)
+        res = inspector.explain(target, reconcile=reconcile, force=force)
+        return HTTPResponse.json(res, status_code=200)
+
     server.add_route("GET", "/", handle_root)
     server.add_route("GET", "/healthz", handle_healthz)
     server.add_route("GET", "/health", handle_healthz)
@@ -467,3 +491,5 @@ def register_observability_routes(
     server.add_route("GET", "/antigravity/quota/health", handle_antigravity_quota_health)
     server.add_route("POST", "/antigravity/warmup", handle_antigravity_warmup)
     server.add_route("GET", "/antigravity/warmup", handle_antigravity_warmup)
+    server.add_route("GET", "/api/diagnose", handle_diagnose)
+    server.add_route("GET", "/api/diagnose/slack", handle_diagnose)
