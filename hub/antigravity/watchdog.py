@@ -1786,11 +1786,9 @@ class AntigravityWatchdog:
                             (target_convo_id,)
                         )
                         if active_threads:
-                            from hub.antigravity.session_manager import cancel_active_watcher
-                            from hub.antigravity.result_delivery import watch_and_deliver_result
+                            from hub.antigravity.result_delivery import watch_and_deliver_result, cancel_active_watcher
                             from hub.antigravity.thread_notifier import ThreadNotifier
                             import asyncio
-                            import time
                             
                             notifier = ThreadNotifier()
                             for sess in active_threads:
@@ -1807,14 +1805,14 @@ class AntigravityWatchdog:
                                             thread_ts=root_ts,
                                             conversation_id=target_convo_id,
                                             task_id=task_id,
-                                            start_time=time.time(),
-                                            is_follow_up=True,
+                                            start_time=0.0,
+                                            is_follow_up=False,
                                             start_step=0,
                                             broker=self.broker,
                                         )
                                     )
                     except Exception as e:
-                        logger.warning("Failed to remount watcher during resuscitation: %s", e)
+                        logger.warning("Failed to remount Slack watcher during resuscitation for %s: %s", target_convo_id, e)
 
                 logger.info("Successfully resuscitated session %s via target %s (res_id=%s, status=%s)", convo_id, target_convo_id, res_id, new_st)
                 if self.broker:

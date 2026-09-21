@@ -245,6 +245,7 @@ async def watch_and_deliver_result(
     min_progress_interval: float = 4.0,
     brain_root: Optional[Path] = None,
     broker: Optional[Any] = None,
+    db: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Asynchronously monitors an Antigravity conversation transcript in the background,
@@ -277,6 +278,7 @@ async def watch_and_deliver_result(
         start_step,
     )
 
+    final_content = None
     try:
         while True:
             now = time.time()
@@ -355,6 +357,16 @@ async def watch_and_deliver_result(
                     except Exception as b_err:
                         logger.debug("Failed to publish result delivery event: %s", b_err)
 
+                if db and hasattr(db, "upsert_session_thread"):
+                    try:
+                        thread_key = f"{channel}:{thread_ts}"
+                        record = db.get_session_thread(thread_key)
+                        if record:
+                            record["status"] = "completed"
+                            db.upsert_session_thread(record)
+                    except Exception as e:
+                        logger.error("Failed to mark session completed: %s", e)
+
                 return {
                     "delivered": True,
                     "conversation_id": conversation_id,
@@ -371,6 +383,15 @@ async def watch_and_deliver_result(
                     task_id=task_id,
                     error_message="Antigravity 会话在执行过程中遭遇异常中断",
                 )
+                if db and hasattr(db, "upsert_session_thread"):
+                    try:
+                        thread_key = f"{channel}:{thread_ts}"
+                        record = db.get_session_thread(thread_key)
+                        if record:
+                            record["status"] = "failed"
+                            db.upsert_session_thread(record)
+                    except Exception as e:
+                        logger.error("Failed to mark session failed: %s", e)
                 return {
                     "delivered": False,
                     "conversation_id": conversation_id,
@@ -442,6 +463,19 @@ async def watch_and_deliver_result(
     except asyncio.CancelledError:
         logger.info("Watcher for conversation %s was cancelled", conversation_id)
         raise
+    except Exception as e:
+        logger.exception("Unexpected exception in watch_and_deliver_result for %s: %s", conversation_id, e)
+        notifier.notify_failed(
+            channel=channel,
+            thread_ts=thread_ts,
+            task_id=task_id,
+            error_message=f"Antigravity 监控器发生崩溃 ({type(e).__name__}: {e})",
+        )
+        return {
+            "delivered": False,
+            "conversation_id": conversation_id,
+            "error": "watcher_crash",
+        }
     finally:
         if current_task is not None and _ACTIVE_WATCHERS.get(conversation_id) is current_task:
             _ACTIVE_WATCHERS.pop(conversation_id, None)

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.4] - 2026-09-21
+
+### Fixed & Hardened
+- **Antigravity 监控器与自愈引擎缩进异常修复 (`hub/antigravity/result_delivery.py`, `hub/antigravity/watchdog.py`)**:
+  - 修复 `result_delivery.py` 中因脚本替换产生的 `IndentationError` 异常与 `try` 块损坏，彻底消除任务分发时的致命语法报错。
+  - 恢复 `watchdog.py` 顶层缺失的 `import time` 引入，消除 `get_status` 时的 `NameError`。
+  - 增强 `watch_and_deliver_result` 与 SQLite SSOT 会话线程表 (`session_threads`) 的状态同步，在正常结束时将状态原子更新为 `completed`，在终端异常时更新为 `failed`。
+- **Slack 消息发送抗抖动重试机制 (`hub/antigravity/thread_notifier.py`)**:
+  - 针对 Slack API 调用增加指数退避重试机制（最大重试 3 次，间隔 1s/2s/4s），防御瞬时网络波动引起的通知丢失。
+- **TypeSafe AI Slack 任务自主性分流与任务认领 (`hub/slack_task_triage.py`, `hub/routes/webhook.py`, `hub/cli.py`)**:
+  - 引入 `hub/slack_task_triage.py`，支持在 `slack-make` 数据源接入时调用 TypeSafe AI 评估任务自主性与可执行度。
+  - 在 `hub/cli.py` 中新增 `tasks claim` 子命令，支持 AI Agent 实时认领任务并关联 Notion 与 Slack 线程。
+
 ## [1.17.3] - 2026-09-21
 
 ### Fixed & Hardened

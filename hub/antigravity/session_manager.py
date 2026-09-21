@@ -189,6 +189,7 @@ async def execute_antigravity_task(
                             is_follow_up=True,
                             start_step=max(0, latest_step + 1),
                             broker=broker,
+                            db=db,
                         )
                     )
 
@@ -379,6 +380,7 @@ async def execute_antigravity_task(
                 is_follow_up=False,
                 start_step=0,
                 broker=broker,
+                db=db,
             )
         )
 
@@ -450,10 +452,11 @@ async def resume_active_watchers(db: Any, broker: Optional[Any] = None) -> int:
                     thread_ts=root_ts,
                     conversation_id=convo_id,
                     task_id=task_id,
-                    start_time=time.time(),
+                    start_time=0.0,
                     is_follow_up=False,  
                     start_step=0,
                     broker=broker,
+                    db=db,
                 )
             )
             count += 1

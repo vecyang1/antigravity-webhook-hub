@@ -58,6 +58,37 @@ def register_webhook_routes(
             source = body_dict.get("source") or "default"
 
         action_type = body_dict.get("action_type") or body_dict.get("action")
+
+        # --- SLACK MAKE TRIAGE ---
+        if source == "slack-make":
+            message_text = body_dict.get("text") or body_dict.get("message") or ""
+            if not message_text:
+                return HTTPResponse.error("Missing 'text' in slack-make payload", status_code=400, reason="missing_text")
+            
+            try:
+                from hub.slack_task_triage import evaluate_slack_task_async
+                triage_res = await evaluate_slack_task_async(message_text)
+                
+                if not triage_res.get("is_autonomous"):
+                    return HTTPResponse.json({
+                        "status": "skipped",
+                        "reason": triage_res.get("reason"),
+                        "noul": triage_res.get("noul"),
+                        "is_autonomous": False
+                    }, status_code=200)
+                
+                # Proceed as an antigravity task
+                action_type = "antigravity_task"
+                body_dict["action_type"] = action_type
+                body_dict["_triage"] = triage_res
+                # Set command to the message text so the task dispatcher knows what to execute
+                if not body_dict.get("command"):
+                    body_dict["command"] = message_text
+                command = body_dict.get("command")
+                logger.info("Task triaged as autonomous: %s", triage_res)
+            except Exception as e:
+                logger.error("Slack task triage failed: %s", e)
+        # -------------------------
         if action_type in ("antigravity.run", "antigravity_run"):
             action_type = "antigravity"
         if not action_type:

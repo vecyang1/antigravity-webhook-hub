@@ -140,6 +140,12 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
     from hub.routes.webhook import register_webhook_routes
     from hub.server import AsyncHTTPServer
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
     try:
         gc.set_threshold(100, 5, 5)
     except Exception:
@@ -1142,6 +1148,36 @@ def cmd_tasks(args: argparse.Namespace) -> int:
     import urllib.error
     import urllib.parse
     from hub.models import is_test_task
+    
+    tasks_action = getattr(args, "tasks_action", "list") or "list"
+    
+    if tasks_action == "claim":
+        task_id = args.task_id
+        agent_name = args.agent_name
+        message = args.message
+        notion_url = args.notion_url
+        host = getattr(args, "host", "127.0.0.1")
+        port = getattr(args, "port", 9423)
+        url = f"http://{host}:{port}/tasks/{task_id}/claim"
+        payload = {"agent_name": agent_name}
+        if message: payload["message"] = message
+        if notion_url: payload["notion_url"] = notion_url
+        
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                print(json.dumps(data, indent=2, ensure_ascii=False))
+                return 0
+        except urllib.error.URLError as e:
+            print(f"Error calling live API: {e}")
+            return 1
+
 
     status = getattr(args, "status", "all")
     real_only = getattr(args, "real_only", False)

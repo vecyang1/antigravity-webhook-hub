@@ -68,19 +68,25 @@ class ThreadNotifier:
             method="POST",
         )
 
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                if data.get("ok"):
-                    logger.info("Thread comment successfully posted to %s:%s", channel, thread_ts)
-                    return True
-                else:
-                    err = data.get("error")
-                    logger.warning("Slack API error posting thread comment to %s:%s: %s", channel, thread_ts, err)
-                    return False
-        except Exception as e:
-            logger.warning("Network error posting thread comment to %s:%s: %s", channel, thread_ts, e)
-            return False
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    if data.get("ok"):
+                        logger.info("Thread comment successfully posted to %s:%s", channel, thread_ts)
+                        return True
+                    else:
+                        err = data.get("error")
+                        logger.warning("Slack API error posting thread comment to %s:%s: %s", channel, thread_ts, err)
+                        return False
+            except Exception as e:
+                logger.warning("Network error posting thread comment to %s:%s (attempt %d/%d): %s", channel, thread_ts, attempt + 1, max_retries, e)
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(2 ** attempt)
+        
+        return False
 
     def notify_collected(
         self,
