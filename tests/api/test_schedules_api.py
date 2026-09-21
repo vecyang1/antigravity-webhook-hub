@@ -208,6 +208,13 @@ async def test_webhook_ingress_with_scheduling(schedules_server: Any):
         assert data["schedule_id"].startswith("sch_")
         assert data["next_run_at"] is not None
 
+        # Verify event was actually persisted in webhook_events SQLite table with status 'scheduled'
+        event_id = data.get("event_id")
+        assert event_id is not None
+        evt_row = db.get_webhook_event(event_id)
+        assert evt_row is not None
+        assert evt_row["status"] == "scheduled"
+
         # Verify nothing was immediately enqueued to dispatcher!
         assert len(dispatcher.enqueued_tasks) == 0
 
@@ -233,6 +240,33 @@ async def test_webhook_ingress_with_scheduling(schedules_server: Any):
         assert cron_data["status"] == "scheduled"
         assert cron_data["schedule_type"] == "recurring"
         assert cron_data["cron_expression"] == "0 9 * * *"
+
+        # 3. Adversarial invalid date format in webhook
+        body_invalid_date = {
+            "source": "invalid_date_webhook",
+            "action": "cli",
+            "command": "echo bad",
+            "schedule_at": "totally-not-a-date",
+        }
+        raw_inv = json.dumps(body_invalid_date).encode("utf-8")
+        sig_inv = generate_hmac_signature(config.security.webhook_secret, raw_inv, ts)
+        headers_inv = {
+            "Content-Type": "application/json",
+            "X-Hub-Signature-256": sig_inv,
+            "X-Hub-Timestamp": str(ts),
+        }
+        resp_inv = await client.post(f"{base_url}/webhook", content=raw_inv, headers=headers_inv)
+        assert resp_inv.status_code == 400
+        assert "Invalid schedule" in resp_inv.json().get("message", "")
+
+        # 4. Verify /api/schedules and /api/schedules/summary routes
+        resp_api_schedules = await client.get(f"{base_url}/api/schedules")
+        assert resp_api_schedules.status_code == 200
+        assert "schedules" in resp_api_schedules.json()
+
+        resp_api_summary = await client.get(f"{base_url}/api/schedules/summary")
+        assert resp_api_summary.status_code == 200
+        assert "stats" in resp_api_summary.json()
 
 
 async def test_schedules_sweep_endpoint(schedules_server: Any):

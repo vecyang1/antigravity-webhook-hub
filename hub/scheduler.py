@@ -130,51 +130,79 @@ def parse_schedule_time(
 
     # 1. Direct delay_seconds
     if delay_seconds is not None:
-        return base_dt + datetime.timedelta(seconds=max(0, float(delay_seconds)))
+        try:
+            sec_val = float(delay_seconds)
+            return base_dt + datetime.timedelta(seconds=max(0.0, sec_val))
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid delay_seconds value: {delay_seconds}") from e
 
-    # 2. String delay (e.g. "2d", "4h", "15m", "60s")
-    if delay is not None and isinstance(delay, str):
-        match = re.match(r"^(\d+(?:\.\d+)?)\s*([smhdw])$", delay.strip().lower())
+    # 2. String delay (e.g. "2d", "4h", "15m", "60s", "+2d")
+    if delay is not None:
+        if not isinstance(delay, str):
+            raise ValueError(f"Expected delay string, got {type(delay).__name__}")
+        clean_delay = delay.strip().lower().lstrip("+")
+        match = re.match(r"^(\d+(?:\.\d+)?)\s*([smhdw])$", clean_delay)
         if match:
             num = float(match.group(1))
             unit = match.group(2)
             multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
             total_sec = num * multipliers.get(unit, 1)
             return base_dt + datetime.timedelta(seconds=total_sec)
+        raise ValueError(f"Invalid delay format: '{delay}'. Expected format like '30s', '15m', '2h', '2d', or '1w'.")
 
     # 3. Explicit scheduled_at string or number
     if scheduled_at is not None:
         if isinstance(scheduled_at, (int, float)):
-            # Epoch seconds
             return datetime.datetime.fromtimestamp(float(scheduled_at), tz=datetime.timezone.utc)
 
         str_val = str(scheduled_at).strip()
-        # Relative format inside scheduled_at like "+2d", "+1h"
-        if str_val.startswith("+"):
-            return parse_schedule_time(delay=str_val[1:], base_dt=base_dt)
+        if not str_val:
+            raise ValueError("scheduled_at cannot be empty")
+
+        # Check if relative format passed inside scheduled_at like "+2d", "2d", "1h"
+        clean_rel = str_val.lower().lstrip("+")
+        if re.match(r"^(\d+(?:\.\d+)?)\s*([smhdw])$", clean_rel):
+            return parse_schedule_time(delay=clean_rel, base_dt=base_dt)
 
         # Standard ISO 8601 parsing
+        iso_clean = str_val.replace(" ", "T")
         try:
-            # Replace space with T for standard isoformat
-            iso_clean = str_val.replace(" ", "T")
             parsed_dt = datetime.datetime.fromisoformat(iso_clean)
             if parsed_dt.tzinfo is None:
                 # Local assumption: Asia/Bangkok / +08:00 if timezone not explicitly specified
                 parsed_dt = parsed_dt.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
             return parsed_dt.astimezone(datetime.timezone.utc)
         except ValueError:
-            # Fallback format: YYYY-MM-DD
+            pass
+
+        # Formats commonly used across Spark, webhooks, and local inputs
+        date_patterns = [
+            ("%Y-%m-%d %H:%M:%S", False),
+            ("%Y-%m-%d %H:%M", False),
+            ("%Y-%m-%d", True),
+            ("%Y/%m/%d %H:%M:%S", False),
+            ("%Y/%m/%d %H:%M", False),
+            ("%Y/%m/%d", True),
+            ("%d/%m/%Y %H:%M:%S", False),
+            ("%d/%m/%Y %H:%M", False),
+            ("%d/%m/%Y", True),
+        ]
+        for pattern, is_date_only in date_patterns:
             try:
-                parsed_date = datetime.datetime.strptime(str_val, "%Y-%m-%d")
-                parsed_dt = parsed_date.replace(
-                    hour=9, minute=0, second=0,
-                    tzinfo=datetime.timezone(datetime.timedelta(hours=8))
-                )
+                parsed_dt = datetime.datetime.strptime(str_val, pattern)
+                if is_date_only:
+                    parsed_dt = parsed_dt.replace(hour=9, minute=0, second=0)
+                parsed_dt = parsed_dt.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
                 return parsed_dt.astimezone(datetime.timezone.utc)
             except ValueError:
-                pass
+                continue
 
-    # Default fallback: 60 seconds from now
+        raise ValueError(
+            f"Invalid scheduled_at format: '{str_val}'. "
+            "Supported formats: ISO-8601 (2026-09-23T16:18:00Z), YYYY-MM-DD, DD/MM/YYYY, or relative delays (2d, 1h, 30m)."
+        )
+
+    # Default fallback when no timing param specified: 60 seconds from now
     return base_dt + datetime.timedelta(seconds=60)
 
 
@@ -400,6 +428,8 @@ class TaskScheduler:
             "timeout_seconds": int(sched.get("timeout_seconds", 300) if "timeout_seconds" in sched else 300),
             "retry_count": 0,
             "max_retries": 0,
+            "schedule_id": schedule_id,
+            "scheduled_at": sched.get("scheduled_at") or sched.get("next_run_at"),
         }
         if hasattr(self.db, "insert_task"):
             res = self.db.insert_task(task_record)

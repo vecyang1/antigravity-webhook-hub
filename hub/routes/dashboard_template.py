@@ -2800,6 +2800,22 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         </button>
       </div>
       <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px;">
+        <!-- Quick Schedule Presets -->
+        <div>
+          <label class="form-label" style="margin-bottom: 6px;">Quick Presets</label>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+            <button type="button" class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="applySchedulePreset('anker')">
+              ⚡ Anker保修回复检查 (Spark 724913)
+            </button>
+            <button type="button" class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="applySchedulePreset('n8n')">
+              🌐 n8n Cloud Webhook
+            </button>
+            <button type="button" class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="applySchedulePreset('agent')">
+              🤖 AgentAPI 定时心跳
+            </button>
+          </div>
+        </div>
+
         <div>
           <label class="form-label">Schedule Name / Description *</label>
           <input type="text" class="form-input" id="schedInputName" placeholder="e.g. Daily CRM sync or Anker warranty check" required>
@@ -2817,6 +2833,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
             <label class="form-label">Action Target Type</label>
             <select class="form-select" id="schedInputActionType">
               <option value="cli">CLI Command</option>
+              <option value="webhook">Webhook HTTP Call (e.g. n8n)</option>
               <option value="antigravity">Antigravity AgentAPI Call</option>
               <option value="contact_review">Notion Contact Review</option>
             </select>
@@ -3571,6 +3588,11 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
                 <div style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${{actionText}}">
                   ${{actionText}}
                 </div>
+                ${{s.last_error ? `
+                  <div style="font-family: var(--font-mono); font-size: 10px; color: #f87171; max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${{escapeHtml(s.last_error)}}">
+                    ⚠️ Error: ${{escapeHtml(s.last_error)}}
+                  </div>
+                ` : ''}}
               </div>
             </td>
             <td style="padding: 12px 14px;">
@@ -3791,6 +3813,34 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       }}
     }}
 
+    function applySchedulePreset(preset) {{
+      if (preset === 'anker') {{
+        if (document.getElementById('schedInputName')) document.getElementById('schedInputName').value = 'Anker 737 120W 保修回复检查 (Spark 724913)';
+        if (document.getElementById('schedInputType')) document.getElementById('schedInputType').value = 'once';
+        toggleScheduleTypeInputs('once');
+        if (document.getElementById('schedInputActionType')) document.getElementById('schedInputActionType').value = 'cli';
+        if (document.getElementById('schedInputDelay')) document.getElementById('schedInputDelay').value = '2026-09-23T16:18:00+08:00';
+        if (document.getElementById('schedInputCommand')) document.getElementById('schedInputCommand').value = 'python3 scripts/check_anker_reminder.py --notify-slack';
+        if (document.getElementById('schedInputSource')) document.getElementById('schedInputSource').value = 'spark_reminder';
+      }} else if (preset === 'n8n') {{
+        if (document.getElementById('schedInputName')) document.getElementById('schedInputName').value = 'n8n Cloud Webhook Dispatch (n.worldinspirelab.com)';
+        if (document.getElementById('schedInputType')) document.getElementById('schedInputType').value = 'recurring';
+        toggleScheduleTypeInputs('recurring');
+        if (document.getElementById('schedInputActionType')) document.getElementById('schedInputActionType').value = 'webhook';
+        if (document.getElementById('schedInputCron')) document.getElementById('schedInputCron').value = '0 */2 * * *';
+        if (document.getElementById('schedInputCommand')) document.getElementById('schedInputCommand').value = 'https://n.worldinspirelab.com/webhook/heartbeat';
+        if (document.getElementById('schedInputSource')) document.getElementById('schedInputSource').value = 'n8n';
+      }} else if (preset === 'agent') {{
+        if (document.getElementById('schedInputName')) document.getElementById('schedInputName').value = 'Hourly Antigravity Agent Pulse';
+        if (document.getElementById('schedInputType')) document.getElementById('schedInputType').value = 'recurring';
+        toggleScheduleTypeInputs('recurring');
+        if (document.getElementById('schedInputActionType')) document.getElementById('schedInputActionType').value = 'antigravity';
+        if (document.getElementById('schedInputCron')) document.getElementById('schedInputCron').value = '0 * * * *';
+        if (document.getElementById('schedInputCommand')) document.getElementById('schedInputCommand').value = 'Check system health and review active tasks';
+        if (document.getElementById('schedInputSource')) document.getElementById('schedInputSource').value = 'agent_pulse';
+      }}
+    }}
+
     async function submitNewSchedule(btn) {{
       const name = (document.getElementById('schedInputName')?.value || '').trim();
       if (!name) {{
@@ -3821,11 +3871,18 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         timezone: tz,
       }};
 
+      if (actionType === 'webhook') {{
+        payload.action_params = {{
+          url: command,
+          method: 'POST',
+        }};
+      }}
+
       if (schedType === 'recurring') {{
         payload.cron_expression = cron;
       }} else {{
         if (delay) {{
-          if (delay.includes('T') || delay.includes('-')) {{
+          if (delay.includes('T') || delay.includes('-') || delay.includes('/')) {{
             payload.scheduled_at = delay;
           }} else {{
             payload.delay = delay;

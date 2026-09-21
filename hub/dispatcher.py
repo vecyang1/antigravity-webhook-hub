@@ -749,6 +749,108 @@ class TaskDispatcher:
                     stdout_lines.append(summary_msg)
                     self._record_log(task_id, "stdout", summary_msg, execution_id=execution_id)
 
+            elif action_type in ("webhook", "http", "webhook_dispatch", "webhook_forward", "webhook_call") or (
+                isinstance(task_data.get("command") or task_data.get("target_action"), str)
+                and (
+                    (task_data.get("command") or "").startswith("http://")
+                    or (task_data.get("command") or "").startswith("https://")
+                    or (task_data.get("target_action") or "").startswith("http://")
+                    or (task_data.get("target_action") or "").startswith("https://")
+                )
+            ):
+                # Native Webhook & HTTP Dispatch (e.g. n.worldinspirelab.com / external API endpoints)
+                target_url = (
+                    action_params.get("url")
+                    or task_data.get("target_action")
+                    or task_data.get("command")
+                    or ""
+                ).strip()
+                if not target_url:
+                    raise ValueError(f"No target URL specified for webhook task {task_id}")
+
+                http_method = (action_params.get("method") or "POST").upper()
+                custom_headers = action_params.get("headers") or {}
+                if not isinstance(custom_headers, dict):
+                    custom_headers = {}
+
+                # Prepare payload
+                req_payload = action_params.get("payload")
+                if req_payload is None:
+                    req_payload = action_params.get("body")
+                if req_payload is None:
+                    # Filter out scheduler orchestration keys
+                    req_payload = {
+                        k: v for k, v in action_params.items()
+                        if k not in ("url", "method", "headers", "schedule_id", "schedule_name", "trigger_reason")
+                    }
+
+                body_bytes = None
+                if req_payload:
+                    if isinstance(req_payload, (dict, list)):
+                        body_bytes = json.dumps(req_payload).encode("utf-8")
+                        if "Content-Type" not in custom_headers and "content-type" not in custom_headers:
+                            custom_headers["Content-Type"] = "application/json; charset=utf-8"
+                    elif isinstance(req_payload, str):
+                        body_bytes = req_payload.encode("utf-8")
+                    elif isinstance(req_payload, bytes):
+                        body_bytes = req_payload
+
+                req_headers = {
+                    "User-Agent": "Antigravity-Webhook-Hub/1.17",
+                    "X-Hub-Task-ID": str(task_id),
+                    "X-Hub-Event-ID": str(task_data.get("event_id") or ""),
+                }
+                req_headers.update(custom_headers)
+
+                def _execute_http():
+                    import urllib.error
+                    import urllib.request
+                    req = urllib.request.Request(
+                        target_url,
+                        data=body_bytes if http_method not in ("GET", "HEAD") else None,
+                        headers=req_headers,
+                        method=http_method,
+                    )
+                    try:
+                        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+                            status_code = resp.status
+                            resp_body = resp.read().decode("utf-8", errors="replace")
+                            return status_code, resp_body, None
+                    except urllib.error.HTTPError as he:
+                        err_body = he.read().decode("utf-8", errors="replace")
+                        return he.code, err_body, f"HTTP {he.code}: {he.reason}"
+                    except Exception as ex:
+                        return -1, "", str(ex)
+
+                loop = asyncio.get_running_loop()
+                code, resp_text, err_str = await loop.run_in_executor(None, _execute_http)
+
+                status_msg = f"Webhook {http_method} {target_url} -> HTTP {code}"
+                stdout_lines.append(status_msg)
+                self._record_log(task_id, "stdout", status_msg, execution_id=execution_id)
+
+                if resp_text:
+                    snippet = resp_text[:1000]
+                    stdout_lines.append(snippet)
+                    self._record_log(task_id, "stdout", snippet, execution_id=execution_id)
+
+                task_result_data = {
+                    "url": target_url,
+                    "method": http_method,
+                    "status_code": code,
+                    "response": resp_text[:2000],
+                }
+
+                if 200 <= code < 400:
+                    final_status = "succeeded"
+                    exit_code = 0
+                else:
+                    final_status = "failed"
+                    exit_code = code if code > 0 else 1
+                    error_message = err_str or f"Webhook dispatch returned HTTP {code}"
+                    stderr_lines.append(error_message)
+                    self._record_log(task_id, "stderr", error_message, execution_id=execution_id)
+
             else:
                 # Subprocess execution: cli, cli_command, launchd_job, cron_job
                 if action_type in ("launchd", "launchd_job"):

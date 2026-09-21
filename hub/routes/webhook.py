@@ -180,62 +180,65 @@ def register_webhook_routes(
             timezone = body_dict.get("timezone") or req.header("x-timezone") or "Asia/Bangkok"
             sched_engine = scheduler or getattr(server, "_scheduler", None)
 
-            if sched_engine is not None:
-                sched_obj = await sched_engine.create_schedule(
-                    name=sched_name,
-                    schedule_type=schedule_type,
-                    scheduled_at=sched_at,
-                    delay_seconds=delay_sec,
-                    delay=delay_str,
-                    cron_expression=cron_expr,
-                    action_type=action_type,
-                    command=command,
-                    target_action=command or "",
-                    action_params=body_dict,
-                    source=source,
-                    timezone=timezone,
-                    max_runs=body_dict.get("max_runs"),
-                )
-                sched_data = sched_obj.to_dict()
-            elif db is not None:
-                from hub.scheduler import compute_next_cron_run, format_iso_utc, parse_schedule_time
-                import datetime
-                now_dt = datetime.datetime.now(datetime.timezone.utc)
-                if schedule_type == "recurring":
-                    next_dt = compute_next_cron_run(cron_expr, start_dt=now_dt, tz_name=timezone)
-                    next_run_iso = format_iso_utc(next_dt)
-                    scheduled_at_iso = None
-                else:
-                    target_dt = parse_schedule_time(
+            try:
+                if sched_engine is not None:
+                    sched_obj = await sched_engine.create_schedule(
+                        name=sched_name,
+                        schedule_type=schedule_type,
                         scheduled_at=sched_at,
                         delay_seconds=delay_sec,
                         delay=delay_str,
-                        base_dt=now_dt,
+                        cron_expression=cron_expr,
+                        action_type=action_type,
+                        command=command,
+                        target_action=command or "",
+                        action_params=body_dict,
+                        source=source,
+                        timezone=timezone,
+                        max_runs=body_dict.get("max_runs"),
                     )
-                    next_run_iso = format_iso_utc(target_dt)
-                    scheduled_at_iso = next_run_iso
+                    sched_data = sched_obj.to_dict()
+                elif db is not None:
+                    from hub.scheduler import compute_next_cron_run, format_iso_utc, parse_schedule_time
+                    import datetime
+                    now_dt = datetime.datetime.now(datetime.timezone.utc)
+                    if schedule_type == "recurring":
+                        next_dt = compute_next_cron_run(cron_expr, start_dt=now_dt, tz_name=timezone)
+                        next_run_iso = format_iso_utc(next_dt)
+                        scheduled_at_iso = None
+                    else:
+                        target_dt = parse_schedule_time(
+                            scheduled_at=sched_at,
+                            delay_seconds=delay_sec,
+                            delay=delay_str,
+                            base_dt=now_dt,
+                        )
+                        next_run_iso = format_iso_utc(target_dt)
+                        scheduled_at_iso = next_run_iso
 
-                sched_data = {
-                    "name": sched_name,
-                    "source": source,
-                    "schedule_type": schedule_type,
-                    "cron_expression": cron_expr,
-                    "scheduled_at": scheduled_at_iso,
-                    "next_run_at": next_run_iso,
-                    "timezone": timezone,
-                    "action_type": action_type,
-                    "command": command or "",
-                    "target_action": command or "",
-                    "action_params": body_dict,
-                    "status": "active",
-                    "max_runs": 1 if schedule_type == "once" else body_dict.get("max_runs"),
-                }
-                sch_id = db.insert_schedule(sched_data)
-                if asyncio.iscoroutine(sch_id):
-                    sch_id = await sch_id
-                sched_data["schedule_id"] = sch_id
-            else:
-                return HTTPResponse.error("Database or scheduler not available", status_code=500)
+                    sched_data = {
+                        "name": sched_name,
+                        "source": source,
+                        "schedule_type": schedule_type,
+                        "cron_expression": cron_expr,
+                        "scheduled_at": scheduled_at_iso,
+                        "next_run_at": next_run_iso,
+                        "timezone": timezone,
+                        "action_type": action_type,
+                        "command": command or "",
+                        "target_action": command or "",
+                        "action_params": body_dict,
+                        "status": "active",
+                        "max_runs": 1 if schedule_type == "once" else body_dict.get("max_runs"),
+                    }
+                    sch_id = db.insert_schedule(sched_data)
+                    if asyncio.iscoroutine(sch_id):
+                        sch_id = await sch_id
+                    sched_data["schedule_id"] = sch_id
+                else:
+                    return HTTPResponse.error("Database or scheduler not available", status_code=500)
+            except ValueError as val_err:
+                return HTTPResponse.error(f"Invalid schedule parameters: {val_err}", status_code=400, reason="invalid_schedule")
 
             return HTTPResponse.json(
                 {

@@ -335,10 +335,13 @@ def register_schedule_routes(
 
     # Register routes
     server.add_route("GET", "/schedules", handle_list_schedules)
+    server.add_route("GET", "/api/schedules", handle_list_schedules)
     server.add_route("GET", "/api/v1/schedules", handle_list_schedules)
     server.add_route("GET", "/schedules/summary", handle_schedules_summary)
+    server.add_route("GET", "/api/schedules/summary", handle_schedules_summary)
     server.add_route("GET", "/api/v1/schedules/summary", handle_schedules_summary)
     server.add_route("POST", "/schedules", handle_create_schedule)
+    server.add_route("POST", "/api/schedules", handle_create_schedule)
     server.add_route("POST", "/api/v1/schedules", handle_create_schedule)
     server.add_route("GET", "/schedules/{schedule_id}", handle_schedule_detail)
     server.add_route("POST", "/schedules/{schedule_id}/trigger", handle_schedule_trigger)

@@ -141,7 +141,7 @@ class DatabaseManager:
                     remote_addr TEXT,
                     status TEXT NOT NULL DEFAULT 'received',
                     received_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    CONSTRAINT chk_event_status CHECK(status IN ('received', 'processed', 'duplicate', 'rejected'))
+                    CONSTRAINT chk_event_status CHECK(status IN ('received', 'processed', 'duplicate', 'rejected', 'scheduled'))
                 );
                 """
             )
@@ -183,13 +183,15 @@ class DatabaseManager:
                     exit_code INTEGER,
                     error_message TEXT,
                     result_json TEXT,
+                    schedule_id TEXT,
+                    scheduled_at TIMESTAMP,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     queued_at TIMESTAMP,
                     started_at TIMESTAMP,
                     completed_at TIMESTAMP,
                     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (event_id) REFERENCES webhook_events(event_id) ON DELETE CASCADE,
-                    CONSTRAINT chk_task_status CHECK(status IN ('received', 'queued', 'running', 'succeeded', 'failed', 'cancelled', 'timed_out'))
+                    CONSTRAINT chk_task_status CHECK(status IN ('received', 'queued', 'running', 'succeeded', 'failed', 'cancelled', 'timed_out', 'scheduled'))
                 );
                 """
             )
@@ -524,6 +526,46 @@ class DatabaseManager:
                 self._conn.execute("CREATE INDEX IF NOT EXISTS idx_antigravity_resuscitations_status ON antigravity_resuscitations (status);")
                 self._conn.execute("PRAGMA foreign_keys = ON;")
 
+            # Ensure webhook_events table allows 'scheduled' status
+            cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='webhook_events'")
+            row_we = cur.fetchone()
+            if row_we and "'scheduled'" not in row_we[0]:
+                self._conn.execute("PRAGMA foreign_keys = OFF;")
+                self._conn.execute(
+                    """
+                    CREATE TABLE webhook_events_migrated (
+                        event_id TEXT PRIMARY KEY,
+                        source TEXT NOT NULL,
+                        idempotency_key TEXT,
+                        payload_hash TEXT NOT NULL,
+                        headers_json TEXT NOT NULL,
+                        raw_payload TEXT NOT NULL,
+                        method TEXT NOT NULL,
+                        path TEXT NOT NULL,
+                        remote_addr TEXT,
+                        status TEXT NOT NULL DEFAULT 'received',
+                        received_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        CONSTRAINT chk_event_status CHECK(status IN ('received', 'processed', 'duplicate', 'rejected', 'scheduled'))
+                    );
+                    """
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO webhook_events_migrated (
+                        event_id, source, idempotency_key, payload_hash, headers_json,
+                        raw_payload, method, path, remote_addr, status, received_at
+                    ) SELECT event_id, source, idempotency_key, payload_hash, headers_json,
+                             raw_payload, method, path, remote_addr, status, received_at
+                      FROM webhook_events;
+                    """
+                )
+                self._conn.execute("DROP TABLE webhook_events;")
+                self._conn.execute("ALTER TABLE webhook_events_migrated RENAME TO webhook_events;")
+                self._conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_events_source_idemp ON webhook_events (source, idempotency_key);")
+                self._conn.execute("CREATE INDEX IF NOT EXISTS idx_webhook_events_payload_hash ON webhook_events (payload_hash);")
+                self._conn.execute("CREATE INDEX IF NOT EXISTS idx_webhook_events_received_at ON webhook_events (received_at DESC);")
+                self._conn.execute("PRAGMA foreign_keys = ON;")
+
             # Ensure tasks table has schedule_id and scheduled_at columns
             try:
                 self._conn.execute("ALTER TABLE tasks ADD COLUMN schedule_id TEXT;")
@@ -537,6 +579,65 @@ class DatabaseManager:
                 self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_schedule_id ON tasks (schedule_id);")
             except Exception:
                 pass
+
+            # Ensure tasks table allows 'scheduled' status
+            cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'")
+            row_t = cur.fetchone()
+            if row_t and "'scheduled'" not in row_t[0]:
+                self._conn.execute("PRAGMA foreign_keys = OFF;")
+                self._conn.execute(
+                    """
+                    CREATE TABLE tasks_migrated (
+                        task_id TEXT PRIMARY KEY,
+                        event_id TEXT,
+                        source TEXT DEFAULT 'default',
+                        action_type TEXT NOT NULL,
+                        target_action TEXT,
+                        command TEXT,
+                        action_params_json TEXT,
+                        status TEXT NOT NULL DEFAULT 'received',
+                        priority INTEGER NOT NULL DEFAULT 0,
+                        timeout_seconds INTEGER NOT NULL DEFAULT 300,
+                        retry_count INTEGER NOT NULL DEFAULT 0,
+                        max_retries INTEGER NOT NULL DEFAULT 0,
+                        exit_code INTEGER,
+                        error_message TEXT,
+                        result_json TEXT,
+                        schedule_id TEXT,
+                        scheduled_at TIMESTAMP,
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        queued_at TIMESTAMP,
+                        started_at TIMESTAMP,
+                        completed_at TIMESTAMP,
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (event_id) REFERENCES webhook_events(event_id) ON DELETE CASCADE,
+                        CONSTRAINT chk_task_status CHECK(status IN ('received', 'queued', 'running', 'succeeded', 'failed', 'cancelled', 'timed_out', 'scheduled'))
+                    );
+                    """
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO tasks_migrated (
+                        task_id, event_id, source, action_type, target_action, command,
+                        action_params_json, status, priority, timeout_seconds, retry_count,
+                        max_retries, exit_code, error_message, result_json,
+                        schedule_id, scheduled_at,
+                        created_at, queued_at, started_at, completed_at, updated_at
+                    ) SELECT task_id, event_id, source, action_type, target_action, command,
+                             action_params_json, status, priority, timeout_seconds, retry_count,
+                             max_retries, exit_code, error_message, result_json,
+                             schedule_id, scheduled_at,
+                             created_at, queued_at, started_at, completed_at, updated_at
+                      FROM tasks;
+                    """
+                )
+                self._conn.execute("DROP TABLE tasks;")
+                self._conn.execute("ALTER TABLE tasks_migrated RENAME TO tasks;")
+                self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_queue_poll ON tasks (status, priority DESC, created_at ASC);")
+                self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_event_id ON tasks (event_id);")
+                self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks (created_at DESC);")
+                self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_schedule_id ON tasks (schedule_id);")
+                self._conn.execute("PRAGMA foreign_keys = ON;")
         except Exception as e:
             logger.debug("Schema migration notice: %s", e)
 
@@ -692,14 +793,17 @@ class DatabaseManager:
             max_retries = int(task_dict.get("max_retries", 0))
             error_message = task_dict.get("error_message")
             exit_code = task_dict.get("exit_code")
+            schedule_id = task_dict.get("schedule_id")
+            scheduled_at = task_dict.get("scheduled_at")
 
             self._conn.execute(
                 """
                 INSERT INTO tasks (
                     task_id, event_id, source, action_type, target_action, command,
                     action_params_json, status, priority, timeout_seconds,
-                    retry_count, max_retries, error_message, exit_code
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    retry_count, max_retries, error_message, exit_code,
+                    schedule_id, scheduled_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -716,6 +820,8 @@ class DatabaseManager:
                     max_retries,
                     error_message,
                     exit_code,
+                    schedule_id,
+                    scheduled_at,
                 ),
             )
             self._commit_and_shrink()

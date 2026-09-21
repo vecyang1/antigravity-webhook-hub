@@ -285,6 +285,10 @@ class Task:
     source: str = "default"
     action_type: str = "cli"
     command: Optional[str] = None
+    target_action: Optional[str] = None
+    action_params: Optional[dict[str, Any]] = None
+    schedule_id: Optional[str] = None
+    scheduled_at: Optional[str] = None
     status: str = TaskStatus.RECEIVED.value
     priority: int = 0
     created_at: float = field(default_factory=time.time)
@@ -304,6 +308,10 @@ class Task:
             "source": self.source,
             "action_type": self.action_type,
             "command": self.command,
+            "target_action": self.target_action,
+            "action_params": self.action_params,
+            "schedule_id": self.schedule_id,
+            "scheduled_at": self.scheduled_at,
             "status": self.status,
             "priority": self.priority,
             "created_at": self.created_at,
@@ -325,6 +333,10 @@ class Task:
             source=data.get("source", "default"),
             action_type=data.get("action_type", "cli"),
             command=data.get("command"),
+            target_action=data.get("target_action"),
+            action_params=data.get("action_params"),
+            schedule_id=data.get("schedule_id"),
+            scheduled_at=data.get("scheduled_at"),
             status=data.get("status", TaskStatus.RECEIVED.value),
             priority=data.get("priority", 0),
             created_at=data.get("created_at", time.time()),

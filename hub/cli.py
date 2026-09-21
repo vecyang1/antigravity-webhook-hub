@@ -202,7 +202,7 @@ async def run_server_foreground(config: AppConfig, pid_path: Optional[Path] = No
             _lazy_loaded.add("tasks")
             from hub.routes.tasks import register_task_routes
             register_task_routes(server, config, db_mgr, dispatcher, broker)
-        elif (p.startswith("/schedules") or p.startswith("/api/v1/schedules") or p.startswith("/webhook/scheduler") or p.startswith("/webhook/cron")) and "schedules" not in _lazy_loaded:
+        elif (p.startswith("/schedules") or p.startswith("/api/schedules") or p.startswith("/api/v1/schedules") or p.startswith("/webhook/scheduler") or p.startswith("/webhook/cron")) and "schedules" not in _lazy_loaded:
             _lazy_loaded.add("schedules")
             from hub.routes.schedules import register_schedule_routes
             register_schedule_routes(server, config, db_mgr, scheduler, dispatcher, broker)

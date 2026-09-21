@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.1] - 2026-09-21
+
+### Fixed & Hardened
+- **SQLite SSOT 状态约束与事件落盘修复 (`hub/db.py`)**:
+  - 修复 `webhook_events` 表 `chk_event_status` 约束未包含 `'scheduled'` 状态导致的 `IntegrityError` 异常与静默丢弃缺陷；自动执行迁移无缝兼容存量数据库。
+  - 在 `tasks` 表结构 DDL 中补充 `schedule_id TEXT` 与 `scheduled_at TIMESTAMP` 列，并在 `insert_task` 中完整持久化，确保触发生成的执行任务与原始调度定义强关联并可被溯源查询。
+- **调度时间解析严格校验与防御机制 (`hub/scheduler.py`, `hub/routes/webhook.py`)**:
+  - 彻底杜绝非法/乱码时间字符串被静默替换为 `now + 60s` 的静默降级行为；重构 `parse_schedule_time`，对非法输入抛出 `ValueError`，使 Webhook 摄取端能精准返回 HTTP 400 Bad Request。
+  - 扩展时间解析器，完整支持 ISO 8601、`YYYY-MM-DD`、Spark 邮件 `DD/MM/YYYY`、`YYYY/MM/DD` 及相对时延语法（`2d`, `12h`, `30m`, `45s`）。
+- **原生异步 Webhook / HTTP 分发器 (`hub/dispatcher.py`)**:
+  - 实现原生 HTTP Webhook 分发逻辑，当 `action_type` 为 `webhook`、`http`、`webhook_dispatch` 或目标为 URL 时，通过执行器直接发起异步 HTTP 请求（支持 GET/POST/PUT/DELETE、自定义请求头、JSON 载荷与响应状态码校验），彻底修复先前错误将 URL 作为 Shell 命令执行报 127 的缺陷。
+  - 支持向生产 n8n (`https://n.worldinspirelab.com`) 及各类三方回调端点稳定分发执行。
+- **RESTful API 别名与 CLI 懒加载解析器补全 (`hub/routes/schedules.py`, `hub/cli.py`)**:
+  - 补全 `/api/schedules` 与 `/api/schedules/summary` 路由注册，在 CLI `_dynamic_route_resolver` 中纳入 `/api/schedules` 路径，避免前端或外部调用报 404。
+- **Web 控制台一键预设与执行目标扩展 (`hub/routes/dashboard_template.py`)**:
+  - 在调度创建模态框新增快速预设按钮："Anker保修回复检查 (Spark 724913)"、"n8n Cloud Webhook"、"AgentAPI 定时心跳"。
+  - 动作目标类型下拉框新增 "Webhook HTTP Call" 选项，支持一键配置三方 Webhook 触发。
+  - 在任务调度列表渲染中增加失败信息与 `last_error` 警示气泡。
+- **端到端两面对账自动化测试扩充 (`tests/e2e/test_scheduler_e2e.py`)**:
+  - 新增 `test_e2e_webhook_http_dispatch_flow` 端到端验证用例，涵盖合法 Webhook HTTP 触发执行与 502 服务端异常拦截对账。
+
 ## [1.17.0] - 2026-09-21
 
 ### Added

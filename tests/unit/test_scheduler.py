@@ -245,3 +245,64 @@ async def test_scheduler_trigger_now(tmp_path):
     assert len(dispatcher.enqueued_tasks) == 1
 
     db.close()
+
+
+def test_parse_schedule_time_validation_and_formats():
+    """Verify strict validation and diverse date formats for schedule parsing."""
+    base = datetime.datetime(2026, 9, 21, 12, 0, 0, tzinfo=datetime.timezone.utc)
+
+    # 1. Spark dd/MM/yyyy date format
+    dt_spark = parse_schedule_time(scheduled_at="23/09/2026", base_dt=base)
+    # Default 9am local (+08:00) -> 01:00 UTC
+    assert dt_spark == datetime.datetime(2026, 9, 23, 1, 0, 0, tzinfo=datetime.timezone.utc)
+
+    # 2. Spark yyyy-MM-ddTHH:mm format
+    dt_spark_iso = parse_schedule_time(scheduled_at="2026-09-23T16:18", base_dt=base)
+    assert dt_spark_iso == datetime.datetime(2026, 9, 23, 8, 18, 0, tzinfo=datetime.timezone.utc)
+
+    # 3. yyyy/MM/dd format
+    dt_slash = parse_schedule_time(scheduled_at="2026/09/23", base_dt=base)
+    assert dt_slash == datetime.datetime(2026, 9, 23, 1, 0, 0, tzinfo=datetime.timezone.utc)
+
+    # 4. Strict failure on completely invalid string
+    with pytest.raises(ValueError, match="Invalid scheduled_at format"):
+        parse_schedule_time(scheduled_at="invalid-garbage-date")
+
+    # 5. Strict failure on invalid delay string
+    with pytest.raises(ValueError, match="Invalid delay format"):
+        parse_schedule_time(delay="2lightyears")
+
+
+async def test_scheduler_task_schedule_id_linkage_and_history(tmp_path):
+    """Verify that triggered tasks preserve schedule_id and are queryable via schedule history."""
+    db_file = tmp_path / "test_hub_linkage.db"
+    db = DatabaseManager(str(db_file))
+    dispatcher = MockDispatcher()
+    scheduler = TaskScheduler(db=db, dispatcher=dispatcher)
+
+    sched = await scheduler.create_schedule(
+        name="Linked Scheduled Task",
+        schedule_type="once",
+        delay_seconds=0,
+        action_type="cli",
+        command="echo linked",
+    )
+
+    await scheduler.sweep_due()
+    assert len(dispatcher.enqueued_tasks) == 1
+    task_id = dispatcher.enqueued_tasks[0]
+
+    # Verify task row in SQLite SSOT has schedule_id populated
+    task_row = db.get_task(task_id)
+    assert task_row is not None
+    assert task_row["schedule_id"] == sched.schedule_id
+    assert task_row["scheduled_at"] is not None
+
+    # Verify get_schedule_history queries by schedule_id accurately
+    history = db.get_schedule_history(sched.schedule_id)
+    assert len(history) == 1
+    assert history[0]["task_id"] == task_id
+    assert history[0]["schedule_id"] == sched.schedule_id
+
+    db.close()
+

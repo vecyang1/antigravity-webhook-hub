@@ -23,6 +23,7 @@ import pytest
 from hub.config import AppConfig
 from hub.db import DatabaseManager
 from hub.dispatcher import TaskDispatcher
+from hub.models import HTTPRequest, HTTPResponse
 from hub.routes.schedules import register_schedule_routes
 from hub.routes.tasks import register_task_routes
 from hub.routes.webhook import register_webhook_routes
@@ -215,3 +216,135 @@ async def test_e2e_sleep_wake_catch_up_recovery(e2e_scheduler_env: Any):
     updated = db.get_schedule(sched_obj.schedule_id)
     assert updated["status"] == "completed"
     assert updated["total_runs"] == 1
+
+
+async def test_e2e_webhook_http_dispatch_flow(e2e_scheduler_env: Any):
+    """End-to-End Test for TaskDispatcher Native Webhook/HTTP Dispatch.
+    
+    Verifies:
+    1. Legitimate path: Scheduled webhook task targeting HTTP receiver triggers, executes POST,
+       sends JSON payload with custom headers, and marks task as SUCCEEDED.
+    2. Failure path: Webhook targeting endpoint that returns HTTP 502 fails cleanly,
+       records stderr with HTTP 502, and marks task as FAILED.
+    """
+    base_url, server, config, db, scheduler, dispatcher, broker = e2e_scheduler_env
+
+    # Setup mock endpoints on server
+    received_posts: list[dict[str, Any]] = []
+
+    async def mock_receiver(req: HTTPRequest) -> HTTPResponse:
+        data = req.json()
+        received_posts.append({"headers": req.headers, "data": data})
+        return HTTPResponse.json({"result": "success", "echo": data}, status_code=200)
+
+    async def mock_failing_receiver(req: HTTPRequest) -> HTTPResponse:
+        return HTTPResponse.text("Service Unavailable", status_code=502)
+
+    server.add_route("POST", "/test/target-endpoint", mock_receiver)
+    server.add_route("POST", "/test/target-failing", mock_failing_receiver)
+
+    # 1. Legitimate Webhook Dispatch via ingress /webhook
+    payload = {
+        "source": "e2e_test",
+        "action": "webhook",
+        "url": f"{base_url}/test/target-endpoint",
+        "method": "POST",
+        "payload": {"message": "hello n8n", "priority": "high"},
+        "headers": {"X-Custom-Header": "TestToken123"},
+        "delay_seconds": 0.2,
+    }
+    raw_body = json.dumps(payload).encode("utf-8")
+    ts = int(time.time())
+    sig = generate_hmac_signature(config.security.webhook_secret, raw_body, ts)
+    headers = {
+        "Content-Type": "application/json",
+        "X-Hub-Signature-256": sig,
+        "X-Hub-Timestamp": str(ts),
+    }
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(f"{base_url}/webhook", content=raw_body, headers=headers)
+        assert resp.status_code == 202
+        res_data = resp.json()
+        sched_id = res_data["schedule_id"]
+
+        # Wait for scheduler tick and task execution
+        executed = False
+        for _ in range(30):
+            await asyncio.sleep(0.1)
+            sched_rec = db.get_schedule(sched_id)
+            if sched_rec and sched_rec["status"] == "completed":
+                executed = True
+                break
+
+        assert executed is True, "Webhook dispatch schedule did not complete"
+
+        # Verify receiver received the payload
+        assert len(received_posts) == 1
+        assert received_posts[0]["data"] == {"message": "hello n8n", "priority": "high"}
+        assert received_posts[0]["headers"].get("x-custom-header") == "TestToken123"
+
+        # Verify Task status in DB
+        history = db.get_schedule_history(sched_id)
+        assert len(history) == 1
+        task_id = history[0]["task_id"]
+
+        # Wait briefly for Dispatcher
+        for _ in range(20):
+            task_row = db.get_task(task_id)
+            if task_row and task_row["status"] == "succeeded":
+                break
+            await asyncio.sleep(0.1)
+
+        task_row = db.get_task(task_id)
+        assert task_row["status"] == "succeeded"
+        logs = db.get_execution_logs(task_id)
+        assert any("HTTP 200" in l["line"] for l in logs)
+
+        # 2. Failure Path: Webhook targeting 502 endpoint
+        fail_payload = {
+            "source": "e2e_test",
+            "action": "webhook",
+            "url": f"{base_url}/test/target-failing",
+            "method": "POST",
+            "payload": {"status": "must_fail"},
+            "delay_seconds": 0.2,
+        }
+        fail_raw = json.dumps(fail_payload).encode("utf-8")
+        fail_ts = int(time.time())
+        fail_sig = generate_hmac_signature(config.security.webhook_secret, fail_raw, fail_ts)
+        fail_headers = {
+            "Content-Type": "application/json",
+            "X-Hub-Signature-256": fail_sig,
+            "X-Hub-Timestamp": str(fail_ts),
+        }
+
+        resp_fail = await client.post(f"{base_url}/webhook", content=fail_raw, headers=fail_headers)
+        assert resp_fail.status_code == 202
+        fail_sched_id = resp_fail.json()["schedule_id"]
+
+        executed_fail = False
+        for _ in range(30):
+            await asyncio.sleep(0.1)
+            sched_rec = db.get_schedule(fail_sched_id)
+            if sched_rec and sched_rec["status"] == "completed":
+                executed_fail = True
+                break
+        assert executed_fail is True
+
+        fail_history = db.get_schedule_history(fail_sched_id)
+        assert len(fail_history) == 1
+        fail_task_id = fail_history[0]["task_id"]
+
+        for _ in range(20):
+            t_row = db.get_task(fail_task_id)
+            if t_row and t_row["status"] == "failed":
+                break
+            await asyncio.sleep(0.1)
+
+        t_row = db.get_task(fail_task_id)
+        assert t_row["status"] == "failed"
+        assert t_row["exit_code"] == 502
+        fail_logs = db.get_execution_logs(fail_task_id)
+        assert any("502" in l["line"] for l in fail_logs)
+
