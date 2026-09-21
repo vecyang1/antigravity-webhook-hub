@@ -1093,6 +1093,88 @@ def test_cmd_schedule_show_offline(tmp_path, capsys):
     assert "echo detail" in captured
 
 
+def test_cmd_schedule_http_error_no_silent_fallback(capsys):
+    """Verify CLI catches and reports server HTTP errors (e.g. 500, 400) without silent fallback."""
+    import urllib.error
+    mock_err = urllib.error.HTTPError(
+        url="http://127.0.0.1:9423/schedules/sch_test/trigger",
+        code=500,
+        msg="Internal Server Error",
+        hdrs={},
+        fp=io.BytesIO(b'{"error": "server_crash", "message": "Disk I/O failure"}'),
+    )
+
+    with patch("urllib.request.urlopen", side_effect=mock_err):
+        code = main(["schedule", "trigger", "sch_test"])
+        assert code == 1
+        captured = capsys.readouterr()
+        assert "500" in (captured.out + captured.err)
+        assert "Disk I/O failure" in (captured.out + captured.err)
+
+
+def test_cmd_schedule_json_error_output(capsys):
+    """Verify schedule subcommand outputs structured JSON when --json is provided on error."""
+    code = main(["schedule", "trigger", "--json"])
+    assert code == 1
+    captured = capsys.readouterr()
+    # Should produce valid JSON on stdout
+    data = json.loads(captured.out)
+    assert data["status"] == "error"
+    assert "Specify a schedule_id to trigger" in data["message"]
+
+
+def test_cmd_schedule_cjk_column_formatting(tmp_path, capsys):
+    """Verify schedule list formats CJK schedule names cleanly without column blowout."""
+    db_path = tmp_path / "test_cjk.db"
+    db_mgr = DatabaseManager(str(db_path))
+    db_mgr.init_schema()
+    db_mgr.insert_schedule({
+        "name": "Anker插头售后保修回复提醒 (Email 724913)",
+        "schedule_type": "once",
+        "scheduled_at": "2026-09-23T08:18:00Z",
+        "next_run_at": "2026-09-23T08:18:00Z",
+        "action_type": "cli",
+        "command": "python3 check_anker.py",
+        "status": "active",
+    })
+    db_mgr.close()
+
+    code = main(["schedule", "list", "--db", str(db_path)])
+    assert code == 0
+    captured = capsys.readouterr().out
+    assert "Anker插头售后保修回复提醒..." in captured
+    assert "active" in captured
+    assert "2026-09-23T08:18:00" in captured
+
+
+def test_check_anker_reminder_idempotent_registration():
+    """Verify check_anker_reminder.py does not insert duplicate schedules when already active."""
+    from scripts.check_anker_reminder import register_with_webhook_hub
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = json.dumps({
+        "status": "success",
+        "schedules": [
+            {
+                "schedule_id": "sch_existing_anker",
+                "name": "Anker插头售后保修回复提醒 (Email 724913)",
+                "status": "active",
+                "next_run_at": "2026-09-23T08:18:00Z",
+            }
+        ],
+    }).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_url:
+        result = register_with_webhook_hub(hub_url="http://127.0.0.1:9423")
+        assert result is True
+        # Only GET query was executed, no POST creation was called
+        assert mock_url.call_count == 1
+        req_called = mock_url.call_args[0][0]
+        assert req_called.get_method() == "GET"
+
+
+
 
 
 

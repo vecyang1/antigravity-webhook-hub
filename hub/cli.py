@@ -1570,20 +1570,55 @@ def cmd_schedule(args: argparse.Namespace) -> int:
             print("  No scheduled tasks matching filter criteria.")
             return 0
 
-        print(f"{'SCHEDULE ID':<22} {'NAME':<28} {'TYPE':<10} {'STATUS':<10} {'NEXT RUN (UTC)':<20} {'ACTION'}")
+        def _col_pad(text: str, target_width: int) -> str:
+            """Pad or truncate string considering East Asian display widths (CJK = 2 columns)."""
+            import unicodedata
+            w = 0
+            chars = []
+            for ch in text:
+                cw = 2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1
+                if w + cw > target_width:
+                    break
+                chars.append(ch)
+                w += cw
+            truncated = "".join(chars)
+            if len(truncated) < len(text) and target_width > 3:
+                w = 0
+                chars = []
+                for ch in text:
+                    cw = 2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1
+                    if w + cw > target_width - 3:
+                        break
+                    chars.append(ch)
+                    w += cw
+                truncated = "".join(chars) + "..."
+                w += 3
+            pad = target_width - w
+            return truncated + (" " * max(0, pad))
+
+        col_id = f"{'SCHEDULE ID':<22}"
+        col_name = _col_pad("NAME", 28)
+        col_type = f"{'TYPE':<10}"
+        col_status = f"{'STATUS':<10}"
+        col_next = f"{'NEXT RUN (UTC)':<20}"
+        col_action = "ACTION"
+        print(f"{col_id} {col_name} {col_type} {col_status} {col_next} {col_action}")
         print("-" * 105)
         for s in sched_items:
             sid = str(s.get("schedule_id", ""))
             name = str(s.get("name", ""))
-            if len(name) > 26:
-                name = name[:23] + "..."
             stype = str(s.get("schedule_type", ""))
             status_val = str(s.get("status", ""))
             next_run = str(s.get("next_run_at") or "-")[:19]
             action_desc = str(s.get("command") or s.get("target_action") or s.get("action_type") or "").strip().replace("\n", " ")
-            if len(action_desc) > 30:
-                action_desc = action_desc[:27] + "..."
-            print(f"{sid:<22} {name:<28} {stype:<10} {status_val:<10} {next_run:<20} {action_desc}")
+
+            c_sid = f"{sid:<22}"
+            c_name = _col_pad(name, 28)
+            c_stype = f"{stype:<10}"
+            c_status = f"{status_val:<10}"
+            c_next = f"{next_run:<20}"
+            c_action = _col_pad(action_desc, 30) if len(action_desc) > 30 else action_desc
+            print(f"{c_sid} {c_name} {c_stype} {c_status} {c_next} {c_action}")
         print("==================================================")
         return 0
 
@@ -1666,8 +1701,15 @@ def cmd_schedule(args: argparse.Namespace) -> int:
                             print(f"  Next Run:    {next_run}")
                         return 0
             except urllib.error.HTTPError as e:
-                err_text = e.read().decode("utf-8")
-                print(f"Error from server ({e.code}): {err_text}", file=sys.stderr)
+                err_text = ""
+                try:
+                    err_text = e.read().decode("utf-8")
+                except Exception:
+                    pass
+                if is_json:
+                    print(json.dumps({"status": "error", "code": e.code, "message": err_text or e.reason}))
+                else:
+                    print(f"Error from server ({e.code}): {err_text or e.reason}", file=sys.stderr)
                 return 1
             except Exception:
                 pass
@@ -1731,7 +1773,10 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     # --------------------------------------------------------------------------
     elif action in ("trigger", "run"):
         if not schedule_id:
-            print("Error: Specify a schedule_id to trigger.", file=sys.stderr)
+            msg = "Specify a schedule_id to trigger."
+            if is_json:
+                print(json.dumps({"status": "error", "message": msg}))
+            print(f"Error: {msg}", file=sys.stderr)
             print("Usage: ./bin/webhook-hub schedule trigger <schedule_id>", file=sys.stderr)
             return 1
 
@@ -1756,9 +1801,19 @@ def cmd_schedule(args: argparse.Namespace) -> int:
                                 print(f"  Enqueued Task ID: {tid}")
                         return 0
             except urllib.error.HTTPError as e:
-                if e.code == 404:
-                    print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
-                    return 1
+                err_text = ""
+                try:
+                    err_text = e.read().decode("utf-8")
+                except Exception:
+                    pass
+                if is_json:
+                    print(json.dumps({"status": "error", "code": e.code, "message": err_text or e.reason}))
+                else:
+                    if e.code == 404:
+                        print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
+                    else:
+                        print(f"Error from server ({e.code}): {err_text or e.reason}", file=sys.stderr)
+                return 1
             except Exception:
                 pass
 
@@ -1769,7 +1824,10 @@ def cmd_schedule(args: argparse.Namespace) -> int:
             db_mgr = DatabaseManager(db_path)
             sched = db_mgr.get_schedule(schedule_id)
             if not sched:
-                print(f"Error: Schedule {schedule_id} not found in database ({db_path}).", file=sys.stderr)
+                msg = f"Schedule {schedule_id} not found in database ({db_path})."
+                if is_json:
+                    print(json.dumps({"status": "error", "message": msg}))
+                print(f"Error: {msg}", file=sys.stderr)
                 return 1
 
             now_dt = datetime.datetime.now(datetime.timezone.utc)
@@ -1849,7 +1907,10 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     # --------------------------------------------------------------------------
     elif action == "pause":
         if not schedule_id:
-            print("Error: Specify a schedule_id to pause.", file=sys.stderr)
+            msg = "Specify a schedule_id to pause."
+            if is_json:
+                print(json.dumps({"status": "error", "message": msg}))
+            print(f"Error: {msg}", file=sys.stderr)
             print("Usage: ./bin/webhook-hub schedule pause <schedule_id>", file=sys.stderr)
             return 1
 
@@ -1865,9 +1926,19 @@ def cmd_schedule(args: argparse.Namespace) -> int:
                             print(f"Schedule {schedule_id} paused successfully (live gateway).")
                         return 0
             except urllib.error.HTTPError as e:
-                if e.code == 404:
-                    print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
-                    return 1
+                err_text = ""
+                try:
+                    err_text = e.read().decode("utf-8")
+                except Exception:
+                    pass
+                if is_json:
+                    print(json.dumps({"status": "error", "code": e.code, "message": err_text or e.reason}))
+                else:
+                    if e.code == 404:
+                        print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
+                    else:
+                        print(f"Error from server ({e.code}): {err_text or e.reason}", file=sys.stderr)
+                return 1
             except Exception:
                 pass
 
@@ -1876,7 +1947,10 @@ def cmd_schedule(args: argparse.Namespace) -> int:
             db_mgr = DatabaseManager(db_path)
             sched = db_mgr.get_schedule(schedule_id)
             if not sched:
-                print(f"Error: Schedule {schedule_id} not found in database ({db_path}).", file=sys.stderr)
+                msg = f"Schedule {schedule_id} not found in database ({db_path})."
+                if is_json:
+                    print(json.dumps({"status": "error", "message": msg}))
+                print(f"Error: {msg}", file=sys.stderr)
                 return 1
             ok = db_mgr.update_schedule_status(schedule_id, "paused")
             db_mgr.close()
@@ -1887,7 +1961,10 @@ def cmd_schedule(args: argparse.Namespace) -> int:
                     print(f"Schedule {schedule_id} paused in SQLite ({db_path}).")
                 return 0
             else:
-                print(f"Error: Failed to pause schedule {schedule_id}.", file=sys.stderr)
+                msg = f"Failed to pause schedule {schedule_id}."
+                if is_json:
+                    print(json.dumps({"status": "error", "message": msg}))
+                print(f"Error: {msg}", file=sys.stderr)
                 return 1
         except Exception as err:
             print(f"Error accessing database ({db_path}): {err}", file=sys.stderr)
@@ -1898,7 +1975,10 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     # --------------------------------------------------------------------------
     elif action == "resume":
         if not schedule_id:
-            print("Error: Specify a schedule_id to resume.", file=sys.stderr)
+            msg = "Specify a schedule_id to resume."
+            if is_json:
+                print(json.dumps({"status": "error", "message": msg}))
+            print(f"Error: {msg}", file=sys.stderr)
             print("Usage: ./bin/webhook-hub schedule resume <schedule_id>", file=sys.stderr)
             return 1
 
@@ -1914,9 +1994,19 @@ def cmd_schedule(args: argparse.Namespace) -> int:
                             print(f"Schedule {schedule_id} resumed successfully (live gateway).")
                         return 0
             except urllib.error.HTTPError as e:
-                if e.code == 404:
-                    print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
-                    return 1
+                err_text = ""
+                try:
+                    err_text = e.read().decode("utf-8")
+                except Exception:
+                    pass
+                if is_json:
+                    print(json.dumps({"status": "error", "code": e.code, "message": err_text or e.reason}))
+                else:
+                    if e.code == 404:
+                        print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
+                    else:
+                        print(f"Error from server ({e.code}): {err_text or e.reason}", file=sys.stderr)
+                return 1
             except Exception:
                 pass
 
@@ -1926,7 +2016,10 @@ def cmd_schedule(args: argparse.Namespace) -> int:
             db_mgr = DatabaseManager(db_path)
             sched = db_mgr.get_schedule(schedule_id)
             if not sched:
-                print(f"Error: Schedule {schedule_id} not found in database ({db_path}).", file=sys.stderr)
+                msg = f"Schedule {schedule_id} not found in database ({db_path})."
+                if is_json:
+                    print(json.dumps({"status": "error", "message": msg}))
+                print(f"Error: {msg}", file=sys.stderr)
                 return 1
             updates: dict[str, Any] = {"status": "active"}
             if sched.get("schedule_type") == "recurring" and sched.get("cron_expression"):
@@ -1956,7 +2049,10 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     # --------------------------------------------------------------------------
     elif action in ("delete", "remove", "rm", "cancel"):
         if not schedule_id:
-            print("Error: Specify a schedule_id to delete.", file=sys.stderr)
+            msg = "Specify a schedule_id to delete."
+            if is_json:
+                print(json.dumps({"status": "error", "message": msg}))
+            print(f"Error: {msg}", file=sys.stderr)
             print("Usage: ./bin/webhook-hub schedule delete <schedule_id>", file=sys.stderr)
             return 1
 
@@ -1972,9 +2068,19 @@ def cmd_schedule(args: argparse.Namespace) -> int:
                             print(f"Schedule {schedule_id} deleted successfully (live gateway).")
                         return 0
             except urllib.error.HTTPError as e:
-                if e.code == 404:
-                    print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
-                    return 1
+                err_text = ""
+                try:
+                    err_text = e.read().decode("utf-8")
+                except Exception:
+                    pass
+                if is_json:
+                    print(json.dumps({"status": "error", "code": e.code, "message": err_text or e.reason}))
+                else:
+                    if e.code == 404:
+                        print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
+                    else:
+                        print(f"Error from server ({e.code}): {err_text or e.reason}", file=sys.stderr)
+                return 1
             except Exception:
                 pass
 
@@ -1983,7 +2089,10 @@ def cmd_schedule(args: argparse.Namespace) -> int:
             db_mgr = DatabaseManager(db_path)
             sched = db_mgr.get_schedule(schedule_id)
             if not sched:
-                print(f"Error: Schedule {schedule_id} not found in database ({db_path}).", file=sys.stderr)
+                msg = f"Schedule {schedule_id} not found in database ({db_path})."
+                if is_json:
+                    print(json.dumps({"status": "error", "message": msg}))
+                print(f"Error: {msg}", file=sys.stderr)
                 return 1
             ok = db_mgr.delete_schedule(schedule_id)
             db_mgr.close()
@@ -1994,7 +2103,10 @@ def cmd_schedule(args: argparse.Namespace) -> int:
                     print(f"Schedule {schedule_id} deleted from SQLite ({db_path}).")
                 return 0
             else:
-                print(f"Error: Failed to delete schedule {schedule_id}.", file=sys.stderr)
+                msg = f"Failed to delete schedule {schedule_id}."
+                if is_json:
+                    print(json.dumps({"status": "error", "message": msg}))
+                print(f"Error: {msg}", file=sys.stderr)
                 return 1
         except Exception as err:
             print(f"Error accessing database ({db_path}): {err}", file=sys.stderr)
@@ -2005,7 +2117,10 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     # --------------------------------------------------------------------------
     elif action in ("show", "get", "inspect", "detail"):
         if not schedule_id:
-            print("Error: Specify a schedule_id to show.", file=sys.stderr)
+            msg = "Specify a schedule_id to show."
+            if is_json:
+                print(json.dumps({"status": "error", "message": msg}))
+            print(f"Error: {msg}", file=sys.stderr)
             print("Usage: ./bin/webhook-hub schedule show <schedule_id>", file=sys.stderr)
             return 1
 
@@ -2018,9 +2133,19 @@ def cmd_schedule(args: argparse.Namespace) -> int:
                     if resp.status == 200:
                         detail_data = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
-                if e.code == 404:
-                    print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
-                    return 1
+                err_text = ""
+                try:
+                    err_text = e.read().decode("utf-8")
+                except Exception:
+                    pass
+                if is_json:
+                    print(json.dumps({"status": "error", "code": e.code, "message": err_text or e.reason}))
+                else:
+                    if e.code == 404:
+                        print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
+                    else:
+                        print(f"Error from server ({e.code}): {err_text or e.reason}", file=sys.stderr)
+                return 1
             except Exception:
                 pass
 
@@ -2030,7 +2155,10 @@ def cmd_schedule(args: argparse.Namespace) -> int:
                 db_mgr = DatabaseManager(db_path)
                 sched = db_mgr.get_schedule(schedule_id)
                 if not sched:
-                    print(f"Error: Schedule {schedule_id} not found in database ({db_path}).", file=sys.stderr)
+                    msg = f"Schedule {schedule_id} not found in database ({db_path})."
+                    if is_json:
+                        print(json.dumps({"status": "error", "message": msg}))
+                    print(f"Error: {msg}", file=sys.stderr)
                     return 1
                 history = db_mgr.get_schedule_history(schedule_id, limit=10)
                 detail_data = {"status": "success", "schedule": sched, "history": history}

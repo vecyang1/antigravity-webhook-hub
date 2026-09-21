@@ -185,9 +185,42 @@ def notify_slack(result: dict[str, Any], channel: str = DEFAULT_SLACK_CHANNEL) -
 
 
 def register_with_webhook_hub(hub_url: str = HUB_URL, target_date_iso: str = "2026-09-23T16:18:00+08:00") -> bool:
-    """Register this check as an active delayed schedule in Webhook Hub SSOT."""
+    """Register this check as an active delayed schedule in Webhook Hub SSOT with idempotency."""
+    schedule_name = "Anker插头售后保修回复提醒 (Email 724913)"
+
+    # 1. Preflight check for existing active schedule via live API
+    try:
+        query_url = f"{hub_url}/schedules?status=active&limit=50"
+        with urllib.request.urlopen(urllib.request.Request(query_url, method="GET"), timeout=3) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                for s in data.get("schedules", []):
+                    if s.get("name") == schedule_name and s.get("status") == "active":
+                        sid = s.get("schedule_id")
+                        next_run = s.get("next_run_at")
+                        print(f"[INFO] Schedule already active in Webhook Hub SSOT: {sid} (Next run: {next_run}). Skipping duplicate registration.")
+                        return True
+    except Exception:
+        pass
+
+    # 2. Preflight check via direct SQLite if gateway offline
+    try:
+        from hub.db import DatabaseManager
+        db = DatabaseManager("data/webhook_hub.db")
+        existing_scheds, _ = db.list_schedules(status="active", limit=50)
+        db.close()
+        for s in existing_scheds:
+            if s.get("name") == schedule_name and s.get("status") == "active":
+                sid = s.get("schedule_id")
+                next_run = s.get("next_run_at")
+                print(f"[INFO] Schedule already active in SQLite SSOT: {sid} (Next run: {next_run}). Skipping duplicate registration.")
+                return True
+    except Exception:
+        pass
+
+    # 3. Proceed with registration
     sched_payload = {
-        "name": "Anker插头售后保修回复提醒 (Email 724913)",
+        "name": schedule_name,
         "schedule_type": "once",
         "scheduled_at": target_date_iso,
         "action_type": "cli",

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.3] - 2026-09-21
+
+### Fixed & Hardened
+- **CLI Schedule 命令错误拦截与静默降级防御 (`hub/cli.py`)**:
+  - 修复 `cmd_schedule` 中各子动作 (`trigger`, `pause`, `resume`, `delete`, `show`, `create`) 在网关返回非 404 HTTP 错误（如 400, 422, 500）时静默吞噬异常并错误穿透降级至离线 SQLite SSOT 的缺陷；确保精准汇报服务端错误信息并返回状态码 1。
+  - 为所有子动作在发生参数校验错误或接口异常时，在提供 `--json` 参数的情形下统一输出结构化 JSON 错误报文，杜绝 AI Agent 解析异常。
+- **终端表格中日韩 (CJK) 双宽字符列宽对齐 (`hub/cli.py`)**:
+  - 实现 `_col_pad` 辅助函数，基于 `unicodedata.east_asian_width` 正确计算 CJK 全角字符终端显示宽度，彻底解决中文任务名称（如 `Anker插头售后保修回复提醒...`）导致后续 `TYPE`, `STATUS`, `NEXT RUN`, `ACTION` 表格列严重错位漂移的视觉缺陷。
+- **Spark 提醒注册幂等性保障 (`scripts/check_anker_reminder.py`)**:
+  - 在 `register_with_webhook_hub` 中增加预检逻辑，注册前自动探测现有活跃调度，避免重复执行造成多次落盘与重复提醒调度生成。
+- **回归与单元测试扩充 (`tests/unit/test_cli.py`)**:
+  - 新增 4 个单元测试用例，覆盖 HTTP 错误无静默穿透、JSON 错误输出规范、CJK 列宽对齐及提醒脚本注册幂等性验证（全套测试 448 项通过）。
+
 ## [1.17.2] - 2026-09-21
 
 ### Added & Verified
