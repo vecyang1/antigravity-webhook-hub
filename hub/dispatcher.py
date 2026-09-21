@@ -104,6 +104,16 @@ class TaskDispatcher:
             except Exception as e:
                 logger.warning("Crash recovery check failed: %s", e)
 
+        # Resume background delivery watchers for any active Antigravity sessions
+        try:
+            from hub.antigravity.session_manager import resume_active_watchers
+            resumed = await resume_active_watchers(self.db, self.broker)
+            if resumed > 0:
+                logger.info("Resumed %d active Antigravity Slack watchers on boot", resumed)
+        except Exception as e:
+            logger.warning("Failed to resume active Antigravity watchers: %s", e)
+
+
         # Initial auto-pick sweep on startup
         try:
             await self.sweep_unprocessed_tasks(reason="boot_startup")

@@ -1777,6 +1777,45 @@ class AntigravityWatchdog:
                 self.db.update_resuscitation_status(res_id, new_st)
                 if session_info.has_active_schedule and self.db:
                     self.db.update_conversation_schedule_trigger(convo_id, time.time(), ls_pid=self.last_known_ls_pid)
+                
+                # Remount Slack watcher if this is an active session thread
+                if hasattr(self.db, "execute_read"):
+                    try:
+                        active_threads = await self.db.execute_read(
+                            "SELECT * FROM session_threads WHERE conversation_id = ? AND status = 'active'", 
+                            (target_convo_id,)
+                        )
+                        if active_threads:
+                            from hub.antigravity.session_manager import cancel_active_watcher
+                            from hub.antigravity.result_delivery import watch_and_deliver_result
+                            from hub.antigravity.thread_notifier import ThreadNotifier
+                            import asyncio
+                            import time
+                            
+                            notifier = ThreadNotifier()
+                            for sess in active_threads:
+                                channel = sess.get("channel_id")
+                                root_ts = sess.get("root_ts")
+                                task_id = sess.get("task_id")
+                                if channel and root_ts:
+                                    logger.info("Remounting Slack watcher for resuscitated session %s (Task: %s)", target_convo_id, task_id)
+                                    cancel_active_watcher(target_convo_id)
+                                    asyncio.create_task(
+                                        watch_and_deliver_result(
+                                            notifier=notifier,
+                                            channel=channel,
+                                            thread_ts=root_ts,
+                                            conversation_id=target_convo_id,
+                                            task_id=task_id,
+                                            start_time=time.time(),
+                                            is_follow_up=True,
+                                            start_step=0,
+                                            broker=self.broker,
+                                        )
+                                    )
+                    except Exception as e:
+                        logger.warning("Failed to remount watcher during resuscitation: %s", e)
+
                 logger.info("Successfully resuscitated session %s via target %s (res_id=%s, status=%s)", convo_id, target_convo_id, res_id, new_st)
                 if self.broker:
                     try:

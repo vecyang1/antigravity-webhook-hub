@@ -414,3 +414,49 @@ async def execute_antigravity_task(
     if session_recovered_from:
         res_dict["recovered_from"] = session_recovered_from
     return res_dict
+
+async def resume_active_watchers(db: Any, broker: Optional[Any] = None) -> int:
+    """
+    On server boot, re-mounts the Slack delivery watcher for all 'active' session threads
+    so that if the server restarts while an Antigravity conversation is generating,
+    the user will still receive the final reply in Slack.
+    """
+    count = 0
+    try:
+        if not hasattr(db, "execute_read"):
+            return 0
+        active_sessions = await db.execute_read(
+            "SELECT * FROM session_threads WHERE status = 'active'"
+        )
+        if not active_sessions:
+            return 0
+            
+        notifier = ThreadNotifier()
+        for sess in active_sessions:
+            channel = sess.get("channel_id")
+            root_ts = sess.get("root_ts")
+            convo_id = sess.get("conversation_id")
+            task_id = sess.get("task_id")
+            
+            if not channel or not root_ts or not convo_id:
+                continue
+                
+            logger.info("Remounting active watcher for recovered session %s (Task: %s)", convo_id, task_id)
+            cancel_active_watcher(convo_id)
+            asyncio.create_task(
+                watch_and_deliver_result(
+                    notifier=notifier,
+                    channel=channel,
+                    thread_ts=root_ts,
+                    conversation_id=convo_id,
+                    task_id=task_id,
+                    start_time=time.time(),
+                    is_follow_up=False,  
+                    start_step=0,
+                    broker=broker,
+                )
+            )
+            count += 1
+    except Exception as e:
+        logger.exception("Failed to resume active watchers: %s", e)
+    return count
