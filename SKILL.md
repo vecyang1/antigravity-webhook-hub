@@ -1,9 +1,9 @@
 ---
 name: webhook-hub
 description: Control, monitor, and query the local Antigravity Webhook Hub daemon, event dispatcher, and Antigravity Watchdog on macOS.
-version: 1.16.2
+version: 1.17.0
 author: V
-date: 2026-09-14
+date: 2026-09-21
 source: local repository
 ---
 
@@ -72,6 +72,18 @@ All commands run via `./bin/webhook-hub <subcommand>` or `python3 -m hub <subcom
 ./bin/webhook-hub antigravity warmup --active-only   # Warm only the currently active IDE profile
 ./bin/webhook-hub antigravity warmup --force # Force immediate warmup ping bypassing cooldown
 ./bin/webhook-hub antigravity warmup -a <email> -b gemini-5h # Target specific account and bucket
+
+# Scheduled Tasks & Delayed Webhook Ingress (Mac Sleep / Monotonic Recovery "Don't Miss the Beat")
+./bin/webhook-hub schedule                      # List all scheduled tasks (active, paused, completed)
+./bin/webhook-hub schedule --status active      # Filter active schedules
+./bin/webhook-hub schedule --json               # Machine-readable JSON schedules for AI agents
+./bin/webhook-hub schedule show <schedule_id>   # Detailed schedule record and recent execution runs
+./bin/webhook-hub schedule trigger <schedule_id># On-demand immediate execution of schedule
+./bin/webhook-hub schedule pause <schedule_id>  # Temporarily pause recurring or delayed schedule
+./bin/webhook-hub schedule resume <schedule_id> # Resume paused schedule (recomputes next run)
+./bin/webhook-hub schedule delete <schedule_id> # Cancel and purge schedule
+./bin/webhook-hub schedule create --name "Job" --delay "2d" --command "python3 run.py"
+./bin/webhook-hub schedule create --name "Morning Cron" --cron "0 9 * * *" --command "python3 digest.py"
 ```
 
 ## 2. HTTP Ingress & API Contracts
@@ -102,6 +114,15 @@ All commands run via `./bin/webhook-hub <subcommand>` or `python3 -m hub <subcom
 | `POST` | `/antigravity/pull-up` | Trigger automated resuscitation / pull-up for stalled sessions & subagents | `200 OK` | `404 Not Found`, `500` |
 | `GET` | `/antigravity/quota` | Retrieve 5h & weekly quota snapshots and countdowns for all accounts (`?account=`) | `200 OK` | - |
 | `POST` | `/antigravity/warmup` | Trigger on-demand token ping warmup (`{"account": "", "bucket": "", "force": bool}`) | `200 OK` | `500` |
+| `GET` | `/schedules` | List and filter scheduled tasks (`?status=&type=&q=&limit=`) | `200 OK` | `400 Bad Request` |
+| `GET` | `/schedules/summary` | Real-time summary statistics across all schedules | `200 OK` | - |
+| `POST` | `/schedules` | Create delayed one-off (`delay`/`scheduled_at`) or recurring (`cron`) schedule | `201 Created` | `400 Bad Request` |
+| `GET` | `/schedules/{id}` | Detailed schedule metadata and recent execution history | `200 OK` | `404 Not Found` |
+| `POST` | `/schedules/{id}/trigger` | Trigger immediate on-demand run of schedule | `202 Accepted` | `404 Not Found` |
+| `POST` | `/schedules/{id}/pause` | Pause an active schedule | `200 OK` | `400`, `404` |
+| `POST` | `/schedules/{id}/resume` | Resume a paused schedule with next run recomputed | `200 OK` | `400`, `404` |
+| `DELETE` | `/schedules/{id}` | Cancel and purge scheduled task | `200 OK` | `404 Not Found` |
+| `POST` | `/schedules/sweep` | External heartbeat sweep for due schedules | `200 OK` | - |
 
 ### Webhook Ingress Payload (`POST /webhook`)
 
@@ -313,3 +334,23 @@ The Webhook Hub provides autonomous 24/7 background fleet quota monitoring and r
 - **4h55m Cooldown Isolation**: Warmup timestamps are recorded in SQLite SSOT (`antigravity_warmups`), enforcing a strict 17700s cooldown per bucket. Standby accounts are completely isolated from each other so one account's warmup never locks out another.
 - **Weekly Exhaustion Guard**: Accounts with 0% weekly balance are guarded against 3P model warmups to avoid upstream Google HTTP 429 quota exhaustion errors.
 - **Parallel Fleet Scanning**: Multi-account status scans run concurrently via `ThreadPoolExecutor`, reducing 8-account scan latency from ~10s to ~2s.
+
+## 12. TaskScheduler Engine & "Don't Miss the Beat" Architecture
+
+The Webhook Hub provides an enterprise-grade SQLite SSOT-backed task scheduler (`hub/scheduler.py`) supporting delayed execution, recurring cron jobs, and sleep/wake recovery.
+
+### 12.1 First-Principles Invariants
+1. **Single Source of Truth (SSOT)**: All scheduled definitions, next run timestamps, execution counts, and status lifecycles persist in the SQLite `scheduled_tasks` table. No in-memory state can become desynchronized upon process restart.
+2. **"Don't Miss the Beat" Monotonic Sleep/Wake Recovery**: When a macOS host sleeps (laptop lid closed) or hibernates, real-time cron ticks can be skipped. The scheduler engine monitors monotonic delta leaps (`time.monotonic()` jump > 3x tick interval). Upon waking, it immediately executes an authoritative sweep (`sweep_due()`) of all overdue active schedules so no reminder or webhook is missed.
+3. **Pure-Python 5-Part Cron Parser**: Built-in zero-dependency parser (<0.2ms resolution) evaluates minute-level cron expressions (`* * * * *`, `*/5 * * * *`, `0 9 * * 1-5`, etc.) with boundary validation and leap-forward date skipping.
+4. **Delayed Ingress Support**: Normal webhook ingress `POST /webhook` natively accepts `"delay": "2d"` or `"scheduled_at": "2026-09-23T08:18:00Z"` payloads, automatically routing to `TaskScheduler` and returning `202 Accepted` with `schedule_id`.
+5. **Multi-Target Dispatch**: Dispatches scheduled tasks via `TaskDispatcher` supporting:
+   - `cli`: Shell commands and Python scripts.
+   - `antigravity`: Direct AI agent prompt dispatch via AgentAPI IPC.
+   - `contact_review`: Reconciling contact profiles into Notion CRM SSOT.
+
+### 12.2 Spark Desktop Integration Pattern
+When third-party applications like Spark Desktop enforce read-only access on local AI agent hooks (`Access: read-only`), the Hub bridges the gap via local CoreData / SQLite inspection + Webhook Hub schedule automation:
+- Script: `scripts/check_anker_reminder.py` inspects Spark CoreData SQLite (`~/Library/Group Containers/3L68KQB4HG.group.com.readdle.smartemail/`) without mutating Spark's state.
+- Hub Schedule: When a reminder is due (e.g. `sch_6ff7bb6018f649f9` for Anker warranty on 2026-09-23), the scheduler triggers `check_anker_reminder.py --notify-slack` directly, delivering proactive Slack alerts without requiring third-party write permissions.
+

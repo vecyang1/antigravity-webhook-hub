@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.2] - 2026-09-21
+
+### Added & Verified
+- **Unified CLI Subcommand (`./bin/webhook-hub schedule` / `schedules`) (`hub/cli.py`)**:
+  - Implemented `schedule` subcommand with subactions: `list` (default), `create`, `trigger`, `pause`, `resume`, `delete`, and `show`.
+  - Rich CLI options: `--status`, `--type` (`once`/`recurring`), `--search` (`-q`), `--json`, `--limit`, `--offset`, `--name`, `--at`, `--delay`, `--cron`, `--action-type`, `--command`, `--target-action`, `--prompt`, `--params`.
+  - Dual-mode resilience: Connects to live gateway HTTP API (`http://127.0.0.1:9423`) when available, with automatic zero-downtime offline SQLite SSOT fallback.
+- **Unit Test Suite & Verification (`tests/unit/test_cli.py`)**:
+  - Added 8 dedicated unit test cases covering live HTTP mocking, offline SQLite SSOT list/create/trigger/pause/resume/delete, error handling, and JSON output formatting.
+  - Test suite passing 100% green (444 tests in pytest, 13/13 in standalone verification suite).
+- **Skill & Memory Vault Synchronization**:
+  - Updated `SKILL.md` (v1.17.0) and `installation_log.md` across both `~/.gemini/antigravity/skills/` and `~/.gemini/config/skills/`.
+  - Persisted architectural pattern note `delayed_webhook_and_spark_scheduler_pattern.md` in `~/.gemini/memory-vault/tools/automation/`.
+
 ## [1.17.1] - 2026-09-21
 
 ### Fixed & Hardened

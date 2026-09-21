@@ -52,7 +52,7 @@ def test_build_parser_subcommands():
     ]
     assert len(subparsers_action) == 1
     choices = subparsers_action[0].choices
-    expected_subcommands = {"start", "stop", "status", "logs", "test-send", "verify", "dashboard", "tasks", "rerun", "setup", "service"}
+    expected_subcommands = {"start", "stop", "status", "logs", "test-send", "verify", "dashboard", "tasks", "schedule", "rerun", "setup", "service"}
     assert expected_subcommands.issubset(set(choices.keys()))
 
 
@@ -860,6 +860,238 @@ def test_cmd_service_install_and_uninstall_plist(mock_sys, tmp_path, capsys):
         ])
         assert code_uninstall == 0
         assert not plist_path.is_file()
+
+
+# ==============================================================================
+# SCHEDULE SUBCOMMAND TESTS
+# ==============================================================================
+
+def test_cmd_schedule_list_live_mocked(capsys):
+    """Verify schedule list command uses live HTTP gateway when available."""
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = json.dumps({
+        "status": "success",
+        "schedules": [
+            {
+                "schedule_id": "sch_test_live_01",
+                "name": "Live Test Job",
+                "schedule_type": "once",
+                "status": "active",
+                "next_run_at": "2026-09-25T10:00:00Z",
+                "command": "python3 test.py",
+            }
+        ],
+        "total": 1,
+        "count": 1,
+        "stats": {"active": 1, "paused": 0, "completed": 0},
+    }).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        code = main(["schedule", "list", "--host", "127.0.0.1", "--port", "9423"])
+        assert code == 0
+        captured = capsys.readouterr().out
+        assert "Antigravity Webhook Hub — Scheduled Tasks" in captured
+        assert "LIVE GATEWAY" in captured
+        assert "sch_test_live_01" in captured
+        assert "Live Test Job" in captured
+
+
+def test_cmd_schedule_list_offline(tmp_path, capsys):
+    """Verify schedule list falls back to direct SQLite SSOT query."""
+    db_path = tmp_path / "test_sched.db"
+    db_mgr = DatabaseManager(str(db_path))
+    db_mgr.init_schema()
+
+    sid = db_mgr.insert_schedule({
+        "name": "Offline Unit Job",
+        "schedule_type": "once",
+        "scheduled_at": "2026-09-26T12:00:00Z",
+        "next_run_at": "2026-09-26T12:00:00Z",
+        "action_type": "cli",
+        "command": "echo offline",
+        "status": "active",
+    })
+    db_mgr.close()
+
+    code = main(["schedule", "list", "--db", str(db_path)])
+    assert code == 0
+    captured = capsys.readouterr().out
+    assert "OFFLINE DIRECT" in captured
+    assert sid in captured
+    assert "Offline Unit Job" in captured
+
+
+def test_cmd_schedule_list_json_offline(tmp_path, capsys):
+    """Verify schedule list --json outputs machine-readable JSON."""
+    db_path = tmp_path / "test_sched_json.db"
+    db_mgr = DatabaseManager(str(db_path))
+    db_mgr.init_schema()
+
+    sid = db_mgr.insert_schedule({
+        "name": "JSON Job",
+        "schedule_type": "recurring",
+        "cron_expression": "0 * * * *",
+        "next_run_at": "2026-09-22T00:00:00Z",
+        "action_type": "cli",
+        "command": "echo json",
+        "status": "active",
+    })
+    db_mgr.close()
+
+    code = main(["schedule", "--json", "--db", str(db_path)])
+    assert code == 0
+    captured = capsys.readouterr().out
+    data = json.loads(captured)
+    assert data["status"] == "success"
+    assert data["total"] == 1
+    assert data["schedules"][0]["schedule_id"] == sid
+
+
+def test_cmd_schedule_create_offline(tmp_path, capsys):
+    """Verify schedule create inserts into SQLite SSOT with computed next_run_at."""
+    db_path = tmp_path / "test_create.db"
+    db_mgr = DatabaseManager(str(db_path))
+    db_mgr.init_schema()
+    db_mgr.close()
+
+    code = main([
+        "schedule", "create",
+        "--name", "Created Job",
+        "--delay", "1h",
+        "--command", "echo delayed",
+        "--db", str(db_path),
+    ])
+    assert code == 0
+    captured = capsys.readouterr().out
+    assert "Created Job" in captured
+    assert "Schedule ID:" in captured
+
+    # Verify DB state
+    db_mgr = DatabaseManager(str(db_path))
+    scheds, count = db_mgr.list_schedules()
+    db_mgr.close()
+    assert count == 1
+    assert scheds[0]["name"] == "Created Job"
+    assert scheds[0]["status"] == "active"
+    assert scheds[0]["command"] == "echo delayed"
+
+
+def test_cmd_schedule_pause_resume_delete_offline(tmp_path, capsys):
+    """Verify schedule pause, resume, and delete lifecycle offline."""
+    db_path = tmp_path / "test_lifecycle.db"
+    db_mgr = DatabaseManager(str(db_path))
+    db_mgr.init_schema()
+    sid = db_mgr.insert_schedule({
+        "name": "Lifecycle Job",
+        "schedule_type": "once",
+        "next_run_at": "2026-09-28T00:00:00Z",
+        "action_type": "cli",
+        "command": "echo lifecycle",
+        "status": "active",
+    })
+    db_mgr.close()
+
+    # 1. Pause
+    assert main(["schedule", "pause", sid, "--db", str(db_path)]) == 0
+    db_mgr = DatabaseManager(str(db_path))
+    assert db_mgr.get_schedule(sid)["status"] == "paused"
+    db_mgr.close()
+
+    # 2. Resume
+    assert main(["schedule", "resume", sid, "--db", str(db_path)]) == 0
+    db_mgr = DatabaseManager(str(db_path))
+    assert db_mgr.get_schedule(sid)["status"] == "active"
+    db_mgr.close()
+
+    # 3. Delete
+    assert main(["schedule", "delete", sid, "--db", str(db_path)]) == 0
+    db_mgr = DatabaseManager(str(db_path))
+    assert db_mgr.get_schedule(sid) is None
+    db_mgr.close()
+
+
+def test_cmd_schedule_trigger_offline(tmp_path, capsys):
+    """Verify schedule trigger immediately creates queued task and synthetic event offline."""
+    db_path = tmp_path / "test_trigger.db"
+    db_mgr = DatabaseManager(str(db_path))
+    db_mgr.init_schema()
+    sid = db_mgr.insert_schedule({
+        "name": "Triggerable Job",
+        "schedule_type": "once",
+        "next_run_at": "2026-09-28T00:00:00Z",
+        "action_type": "cli",
+        "command": "echo trigger-me",
+        "status": "active",
+    })
+    db_mgr.close()
+
+    code = main(["schedule", "trigger", sid, "--db", str(db_path)])
+    assert code == 0
+    captured = capsys.readouterr().out
+    assert "triggered and task queued" in captured
+    assert "Enqueued Task ID:" in captured
+
+    # Check task table
+    db_mgr = DatabaseManager(str(db_path))
+    tasks = db_mgr.get_schedule_history(sid)
+    assert len(tasks) == 1
+    assert tasks[0]["command"] == "echo trigger-me"
+    assert tasks[0]["status"] == "queued"
+    assert tasks[0]["schedule_id"] == sid
+
+    # Once schedule should now be marked completed
+    sched = db_mgr.get_schedule(sid)
+    assert sched["status"] == "completed"
+    assert sched["total_runs"] == 1
+    db_mgr.close()
+
+
+def test_cmd_schedule_missing_args(capsys):
+    """Verify validation errors when required arguments are missing."""
+    # Create without name
+    code1 = main(["schedule", "create", "--command", "echo"])
+    assert code1 == 1
+    captured1 = capsys.readouterr().err
+    assert "--name is required" in captured1
+
+    # Trigger without schedule_id
+    code2 = main(["schedule", "trigger"])
+    assert code2 == 1
+    captured2 = capsys.readouterr().err
+    assert "schedule_id to trigger" in captured2
+
+    # Pause without schedule_id
+    code3 = main(["schedule", "pause"])
+    assert code3 == 1
+    captured3 = capsys.readouterr().err
+    assert "schedule_id to pause" in captured3
+
+
+def test_cmd_schedule_show_offline(tmp_path, capsys):
+    """Verify schedule show displays detail and execution history."""
+    db_path = tmp_path / "test_show.db"
+    db_mgr = DatabaseManager(str(db_path))
+    db_mgr.init_schema()
+    sid = db_mgr.insert_schedule({
+        "name": "Show Detail Job",
+        "schedule_type": "once",
+        "next_run_at": "2026-09-29T15:00:00Z",
+        "action_type": "cli",
+        "command": "echo detail",
+        "status": "active",
+    })
+    db_mgr.close()
+
+    code = main(["schedule", "show", sid, "--db", str(db_path)])
+    assert code == 0
+    captured = capsys.readouterr().out
+    assert "Schedule Detail:" in captured
+    assert sid in captured
+    assert "Show Detail Job" in captured
+    assert "echo detail" in captured
+
 
 
 

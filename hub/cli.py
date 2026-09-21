@@ -9,6 +9,7 @@ Subcommands:
 - `logs`: Tails recent logs from SQLite DB or streams live from SSE (/events/stream or /tasks/{id}/stream).
 - `test-send`: Signs a test webhook payload with HMAC SHA-256 or Bearer token, sends to /webhook, and displays response.
 - `verify`: Runs standalone E2E verification suite (scripts/verify_e2e.py) and exits with its return code.
+- `schedule`: Manages delayed one-off and recurring cron schedules (list, create, trigger, pause, resume, delete).
 """
 
 from __future__ import annotations
@@ -1447,6 +1448,635 @@ def cmd_rerun(args: argparse.Namespace) -> int:
 
 
 # ==============================================================================
+# SUBCOMMAND: schedule / schedules
+# ==============================================================================
+
+def cmd_schedule(args: argparse.Namespace) -> int:
+    """Handle `webhook-hub schedule` command for managing delayed & recurring tasks."""
+    import datetime
+    import json
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    import uuid
+
+    raw_action = getattr(args, "action", "list") or "list"
+    action = raw_action.lower().strip()
+    schedule_id = getattr(args, "schedule_id", None) or getattr(args, "flag_schedule_id", None)
+
+    # Convenience: if first positional argument is a schedule_id (e.g. `sch_...`)
+    if action.startswith("sch_"):
+        schedule_id = action
+        action = "show"
+
+    host = getattr(args, "host", "127.0.0.1")
+    port = getattr(args, "port", 9423)
+    db_arg = getattr(args, "db", None)
+    is_json = getattr(args, "json", False)
+
+    # Resolve DB path for offline operations
+    db_path = db_arg
+    if not db_path:
+        try:
+            cfg = load_config(config_path=getattr(args, "config", None), env_path=getattr(args, "env_file", None))
+            db_path = cfg.database.path
+        except Exception:
+            db_path = "data/webhook_hub.db"
+
+    # --------------------------------------------------------------------------
+    # 1. LIST SCHEDULES
+    # --------------------------------------------------------------------------
+    if action in ("list", "ls"):
+        status = getattr(args, "status", "all")
+        schedule_type = getattr(args, "schedule_type", "all")
+        search = getattr(args, "search", None)
+        limit = getattr(args, "limit", 20)
+        offset = getattr(args, "offset", 0)
+
+        schedules_data: Optional[dict[str, Any]] = None
+        live_success = False
+
+        # Try live gateway HTTP API first
+        if db_arg is None:
+            params: dict[str, Any] = {"limit": str(limit), "offset": str(offset)}
+            if status and status != "all":
+                params["status"] = status
+            if schedule_type and schedule_type != "all":
+                params["type"] = schedule_type
+            if search:
+                params["q"] = search
+
+            query_str = urllib.parse.urlencode(params)
+            target_url = f"http://{host}:{port}/schedules?{query_str}"
+            try:
+                req = urllib.request.Request(target_url, method="GET")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    if resp.status == 200:
+                        schedules_data = json.loads(resp.read().decode("utf-8"))
+                        live_success = True
+            except Exception:
+                pass
+
+        # Offline SQLite fallback
+        if schedules_data is None:
+            from hub.db import DatabaseManager
+            try:
+                db_mgr = DatabaseManager(db_path)
+                status_filter = status if status != "all" else None
+                type_filter = schedule_type if schedule_type != "all" else None
+                schedules_list, total_count = db_mgr.list_schedules(
+                    status=status_filter,
+                    schedule_type=type_filter,
+                    search=search,
+                    limit=limit,
+                    offset=offset,
+                )
+                stats = db_mgr.get_schedule_summary_stats()
+                schedules_data = {
+                    "status": "success",
+                    "schedules": schedules_list,
+                    "total": total_count,
+                    "count": len(schedules_list),
+                    "limit": limit,
+                    "offset": offset,
+                    "stats": stats,
+                }
+                db_mgr.close()
+            except Exception as err:
+                print(f"Error reading schedules from database ({db_path}): {err}", file=sys.stderr)
+                return 1
+
+        if is_json:
+            print(json.dumps(schedules_data, indent=2))
+            return 0
+
+        sched_items = schedules_data.get("schedules", [])
+        stats = schedules_data.get("stats", {})
+        total_found = schedules_data.get("total", len(sched_items))
+
+        print("==================================================")
+        print(" Antigravity Webhook Hub — Scheduled Tasks")
+        print("==================================================")
+        mode_str = f"LIVE GATEWAY (http://{host}:{port})" if live_success else f"OFFLINE DIRECT (SQLite SSOT: {db_path})"
+        print(f"  Mode:         {mode_str}")
+        print(f"  Status:       {status}")
+        print(f"  Type:         {schedule_type}")
+        print(f"  Total Found:  {total_found} schedule(s)")
+        if stats:
+            print(f"  Active/Paused/Completed: {stats.get('active', 0)} / {stats.get('paused', 0)} / {stats.get('completed', 0)}")
+        print("==================================================")
+
+        if not sched_items:
+            print("  No scheduled tasks matching filter criteria.")
+            return 0
+
+        print(f"{'SCHEDULE ID':<22} {'NAME':<28} {'TYPE':<10} {'STATUS':<10} {'NEXT RUN (UTC)':<20} {'ACTION'}")
+        print("-" * 105)
+        for s in sched_items:
+            sid = str(s.get("schedule_id", ""))
+            name = str(s.get("name", ""))
+            if len(name) > 26:
+                name = name[:23] + "..."
+            stype = str(s.get("schedule_type", ""))
+            status_val = str(s.get("status", ""))
+            next_run = str(s.get("next_run_at") or "-")[:19]
+            action_desc = str(s.get("command") or s.get("target_action") or s.get("action_type") or "").strip().replace("\n", " ")
+            if len(action_desc) > 30:
+                action_desc = action_desc[:27] + "..."
+            print(f"{sid:<22} {name:<28} {stype:<10} {status_val:<10} {next_run:<20} {action_desc}")
+        print("==================================================")
+        return 0
+
+    # --------------------------------------------------------------------------
+    # 2. CREATE SCHEDULE
+    # --------------------------------------------------------------------------
+    elif action in ("create", "add", "new"):
+        name = getattr(args, "name", None)
+        if not name:
+            print("Error: --name is required when creating a schedule.", file=sys.stderr)
+            print("Usage: ./bin/webhook-hub schedule create --name \"...\" [--at | --delay | --cron] --command \"...\"", file=sys.stderr)
+            return 1
+
+        cron_expression = getattr(args, "cron_expression", None)
+        schedule_type = "recurring" if cron_expression else "once"
+        scheduled_at = getattr(args, "scheduled_at", None)
+        delay = getattr(args, "delay", None)
+        delay_seconds = getattr(args, "delay_seconds", None)
+        action_type = getattr(args, "action_type", "cli") or "cli"
+        command = getattr(args, "command", "") or ""
+        target_action = getattr(args, "target_action", None) or command
+        source = getattr(args, "source", "scheduler") or "scheduler"
+        timezone = getattr(args, "timezone", "Asia/Bangkok") or "Asia/Bangkok"
+        max_runs = getattr(args, "max_runs", None)
+
+        action_params: dict[str, Any] = {}
+        raw_params = getattr(args, "params", None)
+        if raw_params:
+            try:
+                action_params = json.loads(raw_params)
+            except Exception as e:
+                print(f"Error: Invalid JSON in --params: {e}", file=sys.stderr)
+                return 1
+
+        if getattr(args, "prompt", None):
+            action_params["prompt"] = getattr(args, "prompt")
+        if getattr(args, "channel", None):
+            action_params["channel"] = getattr(args, "channel")
+        if getattr(args, "conversation_id", None):
+            action_params["conversation_id"] = getattr(args, "conversation_id")
+
+        payload = {
+            "name": name,
+            "schedule_type": schedule_type,
+            "scheduled_at": scheduled_at,
+            "delay": delay,
+            "delay_seconds": delay_seconds,
+            "cron_expression": cron_expression,
+            "action_type": action_type,
+            "command": command,
+            "target_action": target_action,
+            "action_params": action_params,
+            "source": source,
+            "timezone": timezone,
+            "max_runs": max_runs,
+        }
+
+        # Try live gateway first
+        if db_arg is None:
+            target_url = f"http://{host}:{port}/schedules"
+            try:
+                body_bytes = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(
+                    target_url,
+                    data=body_bytes,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    if resp.status in (200, 201):
+                        resp_data = json.loads(resp.read().decode("utf-8"))
+                        if is_json:
+                            print(json.dumps(resp_data, indent=2))
+                        else:
+                            sid = resp_data.get("schedule_id") or resp_data.get("schedule", {}).get("schedule_id")
+                            next_run = resp_data.get("next_run_at") or resp_data.get("schedule", {}).get("next_run_at")
+                            print(f"Schedule '{name}' successfully created (live gateway).")
+                            print(f"  Schedule ID: {sid}")
+                            print(f"  Type:        {schedule_type}")
+                            print(f"  Next Run:    {next_run}")
+                        return 0
+            except urllib.error.HTTPError as e:
+                err_text = e.read().decode("utf-8")
+                print(f"Error from server ({e.code}): {err_text}", file=sys.stderr)
+                return 1
+            except Exception:
+                pass
+
+        # Offline SQLite direct insertion
+        from hub.db import DatabaseManager
+        from hub.scheduler import compute_next_cron_run, format_iso_utc, parse_schedule_time
+
+        try:
+            now_dt = datetime.datetime.now(datetime.timezone.utc)
+            if schedule_type == "recurring":
+                if not cron_expression:
+                    print("Error: --cron expression is required for recurring schedule.", file=sys.stderr)
+                    return 1
+                next_dt = compute_next_cron_run(cron_expression, start_dt=now_dt, tz_name=timezone)
+                next_run_iso = format_iso_utc(next_dt)
+                scheduled_at_iso = None
+            else:
+                target_dt = parse_schedule_time(
+                    scheduled_at=scheduled_at,
+                    delay_seconds=delay_seconds,
+                    delay=delay,
+                    base_dt=now_dt,
+                )
+                next_run_iso = format_iso_utc(target_dt)
+                scheduled_at_iso = next_run_iso
+
+            db_mgr = DatabaseManager(db_path)
+            sched_data = {
+                "name": name,
+                "source": source,
+                "schedule_type": schedule_type,
+                "cron_expression": cron_expression,
+                "scheduled_at": scheduled_at_iso,
+                "next_run_at": next_run_iso,
+                "timezone": timezone,
+                "action_type": action_type,
+                "command": command,
+                "target_action": target_action,
+                "action_params": action_params,
+                "status": "active",
+                "max_runs": max_runs,
+            }
+            sid = db_mgr.insert_schedule(sched_data)
+            db_mgr.close()
+
+            if is_json:
+                print(json.dumps({"status": "created", "schedule_id": sid, "schedule": sched_data, "mode": "direct_sqlite"}, indent=2))
+            else:
+                print(f"Schedule '{name}' created and persisted in SQLite SSOT ({db_path}).")
+                print(f"  Schedule ID: {sid}")
+                print(f"  Type:        {schedule_type}")
+                print(f"  Next Run:    {next_run_iso}")
+            return 0
+        except Exception as err:
+            print(f"Error creating schedule in database ({db_path}): {err}", file=sys.stderr)
+            return 1
+
+    # --------------------------------------------------------------------------
+    # 3. TRIGGER SCHEDULE ON-DEMAND
+    # --------------------------------------------------------------------------
+    elif action in ("trigger", "run"):
+        if not schedule_id:
+            print("Error: Specify a schedule_id to trigger.", file=sys.stderr)
+            print("Usage: ./bin/webhook-hub schedule trigger <schedule_id>", file=sys.stderr)
+            return 1
+
+        if db_arg is None:
+            target_url = f"http://{host}:{port}/schedules/{schedule_id}/trigger"
+            try:
+                req = urllib.request.Request(
+                    target_url,
+                    data=b"{}",
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=4.0) as resp:
+                    if resp.status in (200, 202):
+                        resp_data = json.loads(resp.read().decode("utf-8"))
+                        if is_json:
+                            print(json.dumps(resp_data, indent=2))
+                        else:
+                            tid = resp_data.get("result", {}).get("task_id") or resp_data.get("task_id", "")
+                            print(f"Schedule {schedule_id} triggered on-demand (live gateway).")
+                            if tid:
+                                print(f"  Enqueued Task ID: {tid}")
+                        return 0
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
+                    return 1
+            except Exception:
+                pass
+
+        # Offline SQLite direct execution
+        from hub.db import DatabaseManager
+        from hub.scheduler import compute_next_cron_run, format_iso_utc
+        try:
+            db_mgr = DatabaseManager(db_path)
+            sched = db_mgr.get_schedule(schedule_id)
+            if not sched:
+                print(f"Error: Schedule {schedule_id} not found in database ({db_path}).", file=sys.stderr)
+                return 1
+
+            now_dt = datetime.datetime.now(datetime.timezone.utc)
+            task_id = f"tsk_sch_{uuid.uuid4().hex[:12]}"
+            event_id = f"evt_sch_{uuid.uuid4().hex[:12]}"
+
+            action_params = dict(sched.get("action_params") or {})
+            action_params["schedule_id"] = schedule_id
+            action_params["schedule_name"] = sched.get("name")
+            action_params["trigger_reason"] = "cli_manual_trigger"
+
+            event_record = {
+                "event_id": event_id,
+                "source": sched.get("source", "scheduler"),
+                "idempotency_key": f"{schedule_id}_{now_dt.strftime('%Y%m%d%H%M%S')}_{task_id}",
+                "payload_hash": "",
+                "headers_json": json.dumps({"X-Hub-Source": "scheduler", "X-Schedule-ID": schedule_id}),
+                "raw_payload": json.dumps(action_params),
+                "method": "POST",
+                "path": f"/schedules/{schedule_id}/trigger",
+                "status": "received",
+            }
+            db_mgr.insert_webhook_event(event_record)
+
+            task_record = {
+                "task_id": task_id,
+                "event_id": event_id,
+                "source": sched.get("source", "scheduler"),
+                "action_type": sched.get("action_type", "cli"),
+                "command": sched.get("command") or sched.get("target_action") or "",
+                "target_action": sched.get("target_action") or sched.get("command") or "",
+                "action_params_json": json.dumps(action_params),
+                "status": "queued",
+                "priority": int(sched.get("priority", 0) if "priority" in sched else 0),
+                "timeout_seconds": int(sched.get("timeout_seconds", 300) if "timeout_seconds" in sched else 300),
+                "retry_count": 0,
+                "max_retries": 0,
+                "schedule_id": schedule_id,
+                "scheduled_at": sched.get("scheduled_at") or sched.get("next_run_at"),
+            }
+            db_mgr.insert_task(task_record)
+
+            next_run_iso = None
+            new_status = None
+            if sched.get("schedule_type") == "once":
+                new_status = "completed"
+            elif sched.get("schedule_type") == "recurring":
+                cron_expr = sched.get("cron_expression")
+                if cron_expr:
+                    try:
+                        next_dt = compute_next_cron_run(cron_expr, start_dt=now_dt, tz_name=sched.get("timezone", "Asia/Bangkok"))
+                        next_run_iso = format_iso_utc(next_dt)
+                    except Exception:
+                        pass
+
+            db_mgr.record_schedule_execution(
+                schedule_id=schedule_id,
+                task_id=task_id,
+                next_run_at=next_run_iso,
+                status=new_status,
+            )
+            db_mgr.close()
+
+            if is_json:
+                print(json.dumps({"status": "triggered", "schedule_id": schedule_id, "task_id": task_id, "mode": "direct_sqlite"}, indent=2))
+            else:
+                print(f"Schedule {schedule_id} triggered and task queued in SQLite ({db_path}).")
+                print(f"  Enqueued Task ID: {task_id}")
+                print("  Start daemon to execute: ./bin/webhook-hub start -d")
+            return 0
+        except Exception as err:
+            print(f"Error triggering schedule in database ({db_path}): {err}", file=sys.stderr)
+            return 1
+
+    # --------------------------------------------------------------------------
+    # 4. PAUSE SCHEDULE
+    # --------------------------------------------------------------------------
+    elif action == "pause":
+        if not schedule_id:
+            print("Error: Specify a schedule_id to pause.", file=sys.stderr)
+            print("Usage: ./bin/webhook-hub schedule pause <schedule_id>", file=sys.stderr)
+            return 1
+
+        if db_arg is None:
+            target_url = f"http://{host}:{port}/schedules/{schedule_id}/pause"
+            try:
+                req = urllib.request.Request(target_url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    if resp.status == 200:
+                        if is_json:
+                            print(json.dumps({"status": "paused", "schedule_id": schedule_id}, indent=2))
+                        else:
+                            print(f"Schedule {schedule_id} paused successfully (live gateway).")
+                        return 0
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
+                    return 1
+            except Exception:
+                pass
+
+        from hub.db import DatabaseManager
+        try:
+            db_mgr = DatabaseManager(db_path)
+            sched = db_mgr.get_schedule(schedule_id)
+            if not sched:
+                print(f"Error: Schedule {schedule_id} not found in database ({db_path}).", file=sys.stderr)
+                return 1
+            ok = db_mgr.update_schedule_status(schedule_id, "paused")
+            db_mgr.close()
+            if ok:
+                if is_json:
+                    print(json.dumps({"status": "paused", "schedule_id": schedule_id, "mode": "direct_sqlite"}, indent=2))
+                else:
+                    print(f"Schedule {schedule_id} paused in SQLite ({db_path}).")
+                return 0
+            else:
+                print(f"Error: Failed to pause schedule {schedule_id}.", file=sys.stderr)
+                return 1
+        except Exception as err:
+            print(f"Error accessing database ({db_path}): {err}", file=sys.stderr)
+            return 1
+
+    # --------------------------------------------------------------------------
+    # 5. RESUME SCHEDULE
+    # --------------------------------------------------------------------------
+    elif action == "resume":
+        if not schedule_id:
+            print("Error: Specify a schedule_id to resume.", file=sys.stderr)
+            print("Usage: ./bin/webhook-hub schedule resume <schedule_id>", file=sys.stderr)
+            return 1
+
+        if db_arg is None:
+            target_url = f"http://{host}:{port}/schedules/{schedule_id}/resume"
+            try:
+                req = urllib.request.Request(target_url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    if resp.status == 200:
+                        if is_json:
+                            print(json.dumps({"status": "active", "schedule_id": schedule_id}, indent=2))
+                        else:
+                            print(f"Schedule {schedule_id} resumed successfully (live gateway).")
+                        return 0
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
+                    return 1
+            except Exception:
+                pass
+
+        from hub.db import DatabaseManager
+        from hub.scheduler import compute_next_cron_run, format_iso_utc
+        try:
+            db_mgr = DatabaseManager(db_path)
+            sched = db_mgr.get_schedule(schedule_id)
+            if not sched:
+                print(f"Error: Schedule {schedule_id} not found in database ({db_path}).", file=sys.stderr)
+                return 1
+            updates: dict[str, Any] = {"status": "active"}
+            if sched.get("schedule_type") == "recurring" and sched.get("cron_expression"):
+                try:
+                    now_dt = datetime.datetime.now(datetime.timezone.utc)
+                    next_dt = compute_next_cron_run(sched["cron_expression"], start_dt=now_dt, tz_name=sched.get("timezone", "Asia/Bangkok"))
+                    updates["next_run_at"] = format_iso_utc(next_dt)
+                except Exception:
+                    pass
+            ok = db_mgr.update_schedule(schedule_id, updates)
+            db_mgr.close()
+            if ok:
+                if is_json:
+                    print(json.dumps({"status": "active", "schedule_id": schedule_id, "mode": "direct_sqlite"}, indent=2))
+                else:
+                    print(f"Schedule {schedule_id} resumed in SQLite ({db_path}).")
+                return 0
+            else:
+                print(f"Error: Failed to resume schedule {schedule_id}.", file=sys.stderr)
+                return 1
+        except Exception as err:
+            print(f"Error accessing database ({db_path}): {err}", file=sys.stderr)
+            return 1
+
+    # --------------------------------------------------------------------------
+    # 6. DELETE SCHEDULE
+    # --------------------------------------------------------------------------
+    elif action in ("delete", "remove", "rm", "cancel"):
+        if not schedule_id:
+            print("Error: Specify a schedule_id to delete.", file=sys.stderr)
+            print("Usage: ./bin/webhook-hub schedule delete <schedule_id>", file=sys.stderr)
+            return 1
+
+        if db_arg is None:
+            target_url = f"http://{host}:{port}/schedules/{schedule_id}"
+            try:
+                req = urllib.request.Request(target_url, method="DELETE")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    if resp.status == 200:
+                        if is_json:
+                            print(json.dumps({"status": "deleted", "schedule_id": schedule_id}, indent=2))
+                        else:
+                            print(f"Schedule {schedule_id} deleted successfully (live gateway).")
+                        return 0
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
+                    return 1
+            except Exception:
+                pass
+
+        from hub.db import DatabaseManager
+        try:
+            db_mgr = DatabaseManager(db_path)
+            sched = db_mgr.get_schedule(schedule_id)
+            if not sched:
+                print(f"Error: Schedule {schedule_id} not found in database ({db_path}).", file=sys.stderr)
+                return 1
+            ok = db_mgr.delete_schedule(schedule_id)
+            db_mgr.close()
+            if ok:
+                if is_json:
+                    print(json.dumps({"status": "deleted", "schedule_id": schedule_id, "mode": "direct_sqlite"}, indent=2))
+                else:
+                    print(f"Schedule {schedule_id} deleted from SQLite ({db_path}).")
+                return 0
+            else:
+                print(f"Error: Failed to delete schedule {schedule_id}.", file=sys.stderr)
+                return 1
+        except Exception as err:
+            print(f"Error accessing database ({db_path}): {err}", file=sys.stderr)
+            return 1
+
+    # --------------------------------------------------------------------------
+    # 7. SHOW / DETAIL SCHEDULE
+    # --------------------------------------------------------------------------
+    elif action in ("show", "get", "inspect", "detail"):
+        if not schedule_id:
+            print("Error: Specify a schedule_id to show.", file=sys.stderr)
+            print("Usage: ./bin/webhook-hub schedule show <schedule_id>", file=sys.stderr)
+            return 1
+
+        detail_data: Optional[dict[str, Any]] = None
+        if db_arg is None:
+            target_url = f"http://{host}:{port}/schedules/{schedule_id}"
+            try:
+                req = urllib.request.Request(target_url, method="GET")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    if resp.status == 200:
+                        detail_data = json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    print(f"Error: Schedule {schedule_id} not found on server.", file=sys.stderr)
+                    return 1
+            except Exception:
+                pass
+
+        if detail_data is None:
+            from hub.db import DatabaseManager
+            try:
+                db_mgr = DatabaseManager(db_path)
+                sched = db_mgr.get_schedule(schedule_id)
+                if not sched:
+                    print(f"Error: Schedule {schedule_id} not found in database ({db_path}).", file=sys.stderr)
+                    return 1
+                history = db_mgr.get_schedule_history(schedule_id, limit=10)
+                detail_data = {"status": "success", "schedule": sched, "history": history}
+                db_mgr.close()
+            except Exception as err:
+                print(f"Error accessing database ({db_path}): {err}", file=sys.stderr)
+                return 1
+
+        if is_json:
+            print(json.dumps(detail_data, indent=2))
+            return 0
+
+        sched = detail_data.get("schedule", {})
+        history = detail_data.get("history", [])
+
+        print("==================================================")
+        print(f" Schedule Detail: {sched.get('schedule_id')}")
+        print("==================================================")
+        print(f"  Name:           {sched.get('name')}")
+        print(f"  Status:         {sched.get('status')}")
+        print(f"  Type:           {sched.get('schedule_type')}")
+        if sched.get("cron_expression"):
+            print(f"  Cron:           {sched.get('cron_expression')}")
+        print(f"  Next Run:       {sched.get('next_run_at') or '-'}")
+        print(f"  Last Run:       {sched.get('last_run_at') or '-'}")
+        print(f"  Total Runs:     {sched.get('total_runs', 0)}")
+        print(f"  Action Type:    {sched.get('action_type')}")
+        print(f"  Command:        {sched.get('command') or '-'}")
+        print(f"  Target Action:  {sched.get('target_action') or '-'}")
+        if sched.get("last_error"):
+            print(f"  Last Error:     {sched.get('last_error')}")
+        print("==================================================")
+        if history:
+            print(" Execution History (Recent Tasks):")
+            for h in history:
+                print(f"  • {h.get('task_id')} [{h.get('status')}] exit={h.get('exit_code', '-')} created={h.get('created_at')}")
+            print("==================================================")
+        return 0
+
+    else:
+        print(f"Error: Unknown schedule action '{action}'.", file=sys.stderr)
+        print("Available actions: list, create, trigger, pause, resume, delete, show", file=sys.stderr)
+        return 1
+
+
+# ==============================================================================
 # MAC SETUP & LAUNCHD SERVICE MANAGEMENT
 # ==============================================================================
 
@@ -1839,6 +2469,55 @@ def _add_rerun_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", "-c", type=str, default=None, help="Path to config.yaml file")
     parser.add_argument("--env-file", type=str, default=None, help="Path to .env file")
     parser.add_argument("--json", action="store_true", help="Output result in JSON format")
+
+
+def _add_schedule_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        help="Schedule action: list (default), trigger, pause, resume, delete, create, show",
+    )
+    parser.add_argument(
+        "schedule_id",
+        nargs="?",
+        default=None,
+        help="Target Schedule ID for trigger, pause, resume, delete, or show",
+    )
+    # Query & filter options
+    parser.add_argument("--status", default="all", help="Filter schedules by status (all, active, paused, completed, cancelled, failed)")
+    parser.add_argument("--type", "--schedule-type", dest="schedule_type", default="all", help="Filter by schedule type (all, once, recurring)")
+    parser.add_argument("--search", "-q", default=None, help="Search schedules by keyword in name, id, or command")
+    parser.add_argument("--limit", "-n", type=int, default=20, help="Maximum number of schedules to display (default: 20)")
+    parser.add_argument("--offset", type=int, default=0, help="Pagination offset")
+
+    # Schedule ID flag alternative
+    parser.add_argument("--id", "--schedule-id", dest="flag_schedule_id", type=str, default=None, help="Target schedule ID flag alternative")
+
+    # Creation options
+    parser.add_argument("--name", type=str, default=None, help="Schedule name or title (required for create)")
+    parser.add_argument("--at", "--scheduled-at", dest="scheduled_at", type=str, default=None, help="Target execution ISO datetime for delayed one-off task")
+    parser.add_argument("--delay", type=str, default=None, help="Relative delay string (e.g. '2d', '12h', '30m', '45s')")
+    parser.add_argument("--delay-seconds", type=float, default=None, help="Relative delay in seconds")
+    parser.add_argument("--cron", "--cron-expression", dest="cron_expression", type=str, default=None, help="5-field cron expression for recurring schedule")
+    parser.add_argument("--action-type", "--action", dest="action_type", type=str, default="cli", help="Action type to dispatch (cli, antigravity, contact_review)")
+    parser.add_argument("--command", type=str, default="", help="Command line string or target task payload")
+    parser.add_argument("--target-action", type=str, default=None, help="Target action name")
+    parser.add_argument("--prompt", type=str, default=None, help="Prompt text for antigravity agent actions")
+    parser.add_argument("--channel", type=str, default=None, help="Target channel for agent actions")
+    parser.add_argument("--conversation-id", type=str, default=None, help="Target conversation ID for agent actions")
+    parser.add_argument("--params", type=str, default=None, help="JSON-encoded parameters dictionary")
+    parser.add_argument("--source", type=str, default="scheduler", help="Ingress source label (default: scheduler)")
+    parser.add_argument("--timezone", type=str, default="Asia/Bangkok", help="Schedule timezone (default: Asia/Bangkok)")
+    parser.add_argument("--max-runs", type=int, default=None, help="Max execution runs for recurring schedule")
+
+    # Environment & Connection options
+    parser.add_argument("--host", default="127.0.0.1", help="Gateway host when connecting to live server")
+    parser.add_argument("--port", "-p", type=int, default=9423, help="Gateway port when connecting to live server")
+    parser.add_argument("--db", type=str, default=None, help="Path to SQLite database file when offline")
+    parser.add_argument("--config", "-c", type=str, default=None, help="Path to config.yaml file")
+    parser.add_argument("--env-file", type=str, default=None, help="Path to .env file")
+    parser.add_argument("--json", action="store_true", help="Output result in JSON format for AI agents")
 
 
 def _add_sweep_args(parser: argparse.ArgumentParser) -> None:
@@ -2503,6 +3182,13 @@ def build_parser() -> Any:
     p_tasks = subparsers.add_parser("tasks", help="List, inspect, and review webhook tasks (filter failed, real vs test)")
     _add_tasks_args(p_tasks)
 
+    p_schedule = subparsers.add_parser(
+        "schedule",
+        aliases=["schedules"],
+        help="List, create, trigger, pause, resume, and delete scheduled tasks",
+    )
+    _add_schedule_args(p_schedule)
+
     p_rerun = subparsers.add_parser("rerun", help="Re-enqueue an existing task for re-execution")
     _add_rerun_args(p_rerun)
 
@@ -2545,7 +3231,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     known_commands = {
         "start", "stop", "status", "logs", "test-send", "verify",
         "review-contact", "contact-review", "sweep", "pick-unprocessed", "recover",
-        "dashboard", "ui", "tasks", "rerun", "setup", "init", "service",
+        "dashboard", "ui", "tasks", "schedule", "schedules", "rerun", "setup", "init", "service",
         "antigravity", "ag", "watchdog", "catchup", "reconcile",
         "alert-diagnose", "alert", "diagnose-alert",
         "-h", "--help"
@@ -2654,6 +3340,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         del p
         gc.collect()
         return cmd_tasks(args)
+
+    elif subcommand in ("schedule", "schedules"):
+        p = argparse.ArgumentParser(prog=f"webhook-hub {subcommand}")
+        _add_schedule_args(p)
+        args = p.parse_args(sub_args)
+        args.subcommand = subcommand
+        del p
+        gc.collect()
+        return cmd_schedule(args)
 
     elif subcommand == "rerun":
         p = argparse.ArgumentParser(prog="webhook-hub rerun")
