@@ -2271,6 +2271,61 @@ def cmd_antigravity(args: Any) -> int:
     return 0
 
 
+def _add_alert_diagnose_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--message", "-m", required=True, help="Alert message text or snippet to evaluate")
+    parser.add_argument("--service", "-s", default="Server Alert", help="Service or monitor name")
+    parser.add_argument("--url", "-u", default="", help="Target endpoint URL (if any)")
+    parser.add_argument("--threshold", "-t", type=float, default=None, help="Criticality threshold override (default: 0.70)")
+    parser.add_argument("--json", action="store_true", help="Output raw JSON diagnostic result")
+
+
+def cmd_alert_diagnose(args: Any) -> int:
+    """Diagnose and explain an alert using Jev System One noise filter."""
+    import json
+    from hub.alert_filter import JevAlertFilter
+
+    message = getattr(args, "message", None) or ""
+    service = getattr(args, "service", None) or "Diagnose Alert"
+    url = getattr(args, "url", None) or ""
+    threshold = getattr(args, "threshold", None)
+    is_json = getattr(args, "json", False)
+
+    if not message:
+        print("❌ Error: --message is required. Example: --message '[GlintMuse Blog] [🔴 Down] 200 - OK, but keyword is not in []'", file=sys.stderr)
+        return 1
+
+    filter_engine = JevAlertFilter()
+    res = filter_engine.evaluate_alert(
+        service=service,
+        message=message,
+        url=url,
+        custom_threshold=threshold,
+    )
+
+    if is_json:
+        print(json.dumps(res.to_dict(), indent=2, ensure_ascii=False))
+        return 0
+
+    decision_color = "🔴" if res.is_critical else "🟢"
+    action_text = "ESCALATE (Critical Alert)" if res.is_critical else "SUPPRESS (Non-Critical Noise)"
+
+    print("\n" + "=" * 62)
+    print("        JEV SYSTEM ONE — ALERT DE-NOISING DIAGNOSTIC")
+    print("=" * 62)
+    print(f"Service:     {service}")
+    print(f"Message:     {message}")
+    if url:
+        print(f"URL:         {url}")
+    print("-" * 62)
+    print(f"Model:       {res.model} ({res.eval_source})")
+    print(f"Latency:     {res.duration_ms:0.1f}ms")
+    print(f"Calibrated:  noul={res.noul:0.2f} (Threshold: {res.threshold:0.2f})")
+    print(f"Decision:    {decision_color} {action_text}")
+    print(f"Reason:      {res.reason}")
+    print("=" * 62 + "\n")
+    return 0
+
+
 # ==============================================================================
 # MAIN CLI ENTRY POINT & PARSER
 # ==============================================================================
@@ -2455,6 +2510,13 @@ def build_parser() -> Any:
     )
     _add_catchup_args(p_catchup)
 
+    p_alert = subparsers.add_parser(
+        "alert-diagnose",
+        aliases=["alert", "diagnose-alert"],
+        help="Diagnose and explain system alert using Jev System One noise filter",
+    )
+    _add_alert_diagnose_args(p_alert)
+
     return parser
 
 
@@ -2469,6 +2531,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "review-contact", "contact-review", "sweep", "pick-unprocessed", "recover",
         "dashboard", "ui", "tasks", "rerun", "setup", "init", "service",
         "antigravity", "ag", "watchdog", "catchup", "reconcile",
+        "alert-diagnose", "alert", "diagnose-alert",
         "-h", "--help"
     }
     if argv and argv[0] not in known_commands and argv[0].startswith("-"):
@@ -2620,6 +2683,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         del p
         gc.collect()
         return cmd_catchup(args)
+
+    elif subcommand in ("alert-diagnose", "alert", "diagnose-alert"):
+        p = argparse.ArgumentParser(prog="webhook-hub alert-diagnose")
+        _add_alert_diagnose_args(p)
+        args = p.parse_args(sub_args)
+        args.subcommand = "alert-diagnose"
+        del p
+        gc.collect()
+        return cmd_alert_diagnose(args)
 
     else:
         parser = build_parser()

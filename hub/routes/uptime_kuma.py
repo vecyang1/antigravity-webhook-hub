@@ -21,6 +21,7 @@ import time
 import uuid
 from typing import Any, Callable, Optional
 
+from hub.alert_filter import JevAlertFilter, get_default_alert_filter
 from hub.config import AppConfig
 from hub.models import HTTPRequest, HTTPResponse
 from hub.security import compute_payload_hash, validate_request_security, verify_bearer_token
@@ -114,10 +115,17 @@ def register_uptime_kuma_routes(
     dispatcher: Optional[Any] = None,
     broker: Optional[Any] = None,
     probe_fn: Optional[Callable[[str, float], Any]] = None,
+    alert_filter: Optional[Any] = None,
 ) -> None:
-    """Register Uptime Kuma webhook receiver endpoints."""
+    """Register Uptime Kuma and Jev Alert Filter webhook receiver endpoints."""
 
     active_probe_fn = probe_fn or probe_url_liveness
+    if alert_filter is not None:
+        active_alert_filter = alert_filter
+    elif config and getattr(config, "alert_filter", None) and config.alert_filter.enabled:
+        active_alert_filter = get_default_alert_filter(config)
+    else:
+        active_alert_filter = None
 
     async def handle_uptime_kuma_webhook(req: HTTPRequest) -> HTTPResponse:
         # 1. Authentication & Security Validation
@@ -296,8 +304,58 @@ def register_uptime_kuma_routes(
 
             _recent_down_events[monitor_id] = now
 
+            # 3.25 Intelligent Jev System One Noise Evaluation & Flap Suppression
+            filter_res = None
+            if active_alert_filter and getattr(active_alert_filter, "enabled", True):
+                filter_res = await active_alert_filter.evaluate_alert_async(
+                    service=monitor_name,
+                    message=msg,
+                    url=monitor_url,
+                    context={"status_code": status_code, "monitor_id": monitor_id},
+                )
+                if not filter_res.is_critical:
+                    logger.info(
+                        "Jev Alert Filter: Suppressed non-critical alert for %s (noul=%0.2f < threshold=%0.2f, reason: %s)",
+                        monitor_name, filter_res.noul, filter_res.threshold, filter_res.reason
+                    )
+                    event_id = f"evt_{uuid.uuid4().hex[:16]}"
+                    if db is not None:
+                        db.insert_webhook_event({
+                            "event_id": event_id,
+                            "source": "uptime_kuma",
+                            "idempotency_key": idemp_key,
+                            "payload_hash": payload_hash,
+                            "headers_json": json.dumps(dict(req.headers)),
+                            "raw_payload": req.text(),
+                            "method": req.method,
+                            "path": req.path,
+                            "remote_addr": req.remote_addr,
+                            "status": "processed",
+                        })
+                    if broker is not None:
+                        await broker.publish("events", {
+                            "type": "kuma_suppressed_by_jev",
+                            "monitor": monitor_name,
+                            "url": monitor_url,
+                            "noul": filter_res.noul,
+                            "threshold": filter_res.threshold,
+                            "reason": filter_res.reason,
+                        })
+                    return HTTPResponse.json({
+                        "status": "suppressed_noise",
+                        "monitor": monitor_name,
+                        "url": monitor_url,
+                        "is_critical": False,
+                        "noul": filter_res.noul,
+                        "threshold": filter_res.threshold,
+                        "reason": filter_res.reason,
+                        "model": filter_res.model,
+                        "event_id": event_id,
+                    }, status_code=200)
+
             # 3.3 Confirmed Outage -> Immediate Dual-Channel Observability
-            outage_desc = f"🔴 [DOWN] {monitor_name}: {msg}"
+            jev_tag = f" [Jev: {filter_res.noul:0.2f}]" if filter_res else ""
+            outage_desc = f"🔴 [DOWN] {monitor_name}: {msg}{jev_tag}"
             logger.warning("Confirmed outage: %s", outage_desc)
 
             # Desktop Banner
@@ -377,6 +435,186 @@ def register_uptime_kuma_routes(
             "monitor": monitor_name,
         }, status_code=200)
 
-    # Register both primary and legacy routes
+    async def handle_alert_webhook(req: HTTPRequest) -> HTTPResponse:
+        """Universal Alert Ingress Route (Coolify, VPS Sentinel, Email Interceptor)."""
+        auth_header = req.header("authorization")
+        expected_bearer = config.security.bearer_token or os.environ.get("BEARER_TOKEN", "")
+
+        val = validate_request_security(req, config.security)
+        if not val.is_valid:
+            bearer_val = verify_bearer_token(expected_bearer, auth_header)
+            if not bearer_val.is_valid:
+                return HTTPResponse.error(
+                    val.message or bearer_val.message,
+                    status_code=401,
+                    reason="unauthorized",
+                )
+
+        if not req.body:
+            return HTTPResponse.error("Request body is empty", status_code=400, reason="empty_body")
+
+        try:
+            body_dict = json.loads(req.body.decode("utf-8"))
+        except Exception:
+            return HTTPResponse.error("Malformed JSON payload", status_code=400, reason="malformed_json")
+
+        if not isinstance(body_dict, dict):
+            return HTTPResponse.error("Payload must be a JSON object", status_code=400, reason="invalid_json_type")
+
+        service_name = str(body_dict.get("service") or body_dict.get("monitor") or body_dict.get("source") or "Server Alert")
+        alert_msg = str(body_dict.get("message") or body_dict.get("msg") or body_dict.get("error") or "")
+        alert_url = str(body_dict.get("url") or "")
+        raw_status = str(body_dict.get("status") or "down").lower()
+
+        # Check recovery / up
+        if raw_status in ("up", "ok", "recovered", "resolved"):
+            return HTTPResponse.json({
+                "status": "up",
+                "service": service_name,
+                "msg": f"{service_name} status is operational",
+            }, status_code=200)
+
+        # Run Jev Intelligent Alert Filter
+        filter_res = await active_alert_filter.evaluate_alert_async(
+            service=service_name,
+            message=alert_msg,
+            url=alert_url,
+            context=body_dict,
+        )
+
+        event_id = f"evt_{uuid.uuid4().hex[:16]}"
+        payload_hash = compute_payload_hash(req.body)
+        idemp_key = req.header("x-alert-id") or hashlib.sha256(
+            f"alert:{service_name}:{payload_hash}".encode()
+        ).hexdigest()
+
+        if not filter_res.is_critical:
+            # Suppressed noise
+            logger.info(
+                "Jev Alert Filter: Suppressed VPS alert for %s (noul=%0.2f < threshold=%0.2f): %s",
+                service_name, filter_res.noul, filter_res.threshold, filter_res.reason
+            )
+            if db is not None:
+                db.insert_webhook_event({
+                    "event_id": event_id,
+                    "source": "alert_filter",
+                    "idempotency_key": idemp_key,
+                    "payload_hash": payload_hash,
+                    "headers_json": json.dumps(dict(req.headers)),
+                    "raw_payload": req.text(),
+                    "method": req.method,
+                    "path": req.path,
+                    "remote_addr": req.remote_addr,
+                    "status": "processed",
+                })
+            if broker is not None:
+                await broker.publish("events", {
+                    "type": "alert_suppressed_by_jev",
+                    "service": service_name,
+                    "noul": filter_res.noul,
+                    "reason": filter_res.reason,
+                })
+            return HTTPResponse.json({
+                "status": "suppressed_noise",
+                "service": service_name,
+                "is_critical": False,
+                "noul": filter_res.noul,
+                "threshold": filter_res.threshold,
+                "reason": filter_res.reason,
+                "model": filter_res.model,
+                "event_id": event_id,
+            }, status_code=200)
+
+        # Escalated Critical Alert
+        outage_desc = f"🔴 [CRITICAL ALERT] {service_name}: {alert_msg} [Jev: {filter_res.noul:0.2f}]"
+        logger.warning("Confirmed critical alert: %s", outage_desc)
+        send_desktop_notification("Antigravity Alert Hub", outage_desc, sound="Basso")
+        asyncio.create_task(send_slack_alert(f"*CRITICAL ALERT*: {outage_desc}\nURL: {alert_url}"))
+
+        if db is not None:
+            db.insert_webhook_event({
+                "event_id": event_id,
+                "source": "alert_filter",
+                "idempotency_key": idemp_key,
+                "payload_hash": payload_hash,
+                "headers_json": json.dumps(dict(req.headers)),
+                "raw_payload": req.text(),
+                "method": req.method,
+                "path": req.path,
+                "remote_addr": req.remote_addr,
+                "status": "received",
+            })
+
+        return HTTPResponse.json({
+            "status": "escalated_critical",
+            "service": service_name,
+            "is_critical": True,
+            "noul": filter_res.noul,
+            "threshold": filter_res.threshold,
+            "reason": filter_res.reason,
+            "model": filter_res.model,
+            "event_id": event_id,
+        }, status_code=202)
+
+    async def handle_alert_diagnose(req: HTTPRequest) -> HTTPResponse:
+        """Diagnostic Endpoint: Test any alert against live Jev System One model."""
+        if not req.body:
+            return HTTPResponse.error("Request body is empty", status_code=400, reason="empty_body")
+        try:
+            body_dict = json.loads(req.body.decode("utf-8"))
+        except Exception:
+            return HTTPResponse.error("Malformed JSON payload", status_code=400, reason="malformed_json")
+
+        service_name = str(body_dict.get("service") or "Diagnostic Test")
+        alert_msg = str(body_dict.get("message") or body_dict.get("msg") or "")
+        alert_url = str(body_dict.get("url") or "")
+        custom_thresh = body_dict.get("threshold")
+        thresh_val = float(custom_thresh) if custom_thresh is not None else None
+
+        res = await active_alert_filter.evaluate_alert_async(
+            service=service_name,
+            message=alert_msg,
+            url=alert_url,
+            context=body_dict,
+            custom_threshold=thresh_val,
+        )
+        return HTTPResponse.json(res.to_dict(), status_code=200)
+
+    async def handle_alert_metrics(req: HTTPRequest) -> HTTPResponse:
+        """Observability Endpoint: Return alert suppression and escalation statistics."""
+        return HTTPResponse.json(active_alert_filter.get_metrics(), status_code=200)
+
+    async def handle_alert_config(req: HTTPRequest) -> HTTPResponse:
+        """Config Endpoint: Inspect (GET) or update (POST) alert filter runtime configuration."""
+        if req.method == "POST":
+            if req.body:
+                try:
+                    data = json.loads(req.body.decode("utf-8"))
+                    if "critical_threshold" in data:
+                        active_alert_filter.critical_threshold = float(data["critical_threshold"])
+                    if "enabled" in data:
+                        active_alert_filter.enabled = bool(data["enabled"])
+                    if "fallback_mode" in data:
+                        active_alert_filter.fallback_mode = str(data["fallback_mode"]).lower()
+                except Exception as e:
+                    return HTTPResponse.error(f"Invalid config payload: {e}", status_code=400)
+        return HTTPResponse.json({
+            "enabled": active_alert_filter.enabled,
+            "critical_threshold": active_alert_filter.critical_threshold,
+            "fallback_mode": active_alert_filter.fallback_mode,
+            "model": active_alert_filter.model,
+            "timeout_seconds": active_alert_filter.timeout_seconds,
+            "has_api_key": bool(active_alert_filter.api_key),
+        }, status_code=200)
+
+    # Register routes
     server.add_route("POST", "/api/webhook/uptime-kuma", handle_uptime_kuma_webhook)
     server.add_route("POST", "/webhook/uptime-kuma", handle_uptime_kuma_webhook)
+    server.add_route("POST", "/api/webhook/alert", handle_alert_webhook)
+    server.add_route("POST", "/webhook/alert", handle_alert_webhook)
+    server.add_route("POST", "/api/webhook/coolify", handle_alert_webhook)
+    server.add_route("POST", "/webhook/coolify", handle_alert_webhook)
+    server.add_route("POST", "/api/alerts/diagnose", handle_alert_diagnose)
+    server.add_route("GET", "/api/alerts/metrics", handle_alert_metrics)
+    server.add_route("GET", "/api/alerts/config", handle_alert_config)
+    server.add_route("POST", "/api/alerts/config", handle_alert_config)

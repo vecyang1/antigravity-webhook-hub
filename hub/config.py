@@ -128,6 +128,16 @@ class AntigravityQuotaConfig:
 
 
 @dataclass(slots=True)
+class AlertFilterConfig:
+    enabled: bool = False
+    critical_threshold: float = 0.70
+    timeout_seconds: float = 3.0
+    fallback_mode: str = "fail_open"  # "fail_open" | "fail_closed" | "heuristic"
+    model: str = "jev-latest"
+    api_key: Optional[str] = None
+
+
+@dataclass(slots=True)
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
@@ -139,6 +149,7 @@ class AppConfig:
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     antigravity_watchdog: AntigravityWatchdogConfig = field(default_factory=AntigravityWatchdogConfig)
     antigravity_quota: AntigravityQuotaConfig = field(default_factory=AntigravityQuotaConfig)
+    alert_filter: AlertFilterConfig = field(default_factory=AlertFilterConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -230,6 +241,13 @@ class AppConfig:
                 "default_gemini_model": self.antigravity_quota.default_gemini_model,
                 "default_3p_model": self.antigravity_quota.default_3p_model,
                 "accounts_dir": self.antigravity_quota.accounts_dir,
+            },
+            "alert_filter": {
+                "enabled": self.alert_filter.enabled,
+                "critical_threshold": self.alert_filter.critical_threshold,
+                "timeout_seconds": self.alert_filter.timeout_seconds,
+                "fallback_mode": self.alert_filter.fallback_mode,
+                "model": self.alert_filter.model,
             },
         }
 
@@ -521,6 +539,28 @@ def load_config(
         if "accounts_dir" in aq:
             cfg.antigravity_quota.accounts_dir = str(aq["accounts_dir"])
 
+    # Jev Alert Filter
+    if "alert_filter" in yaml_data and isinstance(yaml_data["alert_filter"], dict):
+        af = yaml_data["alert_filter"]
+        if "enabled" in af:
+            cfg.alert_filter.enabled = _to_bool(af["enabled"])
+        if "critical_threshold" in af:
+            try:
+                cfg.alert_filter.critical_threshold = float(af["critical_threshold"])
+            except (ValueError, TypeError):
+                pass
+        if "timeout_seconds" in af:
+            try:
+                cfg.alert_filter.timeout_seconds = float(af["timeout_seconds"])
+            except (ValueError, TypeError):
+                pass
+        if "fallback_mode" in af:
+            cfg.alert_filter.fallback_mode = str(af["fallback_mode"]).lower()
+        if "model" in af:
+            cfg.alert_filter.model = str(af["model"])
+        if "api_key" in af:
+            cfg.alert_filter.api_key = str(af["api_key"])
+
     # 4. Apply environment variables over YAML
     # Server
     if "HOST" in combined_env:
@@ -735,6 +775,28 @@ def load_config(
         cfg.antigravity_quota.default_3p_model = str(combined_env["ANTIGRAVITY_QUOTA_DEFAULT_3P_MODEL"])
     if "ANTIGRAVITY_QUOTA_ACCOUNTS_DIR" in combined_env:
         cfg.antigravity_quota.accounts_dir = str(combined_env["ANTIGRAVITY_QUOTA_ACCOUNTS_DIR"])
+
+    # Jev Alert Filter
+    if "JEV_ALERT_FILTER_ENABLED" in combined_env:
+        cfg.alert_filter.enabled = _to_bool(combined_env["JEV_ALERT_FILTER_ENABLED"])
+    if "JEV_ALERT_CRITICAL_THRESHOLD" in combined_env:
+        try:
+            cfg.alert_filter.critical_threshold = float(combined_env["JEV_ALERT_CRITICAL_THRESHOLD"])
+        except (ValueError, TypeError):
+            pass
+    if "JEV_ALERT_TIMEOUT_SECONDS" in combined_env:
+        try:
+            cfg.alert_filter.timeout_seconds = float(combined_env["JEV_ALERT_TIMEOUT_SECONDS"])
+        except (ValueError, TypeError):
+            pass
+    if "JEV_ALERT_FALLBACK_MODE" in combined_env:
+        cfg.alert_filter.fallback_mode = str(combined_env["JEV_ALERT_FALLBACK_MODE"]).lower()
+    if "JEV_ALERT_MODEL" in combined_env:
+        cfg.alert_filter.model = str(combined_env["JEV_ALERT_MODEL"])
+    if "TYPESAFE_API_KEY" in combined_env:
+        cfg.alert_filter.api_key = str(combined_env["TYPESAFE_API_KEY"])
+    elif "JEV_API_KEY" in combined_env:
+        cfg.alert_filter.api_key = str(combined_env["JEV_API_KEY"])
 
     # 5. Apply CLI / Explicit overrides (highest precedence)
     if cli_overrides:
