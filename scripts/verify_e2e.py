@@ -42,6 +42,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
+# Install loopback/proxy-bypass opener to prevent macOS SystemConfiguration proxies
+# from intercepting or closing localhost connections during E2E verification.
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
+
 # Ensure project root is in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:

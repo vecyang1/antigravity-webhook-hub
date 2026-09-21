@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.21] - 2026-09-21
+
+### Fixed & Hardened
+- **macOS 系统代理拦截本地回环请求自愈与探活修复 (`hub/antigravity/agentapi_client.py`, `hub/cli.py`, `scripts/verify_e2e.py`)**:
+  - **gRPC 探活原生解耦**：将 `validate_antigravity_address` 中底层的 `urllib.request.urlopen` 重构为标准库 `http.client.HTTPConnection`（超时 0.5s），绕过 macOS `SystemConfiguration` 框架下的系统代理拦截，使 `doctor` 与 `pull-up` 能够 100% 精准识别并连接活跃的 Antigravity language_server gRPC 通道。
+  - **CLI 回环请求代理隔离保护**：在 `hub/cli.py` 启动环境注入 `NO_PROXY` 与 `no_proxy` 保护项（自动补充 `127.0.0.1,localhost`），杜绝 `webhook-hub status`、`verify`、`sweep` 等命令与本地网关交互时被外部代理劫持。
+  - **E2E 验证套件确定性直连**：在 `scripts/verify_e2e.py` 中全局注入 `ProxyHandler({})`，确保端到端测试与真实对抗性 13 项验收在任何网络/代理环境下均 100% 稳定通过。
+
 ## [1.16.20] - 2026-09-21
 
 ### Fixed

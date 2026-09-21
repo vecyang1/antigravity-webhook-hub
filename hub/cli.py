@@ -78,6 +78,12 @@ import logging
 import os
 import signal
 
+# Ensure loopback traffic is never intercepted by macOS SystemConfiguration proxies
+for _np_key in ("no_proxy", "NO_PROXY"):
+    _curr = os.environ.get(_np_key, "")
+    if "127.0.0.1" not in _curr or "localhost" not in _curr:
+        os.environ[_np_key] = f"{_curr},127.0.0.1,localhost".strip(",")
+
 from hub.config import AppConfig, ServerConfig, load_config
 from hub.memory import apply_memory_pressure_relief
 
