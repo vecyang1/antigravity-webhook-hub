@@ -2019,6 +2019,41 @@ class TestAntigravityWatchdog:
         assert "【系统自动自愈拉起提醒：/boost 目标自治与协同推进延续】" in called_prompt
         assert "严禁退化为单兵等待或打假卡" in called_prompt
 
+    def test_goal_complete_archives_conversation_schedule_and_prevents_resuscitation(self, db, temp_dir):
+        """
+        Verify that when a session contains <!-- GOAL_COMPLETE -->,
+        scan_stalled_conversations automatically archives any active schedule in DB
+        and skips resuscitation completely.
+        """
+        convo_id = "test-goal-complete-session"
+        db.save_conversation_schedule(
+            conversation_id=convo_id,
+            cron_expression="*/10 * * * *",
+            prompt="Heartbeat",
+            expected_interval_seconds=600,
+            last_trigger_at=time.time() - 3600,
+            ls_pid=99999,
+        )
+        assert len(db.list_active_conversation_schedules()) == 1
+
+        steps = [
+            {"step_index": 1, "source": "USER", "type": "USER_INPUT", "status": "DONE", "content": "Run goal"},
+            {"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "<!-- GOAL_COMPLETE -->\nTask finished!", "tool_calls": []},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=500.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
+        watchdog = AntigravityWatchdog(db=db, config=config)
+
+        stalled = watchdog.scan_stalled_conversations()
+        # Session with GOAL_COMPLETE should be completely skipped
+        assert not any(s.conversation_id == convo_id for s in stalled)
+
+        # Active conversation schedule must have been marked as completed
+        active_scheds = db.list_active_conversation_schedules()
+        assert not any(s["conversation_id"] == convo_id for s in active_scheds)
+
+
 
 
 

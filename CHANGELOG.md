@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.6] - 2026-09-21
+
+### Fixed & Hardened
+- **Antigravity Watchdog 完工会话死循环拉起拦截与 Cron 归档 (`hub/antigravity/watchdog.py`, `hub/db.py`)**:
+  - 彻底根治子 Agent（如 `7206972f`）已完工并归档后，因语言服务重启被误判为 `lost_schedule_after_restart` 并向父 Agent 重复触发 `【系统自动 Boost/Delegation 委派协同拉起提醒】` 的死循环。
+  - **Goal Complete Archive Guard**: 将 `<!-- GOAL_COMPLETE -->` 检测前置到会话扫描最开端，会话一旦完工立即跳过拉起评估，并自动将其数据库内悬挂的活跃 Schedule 标记为 `completed`。
+  - **DatabaseManager 补全**: 新增 `complete_conversation_schedule(conversation_id)` 方法，保障会话与定时任务生命周期的一致性。
+  - **尾部扫描窗口扩容**: 将 Transcript 尾部读取深度由 15 行扩充至 30 行，防止后续系统消息导致完工标记被顶出判定窗口。
+  - **测试覆盖**: 编写并通过 `test_goal_complete_archives_conversation_schedule_and_prevents_resuscitation`，54 项 Watchdog 单元测试全量通过。
+
 ## [1.17.5] - 2026-09-21
 
 ### Added & Hardened

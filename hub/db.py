@@ -2047,6 +2047,20 @@ class DatabaseManager:
             finally:
                 cur.close()
 
+    def complete_conversation_schedule(self, conversation_id: str) -> bool:
+        """Mark an active conversation schedule as completed/archived."""
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    "UPDATE conversation_schedules SET status = 'completed' WHERE conversation_id = ? AND status = 'active'",
+                    (conversation_id,),
+                )
+                self._commit_and_shrink()
+                return cur.rowcount > 0
+            finally:
+                cur.close()
+
     def list_resuscitations(
         self,
         limit: int = 50,

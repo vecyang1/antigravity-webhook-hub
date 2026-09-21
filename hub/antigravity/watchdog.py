@@ -1005,7 +1005,7 @@ class AntigravityWatchdog:
                 except Exception:
                     continue
 
-                lines = self._tail_transcript_lines(transcript_path, max_lines=15)
+                lines = self._tail_transcript_lines(transcript_path, max_lines=30)
                 if not lines:
                     continue
 
@@ -1028,6 +1028,15 @@ class AntigravityWatchdog:
                 last_type = last_step.get("type", "")
                 last_status = last_step.get("status", "")
                 last_content = last_step.get("content", "")
+
+                # --- GOAL COMPLETE ARCHIVE GUARD ---
+                # If a session has explicitly recorded completion (<!-- GOAL_COMPLETE -->), it has cleanly finished.
+                # Auto-archive any lingering conversation schedule in the DB and skip resuscitation immediately.
+                has_goal_complete = any("<!-- goal_complete -->" in str(s.get("content") or "").lower() for s in parsed_steps)
+                if has_goal_complete:
+                    if self.db and hasattr(self.db, "complete_conversation_schedule"):
+                        self.db.complete_conversation_schedule(convo_id)
+                    continue
 
                 # --- CRITICAL BOOST / MULTI-AGENT SUBAGENT ACTIVE GUARD ---
                 # In Boost / Multi-Agent delegation mode, the parent agent MUST yield and wait for subagents
