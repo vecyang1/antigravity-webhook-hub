@@ -279,22 +279,22 @@ async def test_e2e_webhook_http_dispatch_flow(e2e_scheduler_env: Any):
 
         assert executed is True, "Webhook dispatch schedule did not complete"
 
-        # Verify receiver received the payload
-        assert len(received_posts) == 1
-        assert received_posts[0]["data"] == {"message": "hello n8n", "priority": "high"}
-        assert received_posts[0]["headers"].get("x-custom-header") == "TestToken123"
-
         # Verify Task status in DB
         history = db.get_schedule_history(sched_id)
         assert len(history) == 1
         task_id = history[0]["task_id"]
 
-        # Wait briefly for Dispatcher
-        for _ in range(20):
+        # Wait for Dispatcher to execute HTTP webhook and populate receiver
+        for _ in range(40):
             task_row = db.get_task(task_id)
-            if task_row and task_row["status"] == "succeeded":
+            if task_row and task_row["status"] == "succeeded" and len(received_posts) == 1:
                 break
             await asyncio.sleep(0.1)
+
+        # Verify receiver received the payload
+        assert len(received_posts) == 1
+        assert received_posts[0]["data"] == {"message": "hello n8n", "priority": "high"}
+        assert received_posts[0]["headers"].get("x-custom-header") == "TestToken123"
 
         task_row = db.get_task(task_id)
         assert task_row["status"] == "succeeded"
