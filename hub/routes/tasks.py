@@ -594,6 +594,110 @@ def register_task_routes(
             status_code=200,
         )
 
+
+    async def handle_task_claim(req: HTTPRequest, task_id: str) -> HTTPResponse:
+        """POST /tasks/{task_id}/claim: Mark a task as claimed by an agent and update Slack/Notion."""
+        if db is None:
+            return HTTPResponse.error("Database not available", status_code=500)
+
+        task = db.get_task(task_id)
+        if asyncio.iscoroutine(task):
+            task = await task
+
+        if not task:
+            return HTTPResponse.error(f"Task {task_id} not found", status_code=404)
+        
+        action_params_json = task.get("action_params_json") or "{}"
+        try:
+            params = json.loads(action_params_json)
+        except json.JSONDecodeError:
+            params = {}
+            
+        result_json_str = task.get("result_json") or "{}"
+        try:
+            result_data = json.loads(result_json_str)
+        except json.JSONDecodeError:
+            result_data = {}
+            
+        if result_data.get("claimed"):
+            return HTTPResponse.json({"status": "skipped", "message": "Task already claimed"}, status_code=200)
+
+        result_data["claimed"] = True
+        
+        req_body = {}
+        if req.body:
+            try:
+                req_body = json.loads(req.body.decode("utf-8"))
+            except Exception:
+                pass
+        agent_name = req_body.get("agent_name", "Antigravity Agent")
+        message_override = req_body.get("message")
+        notion_url = req_body.get("notion_url")
+        
+        slack_notified = False
+        channel = params.get("channel")
+        ts = str(params.get("ts") or params.get("event_ts") or "")
+        thread_ts = params.get("thread_ts")
+        root_ts = str(thread_ts or ts or "")
+        
+        if channel and root_ts:
+            try:
+                from hub.antigravity.thread_notifier import ThreadNotifier
+                notifier = ThreadNotifier()
+                msg = message_override or f"🤖 *[任务已被认领]*\n{agent_name} 已接管此任务，决定自主执行..."
+                await asyncio.to_thread(
+                    notifier.post_thread_message,
+                    channel,
+                    root_ts,
+                    msg
+                )
+                slack_notified = True
+            except Exception as e:
+                logger.warning(f"Failed to post claim to Slack: {e}")
+                
+        notion_notified = False
+        target_notion_url = notion_url or params.get("notion_url") or req_body.get("page_url")
+        if target_notion_url:
+            import re as std_re
+            m = std_re.search(r"([a-f0-9]{32})", target_notion_url.replace("-", ""))
+            if m:
+                page_id = m.group(1)
+                try:
+                    from hub.contact_review.notion_client import NotionPeopleClient
+                    n_client = NotionPeopleClient()
+                    blocks = [
+                        {
+                            "object": "block",
+                            "type": "callout",
+                            "callout": {
+                                "rich_text": [
+                                    {
+                                        "type": "text",
+                                        "text": {"content": f"任务已被 {agent_name} 认领，将自主执行。"}
+                                    }
+                                ],
+                                "icon": {"emoji": "🤖"},
+                                "color": "blue_background"
+                            }
+                        }
+                    ]
+                    await n_client.append_page_blocks(page_id, blocks)
+                    notion_notified = True
+                except Exception as e:
+                    logger.warning(f"Failed to append claim to Notion: {e}")
+
+        if hasattr(db, "execute_write"):
+            await db.execute_write(
+                "UPDATE tasks SET result_json = ? WHERE task_id = ?",
+                (json.dumps(result_data), task_id)
+            )
+            
+        return HTTPResponse.json({
+            "status": "claimed",
+            "slack_notified": slack_notified,
+            "notion_notified": notion_notified
+        }, status_code=200)
+
     server.add_route("GET", "/tasks", handle_tasks_list)
     server.add_route("GET", "/tasks/summary", handle_tasks_summary)
     server.add_route("GET", "/activities/summary", handle_tasks_summary)
@@ -604,3 +708,4 @@ def register_task_routes(
     server.add_route("GET", "/tasks/{task_id}", handle_task_detail)
     server.add_route("POST", "/tasks/{task_id}/rerun", handle_task_rerun)
     server.add_route("POST", "/tasks", handle_create_task)
+    server.add_route("POST", "/tasks/{task_id}/claim", handle_task_claim)
