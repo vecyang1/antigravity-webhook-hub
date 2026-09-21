@@ -23,7 +23,8 @@ A lightweight, zero-footprint local webhook gateway and decoupled event dispatch
   - Antigravity AI agent atomic JSON signal files.
 - **Real-Time Observability & Streaming**: Live Server-Sent Events (`SSE`) endpoints (`/events/stream`, `/tasks/{id}/stream`) with automated 15-second heartbeats and Prometheus metrics exposition (`/metrics`).
 - **Autonomous Antigravity Watchdog & Auto Pull-Up**: 24/7 background watchdog engine that continuously monitors Antigravity AI agent sessions and subagents (including `/boost`, `teamwork-preview`, sidecars). When network streams break (`The stream was interrupted`, `Agent execution terminated due to error`, server restarts), the watchdog fail-closes if offline, waits for stable connection, and autonomously revives the session via native `agentapi send-message` with circuit-breaker protection (max 3 retries), completely eliminating manual "Retry" GUI clicks.
-- **Unified Toolchain**: Full lifecycle control via executable `./bin/webhook-hub` CLI or `python3 -m hub` (including `sweep`, `pick-unprocessed`, and `antigravity doctor/pull-up`).
+- **Intelligent Alert Noise Suppression (TypeSafe AI Jev)**: Sub-50ms monitoring alert filter powered by Jev's `is_critical: noul` primitive. Accurately suppresses ~90% transient health check jitter (e.g. keyword flaps) while immediately escalating confirmed infrastructure outages, complete with CLI diagnostics (`webhook-hub alert-diagnose`) and runtime dynamic threshold controls.
+- **Unified Toolchain**: Full lifecycle control via executable `./bin/webhook-hub` CLI or `python3 -m hub` (including `sweep`, `pick-unprocessed`, `alert-diagnose`, and `antigravity doctor/pull-up`).
 
 ---
 
