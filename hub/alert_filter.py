@@ -200,50 +200,66 @@ class JevAlertFilter:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "User-Agent": DEFAULT_USER_AGENT,
+            "Connection": "close",
         }
 
         req = urllib.request.Request(endpoint, data=body_bytes, headers=headers, method="POST")
 
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                dur = (time.perf_counter() - t0) * 1000.0
-                model_used = data.get("model", self.model)
-                answers = data.get("answers", {})
-                noul_val = float(answers.get("is_critical", {}).get("noul", 0.5))
+        last_err: Optional[Exception] = None
+        max_attempts = 2
 
-                is_critical = noul_val >= threshold
-                action = "escalate" if is_critical else "suppress"
-                if is_critical:
-                    reason = (
-                        f"Jev System One evaluated alert as CRITICAL (noul={noul_val:0.2f} >= threshold={threshold:0.2f}). "
-                        f"Requires urgent engineer attention."
+        for attempt in range(max_attempts):
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    dur = (time.perf_counter() - t0) * 1000.0
+                    model_used = data.get("model", self.model)
+                    answers = data.get("answers", {})
+                    noul_val = float(answers.get("is_critical", {}).get("noul", 0.5))
+
+                    is_critical = noul_val >= threshold
+                    action = "escalate" if is_critical else "suppress"
+                    if is_critical:
+                        reason = (
+                            f"Jev System One evaluated alert as CRITICAL (noul={noul_val:0.2f} >= threshold={threshold:0.2f}). "
+                            f"Requires urgent engineer attention."
+                        )
+                    else:
+                        reason = (
+                            f"Jev System One evaluated alert as NON-CRITICAL NOISE (noul={noul_val:0.2f} < threshold={threshold:0.2f}). "
+                            f"Suppressed transient probe jitter."
+                        )
+
+                    res = AlertFilterResult(
+                        is_critical=is_critical,
+                        noul=noul_val,
+                        threshold=threshold,
+                        action=action,
+                        reason=reason,
+                        model=model_used,
+                        duration_ms=round(dur, 2),
+                        eval_source="jev",
                     )
-                else:
-                    reason = (
-                        f"Jev System One evaluated alert as NON-CRITICAL NOISE (noul={noul_val:0.2f} < threshold={threshold:0.2f}). "
-                        f"Suppressed transient probe jitter."
-                    )
+                    self._record(res, service, message)
+                    return res
 
-                res = AlertFilterResult(
-                    is_critical=is_critical,
-                    noul=noul_val,
-                    threshold=threshold,
-                    action=action,
-                    reason=reason,
-                    model=model_used,
-                    duration_ms=round(dur, 2),
-                    eval_source="jev",
-                )
-                self._record(res, service, message)
-                return res
+            except urllib.error.HTTPError as http_err:
+                # Do not retry on client auth or validation errors (4xx)
+                last_err = http_err
+                if 400 <= http_err.code < 500:
+                    break
+                time.sleep(0.2)
+            except Exception as net_err:
+                last_err = net_err
+                if attempt < max_attempts - 1:
+                    time.sleep(0.2)
 
-        except Exception as e:
-            dur = (time.perf_counter() - t0) * 1000.0
-            logger.warning("Jev alert filter call failed (%s). Applying fallback mode '%s'", e, self.fallback_mode)
-            res = self._apply_fallback(service, message, threshold, dur, str(e))
-            self._record(res, service, message)
-            return res
+        dur = (time.perf_counter() - t0) * 1000.0
+        err_msg = str(last_err) if last_err else "Unknown network error"
+        logger.warning("Jev alert filter call failed (%s). Applying fallback mode '%s'", err_msg, self.fallback_mode)
+        res = self._apply_fallback(service, message, threshold, dur, err_msg)
+        self._record(res, service, message)
+        return res
 
     async def evaluate_alert_async(
         self,
