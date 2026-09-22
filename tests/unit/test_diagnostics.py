@@ -115,6 +115,43 @@ class TestDiagnosticInspector(unittest.TestCase):
         self.assertIn("DOMAIN & EMAIL ROUTING ANALYSIS", report)
         self.assertIn("Car Radio Codes", report)
 
+    def test_explain_url_without_scheme(self):
+        """Verify URL without http/https scheme prefix is properly disambiguated and diagnosed."""
+        res = self.inspector.explain("n.worldinspirelab.com/webhook/heartbeat")
+        self.assertEqual(res["target_type"], "url")
+        self.assertEqual(res["verdict"], "ROUTE_RECOGNIZED")
+        self.assertEqual(res["host"], "n.worldinspirelab.com")
+        self.assertTrue(res["is_known_route"])
+
+    def test_explain_slack_permalink(self):
+        """Verify Slack archive permalink is extracted into channel:ts and diagnosed as Slack thread."""
+        permalink = "https://org.slack.com/archives/C0C1B86AMCN/p1726978432123456"
+        res = self.inspector.explain(permalink)
+        self.assertEqual(res["target_type"], "slack_thread")
+        self.assertEqual(res["channel_id"], "C0C1B86AMCN")
+        self.assertEqual(res["thread_ts"], "1726978432.123456")
+
+    def test_explain_unrecognized_target(self):
+        """Verify unrecognized target returns UNRECOGNIZED_TARGET with guidance rather than failing in Slack API."""
+        res = self.inspector.explain("completely_random_gibberish_string")
+        self.assertEqual(res["target_type"], "unknown")
+        self.assertEqual(res["verdict"], "UNRECOGNIZED_TARGET")
+        self.assertIn("error", res)
+        self.assertIn("supported_formats", res)
+
+        report = format_diagnostic_report(res)
+        self.assertIn("UNRECOGNIZED TARGET FORMAT", report)
+        self.assertIn("SUPPORTED SCHEMAS", report)
+
+    def test_explain_spark_prefixed_email(self):
+        """Verify spark:user@domain.com properly normalizes and routes to the brand channel."""
+        res = self.inspector.explain("spark:support@xinchaovi.com")
+        self.assertEqual(res["target_type"], "email_routing")
+        self.assertEqual(res["email_address"], "support@xinchaovi.com")
+        self.assertEqual(res["domain"], "xinchaovi.com")
+        self.assertEqual(res["brand"], "XinChaoVi EdTech Platform & Student Inquiries")
+        self.assertEqual(res["verdict"], "DOMAIN_ROUTED")
+
     def test_api_diagnose_handler(self):
         """Verify /api/diagnose route handler returns structured JSON and report_text."""
         from hub.config import AppConfig
@@ -144,6 +181,82 @@ class TestDiagnosticInspector(unittest.TestCase):
         self.assertEqual(body.get("system_owner"), "n8n Automation Engine (Cloud VPS @ 62.171.132.182)")
         self.assertIn("report_text", body)
         self.assertIn("ANTIGRAVITY WEBHOOK HUB", body["report_text"])
+
+    def test_api_diagnose_config_handler(self):
+        """Verify /api/diagnose/config endpoint returns live active SSOT configuration with desensitized secrets."""
+        from hub.config import AppConfig
+        from hub.routes.observability import register_observability_routes
+        from hub.server import AsyncHTTPServer
+        import asyncio
+        import json
+
+        cfg = AppConfig()
+        cfg.security.bearer_token = "secret-token-123456789"
+        server = AsyncHTTPServer()
+        register_observability_routes(server, config=cfg, db=self.db)
+
+        handler = server._exact_routes.get(("GET", "/api/diagnose/config"))
+        self.assertIsNotNone(handler, "GET /api/diagnose/config must be registered")
+
+        req = HTTPRequest(method="GET", path="/api/diagnose/config", headers={})
+        resp = asyncio.run(handler(req))
+        self.assertEqual(resp.status_code, 200)
+
+        body = json.loads(resp.body)
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["server"]["port"], 9423)
+        self.assertTrue(body["security"]["bearer_token_configured"])
+        self.assertIn("***", body["security"]["bearer_token_masked"])
+        self.assertNotIn("secret-token-123456789", str(body))  # Zero secret leakage
+
+    def test_api_diagnose_tune_handler(self):
+        """Verify /api/diagnose/tune atomically updates runtime parameters and validates inputs."""
+        from hub.config import AppConfig
+        from hub.routes.observability import register_observability_routes
+        from hub.server import AsyncHTTPServer
+        import asyncio
+        import json
+
+        cfg = AppConfig()
+        server = AsyncHTTPServer()
+        register_observability_routes(server, config=cfg, db=self.db)
+
+        handler = server._exact_routes.get(("POST", "/api/diagnose/tune"))
+        self.assertIsNotNone(handler, "POST /api/diagnose/tune must be registered")
+
+        # 1. Valid tune request
+        payload = {
+            "stale_running_seconds": 600,
+            "sweeper_auto_retry": False,
+            "watchdog_auto_resuscitate": False,
+            "log_level": "DEBUG",
+        }
+        req = HTTPRequest(
+            method="POST",
+            path="/api/diagnose/tune",
+            headers={"content-type": "application/json"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+        resp = asyncio.run(handler(req))
+        self.assertEqual(resp.status_code, 200)
+
+        body = json.loads(resp.body)
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(cfg.sweeper.stale_running_seconds, 600)
+        self.assertEqual(cfg.sweeper.auto_retry_interrupted, False)
+        self.assertEqual(cfg.antigravity_watchdog.auto_resuscitate, False)
+        self.assertEqual(cfg.server.log_level, "DEBUG")
+
+        # 2. Out of range validation
+        invalid_payload = {"stale_running_seconds": 10}  # min is 30
+        req_invalid = HTTPRequest(
+            method="POST",
+            path="/api/diagnose/tune",
+            headers={"content-type": "application/json"},
+            body=json.dumps(invalid_payload).encode("utf-8"),
+        )
+        resp_invalid = asyncio.run(handler(req_invalid))
+        self.assertEqual(resp_invalid.status_code, 400)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.8] - 2026-09-22
+
+### Fixed & Hardened
+- **UI Observability Mandate 深度落实（能读 · 能试 · 能调）与靶向解析防衰退 (`hub/antigravity/diagnostics.py`, `hub/routes/dashboard_template.py`, `hub/routes/observability.py`)**:
+  - **能读 (Read)**：在 Web Dashboard 消除静态卡片假展示，接入实时生效的 `/api/diagnose/config` 端点，直读宿主监听、进程运行时长、真实 SQLite WAL 状态、内存 RSS 与预算比、脱敏鉴权密钥 (`86b3***f7fa`) 及 Watchdog / Sweeper 运行参数。
+  - **能试 (Test)**：彻底修复 Target 分发时未知字符串与无协议 URL（如 `n.worldinspirelab.com/...`）被误派发至 Slack API 导致 `THREAD_NOT_FOUND` 的缺陷；实现自动协议补全 (`https://`)、Slack 归档链接 (`archives/.../p...`) 自动转换提取、非法输入友好引导 (`UNRECOGNIZED_TARGET`)。
+  - **能调 (Tune)**：在 Dashboard 引入受控运行时业务参数微调面板与后端 `POST /api/diagnose/tune` 原子接口，操作员可直接调整孤儿任务判定阈值 (`stale_running_seconds`)、自动重试开关 (`sweeper_auto_retry`)、自动拉起开关 (`watchdog_auto_resuscitate`) 与日志级别 (`log_level`)，受控生效且附带审计日志，杜绝“改代码常量伪装成可配置”。
+  - **多端邮件引擎健壮性**：`_explain_email` 增加 `timeout=2.0` 与 `try...finally: conn.close()` 资源防御，引入 Apple Mail.app (`~/Library/Mail/V10/MailData/Envelope Index`) 双引擎只读回退，规范化去除 `spark:` / `email:` 前缀。
+  - **自动化测试**：扩展 `tests/unit/test_diagnostics.py` 至 14 项专项测试，全仓库 322 项单元测试 100% 全绿通过。
+
 ## [1.17.7] - 2026-09-22
 
 ### Added & Hardened

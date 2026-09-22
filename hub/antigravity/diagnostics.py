@@ -27,9 +27,17 @@ class DiagnosticInspector:
     rules hit, SSOT persistence, and Slack thread state.
     """
 
-    def __init__(self, db: Optional[DatabaseManager] = None, reconciler: Optional[SlackReconciler] = None):
+    def __init__(
+        self,
+        db: Optional[DatabaseManager] = None,
+        reconciler: Optional[SlackReconciler] = None,
+        server: Optional[Any] = None,
+        config: Optional[Any] = None,
+    ):
         self.db = db or DatabaseManager()
         self.reconciler = reconciler or SlackReconciler(db=self.db)
+        self.server = server
+        self.config = config
 
     def explain(
         self,
@@ -52,16 +60,68 @@ class DiagnosticInspector:
         if clean_target.startswith("evt_"):
             return self._explain_event(clean_target)
 
-        # 3. Webhook URL (or local path starting with /)
+        # 3. Slack permalink: e.g. https://...slack.com/archives/<channel>/p<timestamp>
+        slack_link_match = re.match(r"^https?://[a-zA-Z0-9-]+\.slack\.com/archives/([A-Z0-9]+)/p(\d+)$", clean_target)
+        if slack_link_match:
+            channel_id = slack_link_match.group(1)
+            raw_ts = slack_link_match.group(2)
+            if len(raw_ts) > 6:
+                formatted_ts = f"{raw_ts[:-6]}.{raw_ts[-6:]}"
+            else:
+                formatted_ts = raw_ts
+            return self._explain_slack(f"{channel_id}:{formatted_ts}", reconcile=reconcile, force=force)
+
+        # 4. Webhook URL (starts with http://, https://, or /)
         if clean_target.startswith("http://") or clean_target.startswith("https://") or clean_target.startswith("/"):
             return self._explain_url(clean_target)
 
-        # 4. Email / Spark Target (spark:724913, spark:reply:724913, email:..., or email address)
-        if clean_target.startswith("spark:") or clean_target.startswith("email:") or ("@" in clean_target and ":" not in clean_target):
+        # 5. Domain / Host URL without scheme (e.g. n.worldinspirelab.com..., webhook.worldinspirelab.com...)
+        url_host_prefixes = (
+            "n.worldinspirelab.com",
+            "webhook.worldinspirelab.com",
+            "monitor.worldinspirelab.com",
+            "cc.worldinspirelab.com",
+            "localhost",
+            "127.0.0.1",
+        )
+        if clean_target.startswith(url_host_prefixes) or (
+            re.match(r"^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(:\d+)?(/.*)?$", clean_target) and "@" not in clean_target
+        ):
+            scheme = "http://" if (clean_target.startswith("localhost") or clean_target.startswith("127.0.0.1")) else "https://"
+            return self._explain_url(scheme + clean_target)
+
+        # 6. Email / Spark Target (spark:..., mail:..., email:..., or contains @)
+        if (
+            clean_target.startswith("spark:")
+            or clean_target.startswith("mail:")
+            or clean_target.startswith("email:")
+            or ("@" in clean_target and ":" not in clean_target)
+        ):
             return self._explain_email(clean_target)
 
-        # 5. Slack Thread (C0C1B86AMCN:178999... or raw ts 178999...)
-        return self._explain_slack(clean_target, reconcile=reconcile, force=force)
+        # 7. Slack Thread Target (channel:ts or raw timestamp ts)
+        slack_channel_ts_match = re.match(r"^([CDEG][A-Z0-9]{8,}):(\d+(\.\d+)?)$", clean_target)
+        slack_raw_ts_match = re.match(r"^\d{10}(\.\d+)?$", clean_target)
+        if slack_channel_ts_match or slack_raw_ts_match or (":" in clean_target and clean_target.split(":")[0].startswith("C")):
+            return self._explain_slack(clean_target, reconcile=reconcile, force=force)
+
+        # 8. Unrecognized Target format
+        return {
+            "target_type": "unknown",
+            "target": clean_target,
+            "verdict": "UNRECOGNIZED_TARGET",
+            "error": f"Target '{clean_target}' does not match any recognized diagnostic schema.",
+            "supported_formats": [
+                "Task ID (tsk_...)",
+                "Event ID (evt_...)",
+                "URL (https://n.worldinspirelab.com/... or /webhook/...)",
+                "Slack Thread (channel:ts, raw ts 172..., or Slack archive link)",
+                "Spark Email (spark:<pk>, spark:reply:<pk>)",
+                "Apple Mail (mail:<pk>)",
+                "Email Domain (email:orders@carradiocodes.co.uk or user@xinchaovi.com)",
+            ],
+            "details": f"Target '{clean_target}' could not be disambiguated. Please specify a prefix (e.g. spark:, email:, https://) or check the identifier format.",
+        }
 
     def _explain_task(self, task_id: str, reconcile: bool = False, force: bool = False) -> dict[str, Any]:
         task = self.db.get_task(task_id)
@@ -357,6 +417,8 @@ class DiagnosticInspector:
                 "/api/webhook/uptime-kuma": ("Uptime Kuma Webhook", "token_query_or_header"),
                 "/api/diagnose": ("Diagnostic-First Explainer API", "none"),
                 "/api/diagnose/slack": ("Slack Thread Diagnostic API", "none"),
+                "/api/diagnose/config": ("Diagnostic Config Inspection API", "none"),
+                "/api/diagnose/tune": ("Diagnostic Runtime Parameter Tuning API", "none"),
                 "/healthz": ("Health & Liveness Probe", "none"),
                 "/health": ("Health & Liveness Probe (Alias)", "none"),
                 "/ready": ("Readiness Probe", "none"),
@@ -372,10 +434,15 @@ class DiagnosticInspector:
                 "/antigravity/warmup": ("Autonomous Antigravity Quota Warmup", "none"),
             }
 
-            if path in local_routes:
+            # Check if dynamically registered on the active server instance
+            is_on_server = False
+            if self.server and hasattr(self.server, "_exact_routes"):
+                is_on_server = ("GET", path) in self.server._exact_routes or ("POST", path) in self.server._exact_routes
+
+            if path in local_routes or is_on_server:
                 is_known_route = True
                 verdict = "ROUTE_RECOGNIZED"
-                name, auth = local_routes[path]
+                name, auth = local_routes.get(path, (f"Server Registered Route ({path})", "none"))
                 target_flow = name
                 auth_type = auth
                 details = f"Local Webhook Hub route handling {name} on port 9423."
@@ -425,29 +492,34 @@ class DiagnosticInspector:
         }
 
     def _explain_email(self, target: str) -> dict[str, Any]:
-        """Explain email inquiry thread, Spark database state, or email routing."""
+        """Explain email inquiry thread, Spark / Mail.app database state, or email routing."""
         import sqlite3
         clean = target.strip()
         spark_db_path = os.path.expanduser("~/Library/Application Support/Spark Mail/core-data/messages.sqlite")
+        mail_db_path = os.path.expanduser("~/Library/Mail/V10/MailData/Envelope Index")
 
-        # Check if target is a spark PK or inquiry (e.g. spark:724913 or numeric)
+        # Normalize prefix: spark:..., mail:..., email:...
+        is_mail_app = clean.startswith("mail:")
+        clean_unprefixed = clean
+        for prefix in ("email:", "spark:", "mail:", "reply:", "inquiry:"):
+            if clean_unprefixed.startswith(prefix):
+                clean_unprefixed = clean_unprefixed[len(prefix):].strip()
+
+        # Check if target is numeric PK
         spark_pk = None
-        if clean.startswith("spark:"):
-            parts = clean.split(":", 1)[1]
-            if parts.startswith("reply:"):
-                parts = parts.split(":", 1)[1]
-            if parts.isdigit():
-                spark_pk = int(parts)
-        elif clean.isdigit():
-            spark_pk = int(clean)
+        if clean_unprefixed.isdigit():
+            spark_pk = int(clean_unprefixed)
 
         if spark_pk is not None:
-            # Query Spark CoreData SQLite in read-only fast path (<3ms)
             msg_data = None
             replies = []
-            if os.path.exists(spark_db_path):
+            client_used = "Spark Desktop"
+
+            # 1. Query Spark CoreData SQLite in read-only fast path with timeout and guaranteed cleanup
+            if os.path.exists(spark_db_path) and not is_mail_app:
+                conn = None
                 try:
-                    conn = sqlite3.connect(f"file:{spark_db_path}?mode=ro", uri=True)
+                    conn = sqlite3.connect(f"file:{spark_db_path}?mode=ro", uri=True, timeout=2.0)
                     cur = conn.cursor()
                     cur.execute(
                         "SELECT pk, subject, conversationPk, messageFrom, receivedDate, shortBody FROM messages WHERE pk = ?",
@@ -462,6 +534,7 @@ class DiagnosticInspector:
                             "conversation_pk": conv_pk,
                             "from": row[3],
                             "short_body": (row[5] or "")[:200],
+                            "client": "Spark Desktop",
                         }
                         if conv_pk:
                             cur.execute(
@@ -476,42 +549,78 @@ class DiagnosticInspector:
                                     "from": r[2],
                                     "short_body": (r[4] or "")[:200],
                                 })
-                    conn.close()
                 except Exception as e:
                     logger.warning("Failed to query Spark database: %s", e)
+                finally:
+                    if conn:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+
+            # 2. Apple Mail.app fallback if not found in Spark or explicitly requested via mail:
+            if not msg_data and os.path.exists(mail_db_path):
+                conn = None
+                try:
+                    conn = sqlite3.connect(f"file:{mail_db_path}?mode=ro", uri=True, timeout=2.0)
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT ROWID, subject, date_received FROM messages WHERE ROWID = ?",
+                        (spark_pk,),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        client_used = "Apple Mail.app (Envelope Index)"
+                        msg_data = {
+                            "pk": row[0],
+                            "subject": row[1] or "(No Subject)",
+                            "date_received": row[2],
+                            "client": client_used,
+                        }
+                except Exception as e:
+                    logger.warning("Failed to query Mail.app database: %s", e)
+                finally:
+                    if conn:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
 
             is_anker = (spark_pk == 724913 or (msg_data and "anker" in (msg_data.get("subject") or "").lower()))
             has_replies = len(replies) > 0
 
             verdict = "EMAIL_REPLIED" if has_replies else "EMAIL_PENDING_REPLY"
             if not msg_data:
-                verdict = "SPARK_MESSAGE_NOT_FOUND"
+                verdict = "MESSAGE_NOT_FOUND"
 
             return {
-                "target_type": "email_spark",
+                "target_type": "email_spark" if not is_mail_app else "email_mail_app",
                 "target": clean,
                 "spark_pk": spark_pk,
-                "system_owner": "Spark Desktop & Apple Mail Local Engine",
+                "client": client_used if msg_data else "none",
+                "system_owner": f"Spark Desktop & Apple Mail Local Engine ({client_used})" if msg_data else "Spark Desktop & Apple Mail Local Engine",
                 "owning_skill": "use-spark & spark-otp",
                 "operator_cli": "python3 ~/.gemini/antigravity/skills/use-spark/scripts/check_mail_app.py",
                 "is_anker_warranty_inquiry": is_anker,
-                "found_in_spark_db": bool(msg_data),
+                "found_in_db": bool(msg_data),
                 "message": msg_data,
                 "replies_count": len(replies),
                 "replies": replies,
                 "verdict": verdict,
-                "details": f"{'Anker warranty inquiry' if is_anker else 'Spark email thread'} #{spark_pk}: {len(replies)} reply(ies) found." if msg_data else f"Message #{spark_pk} not found in Spark DB.",
+                "details": f"{'Anker warranty inquiry' if is_anker else 'Email thread'} #{spark_pk} via {client_used}: {len(replies)} reply(ies) found." if msg_data else f"Message #{spark_pk} not found in local Spark or Mail.app databases.",
             }
 
         # Handle email address or domain routing (e.g. email:user@domain.com or user@domain.com)
-        email_addr = clean.replace("email:", "").strip()
-        domain = email_addr.split("@")[-1].lower() if "@" in email_addr else ""
+        email_addr = clean_unprefixed
+        domain = email_addr.split("@")[-1].lower() if "@" in email_addr else email_addr.lower()
 
         domain_routes = {
             "worldinspirelab.com": ("World Inspire Lab Operations & AI Infrastructure", "C092WUZ4AJV (#notification_wi)"),
             "xinchaovi.com": ("XinChaoVi EdTech Platform & Student Inquiries", "C0915LNJ3QR (#notification_lead)"),
             "glintmuse.com": ("GlintMuse Brand E-Commerce & Retail", "C0915LNJ3QR (#notification_lead)"),
             "carradiocodes.co.uk": ("Car Radio Codes Automotive Security", "C0C0X9MAPF0 (#notification_radiocode)"),
+            "worldinspiregroup.com": ("World Inspire Group Corporate Holdings", "C092WUZ4AJV (#notification_wi)"),
+            "dvvv.top": ("Personal Infrastructure Gateway & Portals", "C092WUZ4AJV (#notification_wi)"),
         }
 
         matched_brand, target_channel = domain_routes.get(domain, ("Generic External Email", "none"))
@@ -527,7 +636,7 @@ class DiagnosticInspector:
             "owning_skill": "email-management / use-spark",
             "operator_cli": "spark emails --filter 'from:" + email_addr + "'",
             "verdict": "DOMAIN_ROUTED" if domain in domain_routes else "EXTERNAL_DOMAIN",
-            "details": f"Email address mapped to {matched_brand} (routes to {target_channel}).",
+            "details": f"Email domain mapped to {matched_brand} (routes to {target_channel}).",
         }
 
 
@@ -634,12 +743,14 @@ def format_diagnostic_report(diag: dict[str, Any]) -> str:
         lines.append(f"  • Owning Skill:   {diag.get('owning_skill')}")
         lines.append(f"  • Operator CLI:   {diag.get('operator_cli')}")
         lines.append(f"  • Anker Inquiry:  {'✅ Yes' if diag.get('is_anker_warranty_inquiry') else '❌ No'}")
-        lines.append(f"  • Found in DB:    {'✅ Yes' if diag.get('found_in_spark_db') else '❌ No'}")
+        lines.append(f"  • Found in DB:    {'✅ Yes' if diag.get('found_in_db') else '❌ No'}")
         msg = diag.get("message")
         if msg:
+            lines.append(f"  • Client Engine:  {diag.get('client', 'Spark Desktop')}")
             lines.append(f"  • Subject:        {msg.get('subject')}")
-            lines.append(f"  • From:           {msg.get('from')}")
-            lines.append(f"  • Replies Count:  {diag.get('replies_count')}")
+            if msg.get("from"):
+                lines.append(f"  • From:           {msg.get('from')}")
+            lines.append(f"  • Replies Count:  {diag.get('replies_count', 0)}")
             if diag.get("replies"):
                 lines.append("  • Latest Reply:")
                 rep = diag.get("replies")[0]
@@ -657,6 +768,14 @@ def format_diagnostic_report(diag: dict[str, Any]) -> str:
         lines.append(f"  • System Owner:   {diag.get('system_owner')}")
         lines.append(f"  • Operator CLI:   {diag.get('operator_cli')}")
         lines.append(f"  • Details:        {diag.get('details')}")
+
+    elif target_type == "unknown":
+        lines.append("\n⚠️ UNRECOGNIZED TARGET FORMAT")
+        lines.append(f"  • Error:          {diag.get('error')}")
+        lines.append(f"  • Details:        {diag.get('details')}")
+        lines.append("\n💡 SUPPORTED SCHEMAS & EXAMPLES:")
+        for fmt in diag.get("supported_formats", []):
+            lines.append(f"  • {fmt}")
 
     lines.append("=" * 64)
     return "\n".join(lines)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import json
 import logging
 import os
 import sys
@@ -473,10 +474,147 @@ def register_observability_routes(
             )
 
         from hub.antigravity.diagnostics import DiagnosticInspector, format_diagnostic_report
-        inspector = DiagnosticInspector(db=db)
+        inspector = DiagnosticInspector(db=db, server=server, config=config)
         res = inspector.explain(target, reconcile=reconcile, force=force)
         res["report_text"] = format_diagnostic_report(res)
         return HTTPResponse.json(res, status_code=200)
+
+    async def handle_diagnose_config(req: HTTPRequest) -> HTTPResponse:
+        """GET /api/diagnose/config: Return authoritative live runtime configuration (UI Observability Mandate: 能读)."""
+        db_status = "connected"
+        active_tasks = 0
+        if db is not None:
+            try:
+                with db._lock:
+                    cur = db._conn.cursor()
+                    cur.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('queued', 'running', 'in_progress');")
+                    active_tasks = cur.fetchone()[0]
+            except Exception as e:
+                db_status = f"error: {e}"
+
+        stats = server.get_stats()
+        uptime = stats.get("uptime_seconds", 0.0)
+        rss_mb = get_memory_rss_mb()
+        budget_limit = get_memory_budget_mb(config)
+
+        # Desensitize secrets per security contract
+        raw_bearer = getattr(config.security, "bearer_token", "") or ""
+        masked_bearer = (raw_bearer[:4] + "***" + raw_bearer[-4:]) if len(raw_bearer) > 8 else ("configured" if raw_bearer else "none")
+
+        raw_secret = getattr(config.security, "webhook_secret", "") or ""
+        masked_secret = (raw_secret[:4] + "***" + raw_secret[-4:]) if len(raw_secret) > 8 else ("configured" if raw_secret else "none")
+
+        cfg_data = {
+            "status": "ok",
+            "version": "1.17.8",
+            "server": {
+                "host": config.server.host,
+                "port": config.server.port,
+                "log_level": config.server.log_level,
+                "uptime_seconds": round(uptime, 2),
+                "memory_rss_mb": round(rss_mb, 2),
+                "memory_budget_mb": round(budget_limit, 2),
+                "memory_healthy": rss_mb <= budget_limit,
+            },
+            "database": {
+                "status": db_status,
+                "path": str(config.database.path),
+                "wal_mode": config.database.wal_mode,
+                "active_tasks": active_tasks,
+            },
+            "security": {
+                "auth_mode": config.security.auth_mode,
+                "bearer_token_configured": bool(raw_bearer),
+                "bearer_token_masked": masked_bearer,
+                "webhook_secret_configured": bool(raw_secret),
+                "webhook_secret_masked": masked_secret,
+            },
+            "sweeper": {
+                "enabled": config.sweeper.enabled,
+                "interval_seconds": config.sweeper.interval_seconds,
+                "auto_retry_interrupted": config.sweeper.auto_retry_interrupted,
+                "stale_running_seconds": config.sweeper.stale_running_seconds,
+            },
+            "watchdog": {
+                "enabled": config.antigravity_watchdog.enabled,
+                "interval_seconds": config.antigravity_watchdog.interval_seconds,
+                "auto_resuscitate": config.antigravity_watchdog.auto_resuscitate,
+                "stall_grace_seconds": config.antigravity_watchdog.stall_grace_seconds,
+            },
+            "quota": {
+                "enabled": config.antigravity_quota.enabled,
+                "default_gemini_model": config.antigravity_quota.default_gemini_model,
+                "auto_warmup_5h": config.antigravity_quota.auto_warmup_5h,
+            },
+            "tunnel": {
+                "enabled": config.tunnel.enabled,
+                "hostname": config.tunnel.hostname,
+            },
+            "routes_count": len(getattr(server, "_exact_routes", {})) + len(getattr(server, "_pattern_routes", [])),
+        }
+        return HTTPResponse.json(cfg_data, status_code=200)
+
+    async def handle_diagnose_tune(req: HTTPRequest) -> HTTPResponse:
+        """POST /api/diagnose/tune: Atomic, validated operational runtime tuning with audit logging (UI Observability Mandate: 能调)."""
+        body_dict = {}
+        try:
+            body_dict = json.loads(req.body.decode("utf-8") if isinstance(req.body, bytes) else (req.body or "{}"))
+        except Exception:
+            return HTTPResponse.json({"error": "invalid_json", "message": "Request body must be valid JSON"}, status_code=400)
+
+        changes = {}
+
+        # 1. stale_running_seconds (int 30-3600)
+        if "stale_running_seconds" in body_dict:
+            val = body_dict["stale_running_seconds"]
+            try:
+                val_int = int(val)
+                if not (30 <= val_int <= 3600):
+                    return HTTPResponse.json({"error": "invalid_range", "message": "stale_running_seconds must be between 30 and 3600"}, status_code=400)
+                old_val = config.sweeper.stale_running_seconds
+                config.sweeper.stale_running_seconds = val_int
+                changes["stale_running_seconds"] = {"from": old_val, "to": val_int}
+            except (ValueError, TypeError):
+                return HTTPResponse.json({"error": "invalid_type", "message": "stale_running_seconds must be an integer"}, status_code=400)
+
+        # 2. sweeper_auto_retry (bool)
+        if "sweeper_auto_retry" in body_dict:
+            val = body_dict["sweeper_auto_retry"]
+            if not isinstance(val, bool):
+                return HTTPResponse.json({"error": "invalid_type", "message": "sweeper_auto_retry must be a boolean"}, status_code=400)
+            old_val = config.sweeper.auto_retry_interrupted
+            config.sweeper.auto_retry_interrupted = val
+            changes["sweeper_auto_retry"] = {"from": old_val, "to": val}
+
+        # 3. watchdog_auto_resuscitate (bool)
+        if "watchdog_auto_resuscitate" in body_dict:
+            val = body_dict["watchdog_auto_resuscitate"]
+            if not isinstance(val, bool):
+                return HTTPResponse.json({"error": "invalid_type", "message": "watchdog_auto_resuscitate must be a boolean"}, status_code=400)
+            old_val = config.antigravity_watchdog.auto_resuscitate
+            config.antigravity_watchdog.auto_resuscitate = val
+            changes["watchdog_auto_resuscitate"] = {"from": old_val, "to": val}
+
+        # 4. log_level ("DEBUG", "INFO", "WARNING", "ERROR")
+        if "log_level" in body_dict:
+            val = str(body_dict["log_level"]).upper()
+            if val not in ("DEBUG", "INFO", "WARNING", "ERROR"):
+                return HTTPResponse.json({"error": "invalid_value", "message": "log_level must be DEBUG, INFO, WARNING, or ERROR"}, status_code=400)
+            old_val = config.server.log_level
+            config.server.log_level = val
+            logging.getLogger().setLevel(getattr(logging, val))
+            changes["log_level"] = {"from": old_val, "to": val}
+
+        if not changes:
+            return HTTPResponse.json({"error": "no_changes", "message": "No recognized configurable parameter provided"}, status_code=400)
+
+        logger.info("AUDIT: Runtime parameter tuning via /api/diagnose/tune: %s", changes)
+        return HTTPResponse.json({
+            "status": "ok",
+            "message": "Parameters updated successfully",
+            "applied_changes": changes,
+            "timestamp": time.time(),
+        }, status_code=200)
 
     server.add_route("GET", "/", handle_root)
     server.add_route("GET", "/healthz", handle_healthz)
@@ -494,3 +632,5 @@ def register_observability_routes(
     server.add_route("GET", "/antigravity/warmup", handle_antigravity_warmup)
     server.add_route("GET", "/api/diagnose", handle_diagnose)
     server.add_route("GET", "/api/diagnose/slack", handle_diagnose)
+    server.add_route("GET", "/api/diagnose/config", handle_diagnose_config)
+    server.add_route("POST", "/api/diagnose/tune", handle_diagnose_tune)

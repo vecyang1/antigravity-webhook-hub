@@ -2565,14 +2565,35 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           </div>
 
           <!-- Architecture & Active Boundaries (能读) -->
+          <!-- Architecture & Active Boundaries (能读) -->
           <div class="table-card" style="margin-bottom: 24px;">
             <div class="table-header">
               <div>
-                <div class="table-title">Estate Boundaries &amp; SSOT Architecture (能读 · 架构与路由总览)</div>
-                <div style="font-size: 12px; color: var(--text-muted);">Authoritative configuration &amp; system owners derived from live environment</div>
+                <div class="table-title">Live Active Telemetry &amp; SSOT Architecture (能读 · 实时生效配置与路由)</div>
+                <div style="font-size: 12px; color: var(--text-muted);">Authoritative configuration &amp; system owners derived from live server state (/api/diagnose/config)</div>
               </div>
-              <span class="badge badge-succeeded" style="font-size: 11px;">Single Source of Truth</span>
+              <span id="cfgLiveIndicator" class="badge badge-succeeded" style="font-size: 11px;">SSOT Live Connected</span>
             </div>
+            <!-- Dynamic Telemetry Grid -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; padding: 18px 20px; border-bottom: 1px solid rgba(255, 255, 255, 0.08);">
+              <div style="background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 6px; padding: 12px;">
+                <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 4px;">Host / Port / Version</div>
+                <div id="cfgServerHostPort" style="font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: #60a5fa;">Loading...</div>
+              </div>
+              <div style="background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 6px; padding: 12px;">
+                <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 4px;">Database Status &amp; Tasks</div>
+                <div id="cfgDbStatus" style="font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: #34d399;">Loading...</div>
+              </div>
+              <div style="background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 6px; padding: 12px;">
+                <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 4px;">Memory RSS / Budget / Uptime</div>
+                <div id="cfgMemory" style="font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: #a78bfa;">Loading...</div>
+              </div>
+              <div style="background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 6px; padding: 12px;">
+                <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 4px;">Security &amp; Tokens</div>
+                <div id="cfgSecurity" style="font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: #f59e0b;">Loading...</div>
+              </div>
+            </div>
+            <!-- 3 Architectural Pillars Summary -->
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; padding: 18px 20px;">
               <!-- Pillar 1: n8n Cloud -->
               <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 14px;">
@@ -2602,10 +2623,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
               <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 14px;">
                 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
                   <span style="font-weight: 600; font-size: 13px; color: #34d399;">Mail &amp; OTP Fast-Path</span>
-                  <span class="badge" style="background: rgba(52, 211, 153, 0.15); color: #34d399; font-size: 10px;">Sub-3ms</span>
+                  <span class="badge" style="background: rgba(52, 211, 153, 0.15); color: #34d399; font-size: 10px;">Dual Engine</span>
                 </div>
                 <div style="font-size: 11px; color: var(--text-muted); line-height: 1.6;">
-                  <div>• <strong>CoreData DB:</strong> <code>Spark messages.sqlite (mode=ro)</code></div>
+                  <div>• <strong>Engines:</strong> <code>Spark SQLite &amp; Apple Mail.app</code></div>
                   <div>• <strong>Role:</strong> 0-LLM OTP Extraction, Warranty Inquiries</div>
                   <div>• <strong>Master CLI:</strong> <code>check_mail_app.py</code></div>
                 </div>
@@ -2613,7 +2634,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
             </div>
           </div>
 
-          <!-- Interactive Diagnostic Workbench (能试 · 能调) -->
+          <!-- Interactive Diagnostic Workbench (能试 · 交互诊断) -->
           <div class="table-card" style="margin-bottom: 24px;">
             <div class="table-header">
               <div>
@@ -2623,7 +2644,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
             </div>
             <div style="padding: 18px 20px;">
               <div style="display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap;">
-                <input type="text" id="diagInputTarget" class="search-input" style="flex: 1; min-width: 280px; padding: 10px 14px; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;" placeholder="Enter URL (https://...), Task ID (tsk_...), Slack Thread (channel:ts), or Spark ID (spark:724913)..." onkeydown="if(event.key==='Enter') executeDiagnostic()">
+                <input type="text" id="diagInputTarget" class="search-input" style="flex: 1; min-width: 280px; padding: 10px 14px; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;" placeholder="Enter URL, Task ID (tsk_...), Slack Thread (channel:ts), or Spark ID (spark:724913)..." onkeydown="if(event.key==='Enter') executeDiagnostic()">
                 <button class="btn btn-primary" onclick="executeDiagnostic()" id="btnRunDiag">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                   <span>Run Explain</span>
@@ -2634,8 +2655,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
               <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px;">
                 <span style="font-size: 11px; color: var(--text-muted);">Quick Samples:</span>
                 <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="setDiagTarget('https://n.worldinspirelab.com/webhook/carradiocodes-notifications')">n8n Radio Codes</button>
-                <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="setDiagTarget('https://webhook.worldinspirelab.com/webhook/contact-review')">Contact Review Tunnel</button>
-                <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="setDiagTarget('https://n.worldinspirelab.com/webhook/heartbeat')">n8n Heartbeat</button>
+                <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="setDiagTarget('n.worldinspirelab.com/webhook/heartbeat')">n8n Heartbeat (No Scheme)</button>
+                <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="setDiagTarget('webhook.worldinspirelab.com/webhook/contact-review')">Contact Review Tunnel</button>
                 <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="setDiagTarget('/webhook/antigravity')">Local Antigravity</button>
                 <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="setDiagTarget('spark:724913')">Anker Inquiry #724913</button>
                 <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="setDiagTarget('email:hello@xinchaovi.com')">XinChaoVi Routing</button>
@@ -2658,6 +2679,59 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
                 </div>
 
                 <div id="diagResultBody" class="terminal-body" style="background: rgba(2, 6, 23, 0.8); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; padding: 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; max-height: 480px; overflow-y: auto;"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Runtime Parameter Tuning (能调 · 受控业务规则调整) -->
+          <div class="table-card" style="margin-bottom: 24px;">
+            <div class="table-header">
+              <div>
+                <div class="table-title">Operational Parameter Tuning (能调 · 受控参数调整与对账)</div>
+                <div style="font-size: 12px; color: var(--text-muted);">Atomic runtime parameter adjustment with audit logging without redeploying code</div>
+              </div>
+            </div>
+            <div style="padding: 18px 20px;">
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-bottom: 16px;">
+                <div>
+                  <label class="form-label">Stale Task Threshold (Seconds)</label>
+                  <input type="number" id="tuneStaleSeconds" class="form-input" min="30" max="3600" value="300">
+                  <div style="font-size: 11px; color: var(--text-subtle); margin-top: 4px;">Time before a task is flagged as stale (30-3600s).</div>
+                </div>
+                <div>
+                  <label class="form-label">Server Log Level</label>
+                  <select id="tuneLogLevel" class="form-select">
+                    <option value="DEBUG">DEBUG (Verbose)</option>
+                    <option value="INFO" selected>INFO (Standard)</option>
+                    <option value="WARNING">WARNING (Quiet)</option>
+                    <option value="ERROR">ERROR (Critical only)</option>
+                  </select>
+                  <div style="font-size: 11px; color: var(--text-subtle); margin-top: 4px;">Dynamically updates Python logging level.</div>
+                </div>
+                <div>
+                  <label class="form-label">Sweeper Auto-Retry</label>
+                  <div style="margin-top: 8px;">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px;">
+                      <input type="checkbox" id="tuneSweeperAutoRetry" checked style="width: 16px; height: 16px;">
+                      <span>Auto-retry interrupted / orphaned tasks</span>
+                    </label>
+                  </div>
+                </div>
+                <div>
+                  <label class="form-label">Watchdog Auto-Resuscitation</label>
+                  <div style="margin-top: 8px;">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px;">
+                      <input type="checkbox" id="tuneWatchdogAutoResuscitate" checked style="width: 16px; height: 16px;">
+                      <span>Auto-resuscitate stalled Antigravity sessions</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <div style="display: flex; justify-content: flex-end;">
+                <button class="btn btn-primary" id="btnApplyTune" onclick="applyDiagnosticTuning()">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                  <span>Apply Parameters (原子生效并留痕)</span>
+                </button>
               </div>
             </div>
           </div>
@@ -3520,6 +3594,7 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         if (titleEl) titleEl.innerText = 'Diagnostic Inspector & Rule Reconciler';
         if (toggleFilterBtn) toggleFilterBtn.style.display = 'none';
         if (searchInput) searchInput.placeholder = 'Search diagnostic target...';
+        loadDiagnosticConfig();
       }} else {{
         if (titleEl) titleEl.innerText = 'All Activities';
         if (toggleFilterBtn) toggleFilterBtn.style.display = 'inline-flex';
@@ -6819,6 +6894,87 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
       }} catch (err) {{
         console.error('Failed to reconcile:', err);
         if (resBody) resBody.innerText += '\\n\\n❌ Reconciliation failed: ' + err.message;
+      }} finally {{
+        if (btn) btn.disabled = false;
+      }}
+    }}
+
+    async function loadDiagnosticConfig() {{
+      const liveInd = document.getElementById('cfgLiveIndicator');
+      try {{
+        const resp = await fetch('/api/diagnose/config');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+
+        const hostEl = document.getElementById('cfgServerHostPort');
+        if (hostEl) hostEl.innerText = `${{data.server.host}}:${{data.server.port}} (v${{data.version}})`;
+
+        const dbEl = document.getElementById('cfgDbStatus');
+        if (dbEl) dbEl.innerText = `${{data.database.status.toUpperCase()}} (WAL: ${{data.database.wal_mode ? 'ON' : 'OFF'}}, ${{data.database.active_tasks}} active)`;
+
+        const memEl = document.getElementById('cfgMemory');
+        if (memEl) memEl.innerText = `${{data.server.memory_rss_mb}}MB / ${{data.server.memory_budget_mb}}MB (Uptime: ${{Math.round(data.server.uptime_seconds)}}s)`;
+
+        const secEl = document.getElementById('cfgSecurity');
+        if (secEl) secEl.innerText = `Auth: ${{data.security.auth_mode}} | Bearer: ${{data.security.bearer_token_masked}}`;
+
+        const staleInput = document.getElementById('tuneStaleSeconds');
+        if (staleInput && data.sweeper) staleInput.value = data.sweeper.stale_running_seconds;
+
+        const sweeperRetry = document.getElementById('tuneSweeperAutoRetry');
+        if (sweeperRetry && data.sweeper) sweeperRetry.checked = data.sweeper.auto_retry_interrupted;
+
+        const watchdogResuscitate = document.getElementById('tuneWatchdogAutoResuscitate');
+        if (watchdogResuscitate && data.watchdog) watchdogResuscitate.checked = data.watchdog.auto_resuscitate;
+
+        const logLevel = document.getElementById('tuneLogLevel');
+        if (logLevel && data.server) logLevel.value = data.server.log_level;
+
+        if (liveInd) {{
+          liveInd.className = 'badge badge-succeeded';
+          liveInd.innerText = 'SSOT Live Connected';
+        }}
+      }} catch (err) {{
+        console.error('Failed to load diagnostic config:', err);
+        if (liveInd) {{
+          liveInd.className = 'badge badge-failed';
+          liveInd.innerText = 'SSOT Offline';
+        }}
+      }}
+    }}
+
+    async function applyDiagnosticTuning() {{
+      const btn = document.getElementById('btnApplyTune');
+      if (btn) btn.disabled = true;
+
+      const staleVal = parseInt(document.getElementById('tuneStaleSeconds').value, 10);
+      const retryVal = document.getElementById('tuneSweeperAutoRetry').checked;
+      const resuscitateVal = document.getElementById('tuneWatchdogAutoResuscitate').checked;
+      const logLevelVal = document.getElementById('tuneLogLevel').value;
+
+      const payload = {{
+        stale_running_seconds: staleVal,
+        sweeper_auto_retry: retryVal,
+        watchdog_auto_resuscitate: resuscitateVal,
+        log_level: logLevelVal
+      }};
+
+      try {{
+        const resp = await fetch('/api/diagnose/tune', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify(payload)
+        }});
+        const result = await resp.json();
+        if (resp.ok && result.status === 'ok') {{
+          showToast('Runtime parameters updated and applied to SSOT.', 'success');
+          loadDiagnosticConfig();
+        }} else {{
+          showToast('Failed to update parameters: ' + (result.message || resp.statusText), 'error');
+        }}
+      }} catch (err) {{
+        console.error('Failed to tune parameters:', err);
+        showToast('Error tuning parameters: ' + err.message, 'error');
       }} finally {{
         if (btn) btn.disabled = false;
       }}
