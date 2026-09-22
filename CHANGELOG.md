@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.9] - 2026-09-22
+
+### Changed & Enhanced
+- **Anker 售后定时提醒与跟进催促联动 (`scripts/check_anker_reminder.py`)**:
+  - 增强 `notify_slack()` 未收到回复分支的通知逻辑：当售后（`ced-cn@anker.com`）超过 24 小时未回复时，自动在 Slack 通知中附带跟进催促（Follow-up）话术建议、邮件模板以及直达 Spark 邮件会话的深度链接 (`https://sparkmailapp.com/dpl/...`)。
+  - 将计划任务 `sch_6ff7bb6018f649f9` 的触发时间对齐至 2026-09-23 14:50:00 (UTC+8)，由 Webhook Hub 常驻守护进程与 SQLite SSOT 调度引擎确保到时准时检查并派发通知。
+
 ## [1.17.8] - 2026-09-22
 
 ### Fixed & Hardened

@@ -150,12 +150,17 @@ def notify_slack(result: dict[str, Any], channel: str = DEFAULT_SLACK_CHANNEL) -
             f"👉 请打开 Spark 客户端查看完整邮件回复并安排寄送。"
         )
     else:
+        spark_link = "https://sparkmailapp.com/dpl/bl?token=QTpmbHltYW5zaGhAZ21haWwuY29tO0lEOjNlOWUyOGQ4LTRiMjctNGEwNy05YTQx%0D%0ALWI0YzAxZWFkZDIzNEBTcGFyaztnSUQ6MTg3NjkyOTAxOTIwMzA5NzU4NDsyMTA3%0D%0ANDUwOTc%3D"
         text = (
-            f"⏳ *Anker 售后保修回复检查*\n"
+            f"⏳ *Anker 售后保修回复检查 — 尚未收到回复*\n"
             f"• *设备*: `Anker 737 120W A2148 (SN: AFZWC61F13100681)`\n"
-            f"• *状态*: 截至目前安克售后尚未回复 (Conversation PK: {result.get('conversation_pk')})\n"
-            f"• *原始咨询*: 2026-09-21 发送至 ced-cn@anker.com\n"
-            f"Webhook Hub 计划任务系统将在后台保持监听并在收到回复后立刻提醒。"
+            f"• *状态*: 截至目前安克售后（ced-cn@anker.com）尚未回复 (会话 PK: {result.get('conversation_pk')})\n"
+            f"• *原始邮件*: 2026-09-21 16:18 发送至 ced-cn@anker.com\n\n"
+            f"⚠️ *距发送已超24小时，建议发送跟进催促（Follow-up）*：\n"
+            f"> *收件人*: `ced-cn@anker.com`\n"
+            f"> *主题*: `Re: 充电器售后咨询 - 跟进催促（SN: AFZWC61F13100681）`\n"
+            f"> *正文*: “安克售后专员您好，我于9月21日提交了 Anker 737 120W 充电器插脚松动售后（SN: AFZWC61F13100681）。此前微信客服已核验确认在保。急需备用，请协助尽快登记并提供售后寄回地址与收件人信息，谢谢！”\n\n"
+            f"👉 <{spark_link}|在 Spark 中打开邮件查看并回复>"
         )
 
     url = "https://slack.com/api/chat.postMessage"
