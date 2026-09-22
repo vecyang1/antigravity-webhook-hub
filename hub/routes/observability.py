@@ -472,9 +472,10 @@ def register_observability_routes(
                 status_code=400,
             )
 
-        from hub.antigravity.diagnostics import DiagnosticInspector
+        from hub.antigravity.diagnostics import DiagnosticInspector, format_diagnostic_report
         inspector = DiagnosticInspector(db=db)
         res = inspector.explain(target, reconcile=reconcile, force=force)
+        res["report_text"] = format_diagnostic_report(res)
         return HTTPResponse.json(res, status_code=200)
 
     server.add_route("GET", "/", handle_root)

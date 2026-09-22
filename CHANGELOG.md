@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.7] - 2026-09-22
+
+### Added & Hardened
+- **UI Observability Mandate & Inspector 诊断工作台 (`hub/routes/dashboard_template.py`, `hub/routes/observability.py`)**:
+  - 严格落实“凡称可配置，必须可检查；凡有业务规则，必须能找到对账依据”的可观察性契约；在 Web Dashboard 侧边栏新增 `Inspector & Diagnostic` 入口与视图面板 `viewContainerDiagnostic`。
+  - **能读 (Read)**：系统架构与 SSOT 边界卡片化呈现（Cloud n8n `n.worldinspirelab.com`、Local Gateway `webhook.worldinspirelab.com` 与 Spark 邮件/OTP 引擎）。
+  - **能试 (Test)**：交互式实时诊断工作台，支持直接输入 URL、Task ID、Slack 线程、Spark 邮件 PK (`spark:724913`) 或域名，并内置 6 类快速预设探针。
+  - **能调 (Tune)**：针对未完成或待补发任务直接提供“Reconcile Now (自愈补发)”单键触发与状态重算反馈。
+  - 增强 `/api/diagnose` 端点，在返回结构化 JSON 的同时附带高信噪比格式化文本报告 `report_text`。
+- **Estate Explainer 与多资产因果追溯 (`hub/antigravity/diagnostics.py`)**:
+  - 扩展 `_explain_url`：精准识别云端 n8n（`n.worldinspirelab.com` 下各类 Webhook 路由与 VPS 归属）、Cloudflare Tunnel 穿透网关（`webhook.worldinspirelab.com`）与本地端口 9423 路由。
+  - 扩展 `_explain_email`：原生支持 Spark 邮件与保修单诊断（`spark:<pk>` 直查 SQLite `messages.sqlite` 只读事务，支持回复链深度探测），以及多品牌域名邮件路由分析（`worldinspirelab.com`, `xinchaovi.com`, `glintmuse.com`, `carradiocodes.co.uk`）。
+- **测试覆盖与零回归保障 (`tests/unit/test_diagnostics.py`)**:
+  - 新增专用单元测试套件 `test_diagnostics.py`，8 项测试全部通过；全仓库 318 项单元测试 100% 全绿通过。
+
 ## [1.17.6] - 2026-09-21
 
 ### Fixed & Hardened

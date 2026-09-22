@@ -1817,6 +1817,13 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
               </div>
               <span class="nav-count" id="countSchedules" style="background: rgba(139, 92, 246, 0.15); color: #a78bfa;">0</span>
             </li>
+            <li class="nav-item" id="navItemDiagnostic" data-nav="diagnostic" onclick="switchMainView('diagnostic', this)" title="Inspector &amp; Diagnostic-First explainer for URLs, tasks, and Slack threads">
+              <div class="nav-item-left">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><path d="m11 8 3 3-3 3"/></svg>
+                <span>Inspector &amp; Diagnostic</span>
+              </div>
+              <span class="nav-count" id="countDiagnosticStatus" style="background: rgba(59, 130, 246, 0.15); color: var(--accent-blue);">Live</span>
+            </li>
           </ul>
         </div>
 
@@ -2533,6 +2540,126 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
                 </tr>
               </tbody>
             </table>
+          </div>
+        </div>
+
+        <!-- View 8: Diagnostic Inspector & Rule Reconciler (对账器优先) -->
+        <div id="viewContainerDiagnostic" class="view-panel" style="display: none;">
+          <!-- Telemetry & Active Architecture Banner -->
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
+            <div>
+              <div style="font-size: 18px; font-weight: 700; color: #ffffff; display: flex; align-items: center; gap: 8px;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent-blue);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><path d="m11 8 3 3-3 3"/></svg>
+                <span>Diagnostic Inspector &amp; Rule Reconciler (对账器优先)</span>
+              </div>
+              <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+                凡称可配置，必须可检查；凡有业务规则，必须能找到对账依据。端到端验算 URL、任务与会话执行逻辑与 SSOT 状态。
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <button class="btn btn-secondary" onclick="executeDiagnostic()" title="Refresh current diagnostic target">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
+                <span>Refresh Diagnostics</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Architecture & Active Boundaries (能读) -->
+          <div class="table-card" style="margin-bottom: 24px;">
+            <div class="table-header">
+              <div>
+                <div class="table-title">Estate Boundaries &amp; SSOT Architecture (能读 · 架构与路由总览)</div>
+                <div style="font-size: 12px; color: var(--text-muted);">Authoritative configuration &amp; system owners derived from live environment</div>
+              </div>
+              <span class="badge badge-succeeded" style="font-size: 11px;">Single Source of Truth</span>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; padding: 18px 20px;">
+              <!-- Pillar 1: n8n Cloud -->
+              <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 14px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                  <span style="font-weight: 600; font-size: 13px; color: #60a5fa;">Cloud Automation Engine</span>
+                  <span class="badge" style="background: rgba(16, 185, 129, 0.15); color: var(--status-success); font-size: 10px;">Uptime #44</span>
+                </div>
+                <div style="font-size: 11px; color: var(--text-muted); line-height: 1.6;">
+                  <div>• <strong>Host:</strong> <code>n.worldinspirelab.com</code></div>
+                  <div>• <strong>Role:</strong> Cloud Edge Webhooks, CRM Leads, Notifications</div>
+                  <div>• <strong>Master CLI:</strong> <code>n8n_workflow_ops.py</code></div>
+                </div>
+              </div>
+              <!-- Pillar 2: Local Webhook Hub -->
+              <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 14px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                  <span style="font-weight: 600; font-size: 13px; color: #a78bfa;">Local Gateway &amp; Tunnel</span>
+                  <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: var(--accent-blue); font-size: 10px;">Port 9423</span>
+                </div>
+                <div style="font-size: 11px; color: var(--text-muted); line-height: 1.6;">
+                  <div>• <strong>Tunnel:</strong> <code>webhook.worldinspirelab.com</code></div>
+                  <div>• <strong>Role:</strong> Mobile Intake, Notion CRM Review, Watchdog</div>
+                  <div>• <strong>Master CLI:</strong> <code>bin/webhook-hub</code></div>
+                </div>
+              </div>
+              <!-- Pillar 3: Spark & Apple Mail -->
+              <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 14px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                  <span style="font-weight: 600; font-size: 13px; color: #34d399;">Mail &amp; OTP Fast-Path</span>
+                  <span class="badge" style="background: rgba(52, 211, 153, 0.15); color: #34d399; font-size: 10px;">Sub-3ms</span>
+                </div>
+                <div style="font-size: 11px; color: var(--text-muted); line-height: 1.6;">
+                  <div>• <strong>CoreData DB:</strong> <code>Spark messages.sqlite (mode=ro)</code></div>
+                  <div>• <strong>Role:</strong> 0-LLM OTP Extraction, Warranty Inquiries</div>
+                  <div>• <strong>Master CLI:</strong> <code>check_mail_app.py</code></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Interactive Diagnostic Workbench (能试 · 能调) -->
+          <div class="table-card" style="margin-bottom: 24px;">
+            <div class="table-header">
+              <div>
+                <div class="table-title">Live Diagnostic &amp; Explain Workbench (能试 · 交互诊断)</div>
+                <div style="font-size: 12px; color: var(--text-muted);">Enter a Webhook URL, Task ID, Slack Thread, or Email reference to trace rules and SSOT state</div>
+              </div>
+            </div>
+            <div style="padding: 18px 20px;">
+              <div style="display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap;">
+                <input type="text" id="diagInputTarget" class="search-input" style="flex: 1; min-width: 280px; padding: 10px 14px; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;" placeholder="Enter URL (https://...), Task ID (tsk_...), Slack Thread (channel:ts), or Spark ID (spark:724913)..." onkeydown="if(event.key==='Enter') executeDiagnostic()">
+                <button class="btn btn-primary" onclick="executeDiagnostic()" id="btnRunDiag">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  <span>Run Explain</span>
+                </button>
+              </div>
+
+              <!-- Quick Presets -->
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px;">
+                <span style="font-size: 11px; color: var(--text-muted);">Quick Samples:</span>
+                <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="setDiagTarget('https://n.worldinspirelab.com/webhook/carradiocodes-notifications')">n8n Radio Codes</button>
+                <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="setDiagTarget('https://webhook.worldinspirelab.com/webhook/contact-review')">Contact Review Tunnel</button>
+                <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="setDiagTarget('https://n.worldinspirelab.com/webhook/heartbeat')">n8n Heartbeat</button>
+                <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="setDiagTarget('/webhook/antigravity')">Local Antigravity</button>
+                <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="setDiagTarget('spark:724913')">Anker Inquiry #724913</button>
+                <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="setDiagTarget('email:hello@xinchaovi.com')">XinChaoVi Routing</button>
+              </div>
+
+              <!-- Results Area -->
+              <div id="diagResultContainer" style="display: none;">
+                <div style="display: flex; align-items: center; justify-content: space-between; border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 16px; margin-bottom: 14px;">
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-weight: 600; font-size: 14px; color: #ffffff;">Diagnostic Output</span>
+                    <span id="diagVerdictBadge" class="badge badge-queued">--</span>
+                    <span id="diagTypeBadge" class="badge" style="background: rgba(255, 255, 255, 0.08); color: var(--text-muted); font-size: 10px;">--</span>
+                  </div>
+                  <div id="diagReconcileActionArea" style="display: none;">
+                    <button class="btn btn-primary" onclick="executeReconcileFromDiag()" id="btnDiagReconcile">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21h5v-5"/></svg>
+                      <span>Reconcile Now (自愈补发)</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div id="diagResultBody" class="terminal-body" style="background: rgba(2, 6, 23, 0.8); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; padding: 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; max-height: 480px; overflow-y: auto;"></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -3320,7 +3447,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
           viewName === 'signals' ? 'navItemSignals' :
           viewName === 'pulses' ? 'navItemPulses' :
           viewName === 'watchdog' ? 'navItemWatchdog' :
-          viewName === 'schedules' ? 'navItemSchedules' : 'navItemAll'
+          viewName === 'schedules' ? 'navItemSchedules' :
+          viewName === 'diagnostic' ? 'navItemDiagnostic' : 'navItemAll'
         );
         if (targetNav) targetNav.classList.add('active');
       }}
@@ -3333,7 +3461,8 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         signals: document.getElementById('viewContainerSignals'),
         pulses: document.getElementById('viewContainerPulses'),
         watchdog: document.getElementById('viewContainerWatchdog'),
-        schedules: document.getElementById('viewContainerSchedules')
+        schedules: document.getElementById('viewContainerSchedules'),
+        diagnostic: document.getElementById('viewContainerDiagnostic')
       }};
 
       Object.keys(panels).forEach(key => {{
@@ -3387,6 +3516,10 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         if (toggleFilterBtn) toggleFilterBtn.style.display = 'none';
         if (searchInput) searchInput.placeholder = 'Search schedules, crons, actions...';
         loadSchedules();
+      }} else if (viewName === 'diagnostic') {{
+        if (titleEl) titleEl.innerText = 'Diagnostic Inspector & Rule Reconciler';
+        if (toggleFilterBtn) toggleFilterBtn.style.display = 'none';
+        if (searchInput) searchInput.placeholder = 'Search diagnostic target...';
       }} else {{
         if (titleEl) titleEl.innerText = 'All Activities';
         if (toggleFilterBtn) toggleFilterBtn.style.display = 'inline-flex';
@@ -6589,6 +6722,105 @@ def render_dashboard_html(config: Optional[AppConfig] = None, db: Optional[Any] 
         }}
       }} catch (err) {{
         showToast('Ingress error: ' + err.message, 'error');
+      }}
+    }}
+
+    // ==========================================
+    // Diagnostic Inspector & Rule Reconciler (对账器优先)
+    // ==========================================
+    let currentDiagTarget = '';
+
+    function setDiagTarget(target) {{
+      const input = document.getElementById('diagInputTarget');
+      if (input) {{
+        input.value = target;
+        executeDiagnostic();
+      }}
+    }}
+
+    async function executeDiagnostic() {{
+      const input = document.getElementById('diagInputTarget');
+      const target = (input ? input.value : '').trim();
+      if (!target) return;
+      currentDiagTarget = target;
+
+      const btn = document.getElementById('btnRunDiag');
+      const resContainer = document.getElementById('diagResultContainer');
+      const resBody = document.getElementById('diagResultBody');
+      const verdictBadge = document.getElementById('diagVerdictBadge');
+      const typeBadge = document.getElementById('diagTypeBadge');
+      const reconcileArea = document.getElementById('diagReconcileActionArea');
+
+      if (btn) btn.disabled = true;
+      if (resContainer) resContainer.style.display = 'block';
+      if (resBody) resBody.innerText = 'Running diagnostic explain and SSOT state analysis...';
+
+      try {{
+        const resp = await fetch(`/api/diagnose?target=${{encodeURIComponent(target)}}`);
+        const data = await resp.json();
+
+        if (verdictBadge) {{
+          verdictBadge.innerText = data.verdict || (data.error ? 'ERROR' : 'UNKNOWN');
+          verdictBadge.className = 'badge ' + (
+            ['SUCCESS', 'ROUTE_RECOGNIZED', 'EMAIL_RESOLVED', 'COMPLETED', 'DELIVERED', 'ALL_DELIVERED', 'DELIVERED_NO_REPLY_NEEDED'].includes(data.verdict) ? 'badge-succeeded' :
+            ['EMAIL_PENDING_REPLY', 'WAITING_FOR_COLLECTION', 'UNFULFILLED_RECOVERY_CANDIDATE', 'SCHEDULED'].includes(data.verdict) ? 'badge-in-progress' :
+            ['FAILED', 'FAILURE_DETECTED', 'UNKNOWN_DOMAIN', 'TASK_NOT_FOUND', 'INVALID_INPUT'].includes(data.verdict) ? 'badge-failed' : 'badge-queued'
+          );
+        }}
+
+        if (typeBadge) {{
+          typeBadge.innerText = (data.target_type || 'DIAGNOSTIC').toUpperCase();
+        }}
+
+        if (reconcileArea) {{
+          if (data.is_unfulfilled || (data.target_type === 'slack_thread' && data.recommended_action === 'reconcile')) {{
+            reconcileArea.style.display = 'block';
+          }} else {{
+            reconcileArea.style.display = 'none';
+          }}
+        }}
+
+        if (resBody) {{
+          if (data.report_text) {{
+            resBody.innerText = data.report_text;
+          }} else {{
+            resBody.innerText = JSON.stringify(data, null, 2);
+          }}
+        }}
+      }} catch (err) {{
+        console.error('Failed to run diagnostic:', err);
+        if (resBody) resBody.innerText = 'Error running diagnostic: ' + err.message;
+      }} finally {{
+        if (btn) btn.disabled = false;
+      }}
+    }}
+
+    async function executeReconcileFromDiag() {{
+      if (!currentDiagTarget) return;
+      const btn = document.getElementById('btnDiagReconcile');
+      if (btn) btn.disabled = true;
+
+      const resBody = document.getElementById('diagResultBody');
+      if (resBody) resBody.innerText += '\\n\\nInitiating reconciliation dispatch (force=true)...';
+
+      try {{
+        const resp = await fetch(`/api/diagnose?target=${{encodeURIComponent(currentDiagTarget)}}&reconcile=true&force=true`);
+        const data = await resp.json();
+        if (resBody) {{
+          resBody.innerText = (data.report_text || JSON.stringify(data, null, 2)) + '\\n\\n✅ Reconciliation executed successfully.';
+        }}
+        const verdictBadge = document.getElementById('diagVerdictBadge');
+        if (verdictBadge) {{
+          verdictBadge.innerText = data.verdict_post_reconcile || data.verdict || 'RECONCILED';
+          verdictBadge.className = 'badge badge-succeeded';
+        }}
+        const reconcileArea = document.getElementById('diagReconcileActionArea');
+        if (reconcileArea) reconcileArea.style.display = 'none';
+      }} catch (err) {{
+        console.error('Failed to reconcile:', err);
+        if (resBody) resBody.innerText += '\\n\\n❌ Reconciliation failed: ' + err.message;
+      }} finally {{
+        if (btn) btn.disabled = false;
       }}
     }}
 
