@@ -14,8 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - 捕获 `http.client.IncompleteRead` 并尝试从其 `partial` 字节中解析有效 JSON，若已包含完整业务响应（`ok: true`）则直接采纳，避免无谓重试。
     - 针对 `conversations.history` 失败情况，自动将扫描批次减半（降级至 15 条）进行二次兜底请求，免疫超大响应包传输截断。
     - 将 CLI `--catchup` 默认扫描上限从 50 调优至 30，显著提升离线任务扫查速度与网络稳定性。
-- **E2E 验证套件 Step 11 HTTP 重试与抗抖机制 (`scripts/verify_e2e.py`)**:
-  - 在 Step 11 Dashboard 及 UI 可观测性探测中引入 `_urlopen_with_retry`，支持自动指数退避重试，杜绝极端本地高负载或端口切换瞬时的探测抖动。
+- **E2E 验证套件 Preflight 探活抗抖机制 (`scripts/verify_e2e.py`)**:
+  - 在 `ensure_server_running` 中将对活跃网关 `/healthz` 的预检探活从 3 次增加至 5 次、单次超时提升至 2.5s（间隔 0.6s），并捕获具体探活异常信息。彻底杜绝网关在处理重任务或重启自愈阶段因毫秒级排队被误判为未启动、进而拉起冲突临时实例的偶发假阴性问题。
+- **Slack Agent Ops 跨域 API 大响应抗断流加固 (`slack_agent_ops.py`)**:
+  - 在 `n8n_request` 中显式注入 `Connection: close` 请求头，杜绝 Nginx/反向代理 keep-alive 提前回收引发的 `IncompleteRead`。
+  - 在每次重试时动态重新实例化 `urllib.request.Request`，并在捕获截断异常时无缝触发 curl 原生兜底解析，确保 100% 成功读取 300KB+ 工作流定义。
 
 ## [1.17.10] - 2026-09-24
 
