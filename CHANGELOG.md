@@ -10,21 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed & Enhanced
 - **Antigravity 应用重启后未完工会话与中断任务自动自愈拉起 (`hub/antigravity/watchdog.py`, `hub/config.py`, `tests/unit/test_antigravity_watchdog.py`)**:
   - **核心问题根治**：彻底修复 Antigravity 重启后，因服务 PID 变更导致在 `conversation_summaries.db` 中处于 `CASCADE_RUN_STATUS_RUNNING` 或 `not_fully_idle = 1`（UI 上显示 "Working." 旋转图标与 "Queued Messages"）的会话无法自动被拉起、必须用户手动键入字符才能恢复的问题。
-  - **双源权威扫描与生命周期感知**：
-    - 新增 `get_language_server_start_time(pid)`：通过 `ps -o lstart=` 精准提取底层 `language_server` 真实启动绝对时间戳。
-    - 新增 `get_unfinished_conversations_from_summaries(summaries_db_path)`：直接查询 Antigravity 官方元数据数据库 `~/.gemini/antigravity/conversation_summaries.db`，联动 `brain/` 目录双源合并待巡检候选集。
-    - 修复此前 `last_status == "RUNNING"` 误判为正在活跃执行而直接 `continue` 跳过的缺陷：精准区分当前进程活跃任务与重启前孤立死亡的 `RUNNING` 步骤，对重启前中断的步骤自动标记为 `server_restart_aborted_running_step` 并立即拉起。
-  - **Boost 与 Teamwork 多 Agent 协同防降级保护**：
-    - 升级 `is_subagent_active(..., ls_restart_time)`：精准识别在服务重启前停止的子 Agent（避免父 Agent 无限等待已随服务终止的子 Agent）；同时若子 Agent 在当前服务进程上活跃运行，继续维持父 Agent 协同等待，坚决不破坏 Boost / Teamwork 多 Agent 拓扑。
+  - **重启中断场景全覆盖与自愈拉起**：
+    - 新增未答复用户输入自愈：若会话末尾为用户指令（`USER_EXPLICIT` / `USER`）且因重启未收到模型响应，自动识别为 `server_restart_unanswered_user_prompt` 并进行拉起，免去用户手动键入“1”等字符的摩擦。
+    - 新增悬挂工具调用自愈：若会话在工具执行完成（`MODEL` / `GENERIC` / `DONE`）后因重启丢失后续模型生成，自动识别为 `server_restart_aborted_tool_followup` 自动拉起推进。
+    - 针对所有重启中断场景解除 `stall_grace_seconds` 等待，实现新服务就绪后秒级识别自愈。
+  - **Boost 与 Teamwork 多 Agent 协同与活跃父级防干扰保护**：
+    - **活跃父级防打扰门禁 (Active Parent Protection)**：若旧子 Agent 在重启前终止，但父级会话已在当前新服务实例上活跃运行（`p_mtime >= ls_restart_time`）或正在等待其他活跃子 Agent，严禁向父级补发拉起提醒，杜绝打断正在推进的多 Agent 协同任务。
+    - **当前进程长耗时命令防误杀**：重构 `last_status == "RUNNING"` 判定，当前服务进程上的活跃任务享受完整的 `running_quiet` 宽限（默认 900 秒），防止长测试跑批、编译或深思被误判为死锁。
     - 重启拉起自动选用定制的 `BOOST_SERVER_RESTART_RESUSCITATION_PROMPT`（多 Agent 协同）与 `SERVER_RESTART_RESUSCITATION_PROMPT`（标准任务），在提示词中明令禁止降级 Solo 模式或打假卡，指示父协调者直接向原委派子 Agent 发送指令唤醒推进。
     - 子 Agent 中断拉起严格重定向至其父级会话（`parent_conversation_id`），杜绝裂脑与单兵漂移。
+  - **服务生命周期感知与 Locale 加固**：
+    - `get_language_server_start_time(pid)`：强制注入 `LC_ALL=C` 环境变量并通过 `ps -o lstart=` 精准提取底层 `language_server` 真实启动绝对时间戳，杜绝本地化日期格式解析异常。
+    - `get_unfinished_conversations_from_summaries(summaries_db_path)`：直接查询 Antigravity 官方元数据数据库 `~/.gemini/antigravity/conversation_summaries.db`，设置 5.0s 锁等待并联动 `brain/` 目录双源合并。
   - **跨重启重试熔断与防抖重置**：
     - 在服务重启后自动重置上一服务实例的历史重试次数（`effective_attempts = 0`）并豁免旧实例的防抖冷却与配额冷却锁定，确保新启动的服务实例能即刻执行拉起探测，若再次触发配额限制则安全回归隔离。
   - **配置与状态可观察性**：
     - `AntigravityWatchdogConfig` 新增 `conversations_dir` 与 `summaries_db_path` 支持，环境变量 `ANTIGRAVITY_WATCHDOG_CONVERSATIONS_DIR` 与 `ANTIGRAVITY_WATCHDOG_SUMMARIES_DB_PATH` 原生可配。
     - `get_status()` 增加 `ls_restart_time` 与各会话 `is_server_restart` 状态输出。
   - **全量测试与零回归保障**：
-    - 新增 7 项专项单元测试，`tests/unit/test_antigravity_watchdog.py` 增至 61 项测试全部通过；全仓库 331 项单元测试 100% 全绿通过。
+    - 新增 12 项专项单元测试，`tests/unit/test_antigravity_watchdog.py` 增至 66 项测试全绿通过；全仓库全量单元测试 100% 通过。
 
 ### Added
 - **Vapi Startups Program 审核状态极速巡检与定时跟进 (`scripts/check_vapi_startups_reminder.py`)**:
