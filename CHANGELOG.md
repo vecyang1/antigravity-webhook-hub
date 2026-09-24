@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `get_status()` 增加 `ls_restart_time` 与各会话 `is_server_restart` 状态输出。
   - **全量测试与零回归保障**：
     - 新增 12 项专项单元测试，`tests/unit/test_antigravity_watchdog.py` 增至 66 项测试全绿通过；全仓库全量单元测试 100% 通过。
+- **Cloudflare Named Tunnel 边缘 TLS EOF / 530 故障彻底自愈 (`tunnel/com.vec.cloudflared-http2.plist`, `tunnel/start_tunnel.sh`)**:
+  - 根因定位：排查发现当本地 macOS 运行代理/TUN 模式（虚拟网卡 Fake-IP 劫持）时，cloudflared 默认使用系统 DNS 导致其向上游 Cloudflare Edge 建立 HTTP/2 握手时发生 TLS EOF，外部公网端点偶发 530 错误。
+  - 架构固化与自愈：在 LaunchAgent plist 配置与 `start_tunnel.sh` 脚本中显式注入 `--dns-resolver-addrs 1.1.1.1:53` 参数，强制 cloudflared 绕过任何虚拟网卡劫持，直连 Cloudflare 权威公共 DNS，公网 `https://webhook.worldinspirelab.com/healthz` 恢复持续稳定的 HTTP/2 200 OK，Uptime Kuma 探活端点立即恢复 UP。
+- **Slack Pipeline 审计大响应与偶发 `IncompleteRead` 异常重试自愈 (`slack_agent_ops.py`)**:
+  - 根因定位：在运行 `slack_agent_ops.py audit` 进行端到端 5 项 Invariant 校验时，`n8n_request` 与 `slack_api_call` 仅捕获了 `urllib.error.URLError`，未捕获 `http.client.HTTPException`（含 `IncompleteRead` 与连接意外重置）。
+  - 架构固化与自愈：将网络异常捕获边界全面扩展至 `(urllib.error.URLError, http.client.HTTPException, TimeoutError, ConnectionResetError)`，重试次数提升至 4 次、退避间隔调优至 1.5s，彻底免疫偶发网络毛刺，5 项 Slack 不变量审计 100% 满分通过。
+- **Watchdog 单元测试环境隔离与 PID 识别加固 (`hub/antigravity/watchdog.py`, `tests/unit/test_antigravity_watchdog.py`)**:
+  - 根因定位：Linux CI 容器环境中 `MagicMock(spec=AgentAPIClient)` 默认 `__int__` 返回 `1`，使得未显式 mock PID 的测试将 PID 1（systemd/init）误判为语言服务器 PID，误触发重启丢失调度逻辑。
+  - 架构固化与自愈：在 `watchdog.py` 中引入 PID 有效性门禁（严格要求 `isinstance(raw_pid, (int, str))` 且 `> 1`）；在 `mock_agentapi` fixture 中缺省明确指定 `get_language_server_pid.return_value = None`；完善调度丢失判定条件。全仓库 336 项单元测试与 GitHub Actions 跨平台 CI（Ubuntu/macOS Python 3.10/3.11/3.12）100% 全绿变亮。
 
 ### Added
 - **Vapi Startups Program 审核状态极速巡检与定时跟进 (`scripts/check_vapi_startups_reminder.py`)**:
