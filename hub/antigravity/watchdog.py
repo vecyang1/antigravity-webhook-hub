@@ -80,13 +80,16 @@ INTERRUPTED_STREAM_PATTERNS = (
 COMPLETION_REPORT_PATTERNS = (
     r"<!--\s*goal_complete\s*-->",
     r"<!--\s*goal_finished\s*-->",
-    r"🟢.*(?:all green|哨兵|巡检|快照|汇报|完成|通过)",
-    r"(?:哨兵|巡检|健康|自愈).*(?:all green|全部正常|全绿|已完成|顺利完成|圆满完成|全部通过)",
-    r"(?:任务|目标|goal).*(?:已完成|圆满完成|已闭环|顺利完成|执行完毕|successfully completed|task complete)",
-    r"(?:13/13|\d+/\d+)\s*(?:pass|通过|正常)",
-    r"【最终完成汇报】",
-    r"【哨兵巡检快照】",
-    r"###\s*🟢",
+    r"\[(?:goal_complete|goal_finished)\]",
+    r"【(?:最终完成汇报|哨兵巡检快照|巡检快照|目标完成|闭环汇报|自愈延续确认报告)】",
+    r"(?:###|##|#|\*\*)\s*(?:[🟢✅🛡️🚀🎯🏁✨🎉])\s*(?:[^\n]*)(?:all green|哨兵|巡检|快照|汇报|完成|通过|闭环|已闭环|pass)",
+    r"(?:[🟢✅🛡️🚀🎯🏁✨🎉])\s*(?:[^\n]{0,80})(?:all green|哨兵|巡检|快照|汇报|完成|通过|闭环|已闭环|正常|pass)",
+    r"(?:任务|目标|工作|sentinel|哨兵|巡检|健康|自愈).{0,30}(?:已完成|圆满完成|已闭环|顺利完成|执行完毕|完成汇报|100%\s*闭环|闭环完成|已达成|all\s+green|全部正常|全绿|全部通过|固化报告|确认报告)",
+    r"\b(?:task|goal|work)\s+(?:has\s+been\s+|is\s+)?(?:completed|complete|finished|closed)\b",
+    r"\b(?:task\s+complete|task\s+completed|successfully\s+completed|completed\s+successfully)\b",
+    r"(?:13/13|\d+/\d+)\s*(?:pass|passed|通过|正常)",
+    r"(?:all\s+\d+\s+checks\s+passed|all\s+checks\s+passed|全部检查通过)",
+    r"(?:保持全绿常驻待命|系统保持.*待命|已进入待命)",
 )
 
 NETWORK_ERROR_RESUSCITATION_PROMPT = (
@@ -254,13 +257,13 @@ def check_session_claimed_completion(
     A session is considered completed if:
     1. Any step in the window contains explicit completion marker (<!-- goal_complete -->)
        that was not followed by subsequent user prompts.
-    2. The last MODEL turn contains completion signatures (e.g. All Green sentinel snapshot,
-       13/13 PASS, task completion report) without active tool calls.
+    2. The last substantive MODEL turn contains completion signatures (e.g. All Green sentinel snapshot,
+       13/13 PASS, task completion report, 100% 闭环, etc.) without active tool calls.
     """
     steps = parsed_steps if parsed_steps is not None else []
     if not steps and transcript_path and transcript_path.exists():
         steps = []
-        for line in tail_transcript_lines(transcript_path, max_lines=15):
+        for line in tail_transcript_lines(transcript_path, max_lines=30):
             line_s = line.strip()
             if line_s:
                 try:
@@ -279,27 +282,37 @@ def check_session_claimed_completion(
         if s_src in ("USER_EXPLICIT", "USER"):
             last_user_idx = idx
         cnt_lower = str(s.get("content") or "").lower()
-        if "<!-- goal_complete -->" in cnt_lower or "<!-- goal_finished -->" in cnt_lower:
+        if "<!-- goal_complete -->" in cnt_lower or "<!-- goal_finished -->" in cnt_lower or "[goal_complete]" in cnt_lower:
             last_complete_idx = idx
 
     if last_complete_idx != -1 and last_complete_idx > last_user_idx:
         return True
 
-    # 2. Check the last step
-    last_step = steps[-1]
-    last_source = last_step.get("source", "")
-    last_type = last_step.get("type", "")
-    last_status = last_step.get("status", "")
-    last_content = str(last_step.get("content") or "")
-    has_tool_calls = bool(last_step.get("tool_calls"))
+    # 2. Check for unanswered user message at the end
+    # Walk backwards to find the last substantive turn (skipping checkpoints, ephemeral messages, system notifications)
+    last_model_step = None
+    has_subsequent_user = False
+    for s in reversed(steps):
+        s_src = s.get("source", "")
+        s_type = s.get("type", "")
+        if s_src in ("USER_EXPLICIT", "USER"):
+            has_subsequent_user = True
+            break
+        if s_src == "MODEL" and s_type == "PLANNER_RESPONSE":
+            last_model_step = s
+            break
 
-    if last_source in ("USER_EXPLICIT", "USER"):
+    if has_subsequent_user or not last_model_step:
         return False
 
-    if last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and last_status == "DONE" and not has_tool_calls:
+    last_status = last_model_step.get("status", "")
+    last_content = str(last_model_step.get("content") or "")
+    has_tool_calls = bool(last_model_step.get("tool_calls"))
+
+    if last_status == "DONE" and not has_tool_calls:
         cnt_clean = last_content.strip()
         for pat in COMPLETION_REPORT_PATTERNS:
-            if re.search(pat, cnt_clean, re.IGNORECASE):
+            if re.search(pat, cnt_clean, re.IGNORECASE | re.DOTALL):
                 return True
 
     return False
@@ -1327,12 +1340,21 @@ class AntigravityWatchdog:
                     attempts: int,
                     subagent: bool,
                     parent_id: Optional[str],
+                    error_hint: Optional[str] = None,
                 ) -> tuple[bool, Optional[str]]:
                     # 1. Orphaned subagent check: prevent split-brain solo mode degradation
                     if subagent and not parent_id:
                         return False, "orphaned_subagent_cannot_determine_parent"
 
-                    # 1b. Active parent protection: if subagent was stopped by server restart,
+                    # 1b. Completed parent protection: if subagent was stopped/terminated,
+                    # but its parent already claimed completion, DO NOT resuscitate or notify parent!
+                    if subagent and parent_id:
+                        p_path = resolve_transcript_path(parent_id, self._brain_dir)
+                        if p_path and p_path.exists():
+                            if check_session_claimed_completion(p_path, None):
+                                return False, "parent_already_completed"
+
+                    # 1c. Active parent protection: if subagent was stopped by server restart,
                     # but the parent is already actively working on the current server process,
                     # or the parent is waiting on another active subagent on the current server,
                     # DO NOT interrupt or confuse the parent!
@@ -1377,15 +1399,23 @@ class AntigravityWatchdog:
 
                     # 2b. Strict Once-Per-Restart Gate:
                     # A session or its target parent must be resuscitated at most ONCE per server restart event.
-                    if is_prior_to_restart and self.ls_restart_time > 0:
+                    if self.ls_restart_time > 0:
                         target_cid = parent_id if (subagent and parent_id) else cid
+                        has_prior_restart_res = False
                         if self.db and hasattr(self.db, "has_resuscitation_since"):
                             if self.db.has_resuscitation_since(cid, self.ls_restart_time) or (
                                 target_cid != cid and self.db.has_resuscitation_since(target_cid, self.ls_restart_time)
                             ):
-                                return False, "already_resuscitated_for_current_server_restart"
+                                has_prior_restart_res = True
                         elif res_epoch >= (self.ls_restart_time - 5.0):
-                            return False, "already_resuscitated_for_current_server_restart"
+                            has_prior_restart_res = True
+
+                        if has_prior_restart_res:
+                            if is_prior_to_restart:
+                                return False, "already_resuscitated_for_current_server_restart"
+                            err_str = str(error_hint or "").lower()
+                            if "server_restart" in err_str or "unfinished_conversation_in_summaries" in err_str:
+                                return False, "already_resuscitated_for_current_server_restart"
 
                     # 2c. Completed session gate:
                     if check_session_claimed_completion(transcript_path, parsed_steps):
@@ -1733,8 +1763,20 @@ class AntigravityWatchdog:
                         for s in parsed_steps:
                             s_content = str(s.get("content") or "")
                             for cid in child_ids:
-                                if cid in s_content and ("子代理完成通知" in s_content or "已完成执行" in s_content):
+                                if cid in s_content and (
+                                    "子代理完成通知" in s_content
+                                    or "已完成执行" in s_content
+                                    or f"sender={cid}" in s_content
+                                    or f"sender: {cid}" in s_content
+                                    or f"sender={cid}" in s_content.lower()
+                                ):
                                     already_notified_cids.add(cid)
+
+                        if self.db and hasattr(self.db, "has_resuscitation_since"):
+                            for cid in child_ids:
+                                if cid not in already_notified_cids:
+                                    if self.db.has_resuscitation_since(convo_id, 0.0, error_prefix=f"parent_waiting_subagent_completed_hang:{cid}"):
+                                        already_notified_cids.add(cid)
 
                         for cid in child_ids:
                             if cid in already_notified_cids:
@@ -1748,7 +1790,7 @@ class AntigravityWatchdog:
                                         c_cnt = str(c_step.get("content") or "")
                                         # Subagent completion MUST be genuine and explicit (goal_complete marker)
                                         # NEVER treat an intermediate PLANNER_RESPONSE turn as completed!
-                                        if "<!-- goal_complete -->" in c_cnt.lower():
+                                        if "<!-- goal_complete -->" in c_cnt.lower() or "<!-- goal_finished -->" in c_cnt.lower() or "[goal_complete]" in c_cnt.lower():
                                             completed_child_id = cid
                                             completed_child_summary = c_cnt[:500]
                                             break
@@ -1950,7 +1992,9 @@ class AntigravityWatchdog:
 
                 _resolve_subagent_and_parent()
 
-                can_res, skip_reason = _evaluate_resuscitation_eligibility(convo_id, prior_attempts, is_subagent, parent_convo_id)
+                can_res, skip_reason = _evaluate_resuscitation_eligibility(
+                    convo_id, prior_attempts, is_subagent, parent_convo_id, error_hint=matched_error
+                )
                 if not can_res:
                     stalled.append(
                         StalledSessionInfo(
@@ -2079,24 +2123,28 @@ class AntigravityWatchdog:
             }
 
         # 3. Once-Per-Restart Pre-flight Defense-In-Depth
-        is_restart_case = session_info.is_server_restart or "server_restart" in str(last_error).lower()
-        if is_restart_case and self.ls_restart_time > 0:
+        if self.ls_restart_time > 0:
             if self.db and hasattr(self.db, "has_resuscitation_since"):
                 if self.db.has_resuscitation_since(convo_id, self.ls_restart_time) or (
                     target_convo_id != convo_id and self.db.has_resuscitation_since(target_convo_id, self.ls_restart_time)
                 ):
-                    logger.info(
-                        "Session %s (target %s) already resuscitated for current server restart (ls_restart_time=%s). Skipping duplicate resuscitation.",
-                        convo_id, target_convo_id, self.ls_restart_time,
-                    )
-                    return {
-                        "success": False,
-                        "conversation_id": convo_id,
-                        "target_conversation_id": target_convo_id,
-                        "is_delegated_boost": is_delegated_boost,
-                        "status": "already_resuscitated_for_restart",
-                        "error": "already_resuscitated_for_current_server_restart",
-                    }
+                    if (
+                        session_info.is_server_restart
+                        or "server_restart" in str(last_error).lower()
+                        or "unfinished_conversation_in_summaries" in str(last_error).lower()
+                    ):
+                        logger.info(
+                            "Session %s (target %s) already resuscitated for current server restart (ls_restart_time=%s). Skipping duplicate resuscitation.",
+                            convo_id, target_convo_id, self.ls_restart_time,
+                        )
+                        return {
+                            "success": False,
+                            "conversation_id": convo_id,
+                            "target_conversation_id": target_convo_id,
+                            "is_delegated_boost": is_delegated_boost,
+                            "status": "already_resuscitated_for_restart",
+                            "error": "already_resuscitated_for_current_server_restart",
+                        }
 
         # 4. Debounce step cooldown (< stall_grace_seconds)
         now_ts = time.time()

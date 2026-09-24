@@ -1860,33 +1860,47 @@ class DatabaseManager:
         since_epoch: float,
         error_prefix: Optional[str] = None,
     ) -> bool:
-        """Check if conversation has a successful, in-flight, or schedule_remounted resuscitation since a given epoch timestamp."""
+        """Check if conversation has a successful, in-flight, or completed resuscitation since a given epoch timestamp."""
         with self._lock:
             cur = self._conn.cursor()
             try:
                 margin_epoch = str(int(since_epoch - 5.0))
+                delegated_pattern = f"%{conversation_id}%"
                 if error_prefix:
-                    cur.execute(
-                        """
-                        SELECT 1 FROM antigravity_resuscitations
-                        WHERE conversation_id = ?
-                          AND status IN ('resuscitated', 'attempting', 'schedule_remounted')
-                          AND strftime('%s', resuscitated_at) >= ?
-                          AND (last_error LIKE ? OR resuscitation_prompt LIKE '%服务重启%' OR resuscitation_prompt LIKE '%重启延续%' OR resuscitation_prompt LIKE '%重启任务恢复%')
-                        LIMIT 1
-                        """,
-                        (conversation_id, margin_epoch, f"{error_prefix}%"),
-                    )
+                    if "server_restart" in error_prefix:
+                        cur.execute(
+                            """
+                            SELECT 1 FROM antigravity_resuscitations
+                            WHERE (conversation_id = ? OR error_details LIKE ?)
+                              AND status IN ('resuscitated', 'attempting', 'schedule_remounted')
+                              AND strftime('%s', resuscitated_at) >= ?
+                              AND (last_error LIKE ? OR resuscitation_prompt LIKE '%服务重启%' OR resuscitation_prompt LIKE '%重启延续%' OR resuscitation_prompt LIKE '%重启任务恢复%')
+                            LIMIT 1
+                            """,
+                            (conversation_id, delegated_pattern, margin_epoch, f"{error_prefix}%"),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            SELECT 1 FROM antigravity_resuscitations
+                            WHERE (conversation_id = ? OR error_details LIKE ?)
+                              AND status IN ('resuscitated', 'attempting', 'schedule_remounted')
+                              AND strftime('%s', resuscitated_at) >= ?
+                              AND last_error LIKE ?
+                            LIMIT 1
+                            """,
+                            (conversation_id, delegated_pattern, margin_epoch, f"{error_prefix}%"),
+                        )
                 else:
                     cur.execute(
                         """
                         SELECT 1 FROM antigravity_resuscitations
-                        WHERE conversation_id = ?
+                        WHERE (conversation_id = ? OR error_details LIKE ?)
                           AND status IN ('resuscitated', 'attempting', 'schedule_remounted')
                           AND strftime('%s', resuscitated_at) >= ?
                         LIMIT 1
                         """,
-                        (conversation_id, margin_epoch),
+                        (conversation_id, delegated_pattern, margin_epoch),
                     )
                 return bool(cur.fetchone())
             finally:

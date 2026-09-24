@@ -2789,6 +2789,85 @@ class TestAntigravityWatchdog:
         is_boost = check_session_has_boost_or_goal(tpath, steps)
         assert is_boost is False, "Watchdog prompt contaminated session into boost detection!"
 
+    def test_subagents_of_completed_parent_never_resuscitate_after_restart(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that when a parent session completed (e.g. All Green sentinel snapshot) before restart,
+        its prior subagents that stopped before restart NEVER cause resuscitation of the parent.
+        This directly prevents the '4 messages within 3 seconds' loop shown in the bug report.
+        """
+        parent_id = "test-sentinel-parent-completed"
+        sub_1 = "test-subagent-worker-1"
+        sub_2 = "test-subagent-worker-2"
+        now = time.time()
+        restart_time = now - 100.0
+
+        # Parent conversation finished and posted All Green snapshot
+        parent_steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "/boost Sentinel Health Check"},
+            {"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": f'Created subagents: "{sub_1}", "{sub_2}"'},
+            {"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "### 🟢 Antigravity Webhook Hub 哨兵巡检快照 (All Green)\n13/13 Checks Passed."},
+        ]
+        _create_fake_session(temp_dir, parent_id, parent_steps, mtime_offset_seconds=200.0)
+
+        # Subagent 1 stopped before restart
+        sub1_steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": f"Subagent task {sub_1} (parent: {parent_id})"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Worker 1 done."},
+        ]
+        _create_fake_session(temp_dir, sub_1, sub1_steps, mtime_offset_seconds=250.0)
+
+        # Subagent 2 stopped before restart
+        sub2_steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": f"Subagent task {sub_2} (parent: {parent_id})"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Worker 2 done."},
+        ]
+        _create_fake_session(temp_dir, sub_2, sub2_steps, mtime_offset_seconds=240.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            conversations_dir=str(temp_dir),
+            stall_grace_seconds=45,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.ls_restart_time = restart_time
+
+        stalled = watchdog.scan_stalled_conversations()
+        # Neither parent nor subagents should be eligible to resuscitate the parent
+        resuscitatable = [s for s in stalled if s.can_resuscitate]
+        assert len(resuscitatable) == 0, f"Expected 0 resuscitatable sessions, got: {resuscitatable}"
+
+        # If any subagent was scanned, its skip reason must indicate parent is already completed
+        for s in stalled:
+            if s.is_subagent and s.parent_conversation_id == parent_id:
+                assert s.can_resuscitate is False
+                assert s.skip_reason == "parent_already_completed"
+
+    def test_multiline_emoji_completion_reports_recognized(self, temp_dir):
+        """
+        Verify that various completion report formats (multiline markdown, diverse emojis,
+        100% 闭环, All Green, 13/13 passed) are all reliably recognized by check_session_claimed_completion.
+        """
+        from hub.antigravity.watchdog import check_session_claimed_completion
+
+        samples = [
+            "### 🟢 Antigravity Webhook Hub 哨兵巡检快照 (All Green)\n13/13 Checks Passed.",
+            "## 🛡️ 安全合规与全组件巡检汇报\n所有检查项已 100% 闭环通过。",
+            "### 🚀 服务自愈与哨兵巡检汇报 (Post-Restart All Green)\n保持全绿常驻待命。",
+            "**✅ 核心流水线构建完成**\n所有 42 项检查顺利完成并已闭环。",
+            "### 🎯 目标执行完毕汇报\nTask has been completed successfully.",
+            "【哨兵巡检快照】\n13/13 正常，系统保持全绿待命。",
+        ]
+
+        for idx, text in enumerate(samples):
+            cid = f"test-completion-sample-{idx}"
+            steps = [
+                {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Run checks"},
+                {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": text},
+            ]
+            tpath = _create_fake_session(temp_dir, cid, steps)
+            assert check_session_claimed_completion(tpath, steps) is True, f"Failed to recognize completion for: {text}"
+
+
 
 
 

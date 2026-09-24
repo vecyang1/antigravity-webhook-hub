@@ -11,22 +11,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **彻底根治已完工会话（哨兵巡检 All Green / 任务闭环）在服务重启后被重复拉起死循环 (`hub/antigravity/watchdog.py`, `hub/db.py`, `tests/unit/test_antigravity_watchdog.py`)**:
   - **核心痛点解决**：修复在 Antigravity 语言服务重启后，已完工的会话（如 Sentinel 哨兵汇报 `🟢 Antigravity Webhook Hub 哨兵巡检快照 (All Green)` 或 `🟢 服务自愈与哨兵巡检汇报 (Post-Restart All Green)`）被 Watchdog 误判为未完成并反复注入 `【系统自动自愈拉起：/boost 服务重启延续】`、甚至在几秒内重复拉起 4 次的严重死循环 Bug。
   - **全链路五层安全门禁重构**：
-    1. **多模式智能完工检测 (`check_session_claimed_completion`, `COMPLETION_REPORT_PATTERNS`)**：
+    1. **多模式智能完工检测与正则精度防护 (`check_session_claimed_completion`, `COMPLETION_REPORT_PATTERNS`)**：
        - 不再狭隘依赖 `<!-- goal_complete -->` 字面标记，支持正则智能识别各类健康巡检快照、All Green、13/13 PASS、圆满完成与目标闭环汇报，判定已完工会话即刻从待拉起列表中完全豁免并自动归档调度。
-    2. **Transcript 真实完工事实权威优先 (Ground Truth Invariant)**：
+       - 严密加固正则边界与长度约束（`\b` 词界与 `.{0,30}` 跨距限制），彻底消除因委派子 Agent ID 携带 `complete` 字符串（如 `child-completed-worker-002`）导致的假阳性误判。
+    2. **Transcript 真实完工事实权威优先与已完工父级免疫 (Ground Truth & Completed Parent Protection)**：
        - 根治 `conversation_summaries.db` 残留状态误导：IDE 官方数据库长期存在 16+ 个陈旧会话保持 `CASCADE_RUN_STATUS_RUNNING` 或 `not_fully_idle = 1`。重构判定逻辑，若 `transcript.jsonl` 末尾为干净的 `MODEL` `PLANNER_RESPONSE` `DONE` 且无工具调用、无 Stop Hook，以 Transcript 真实完工为准，严禁陈旧 DB 状态覆盖导致假阳性拉起。
-       - 移除 `is_boost_or_summary = check_session_has_boost_or_goal(...) or (convo_id in summaries_map)` 中盲目信任 `summaries_map` 的逻辑，杜绝任何历史会话被误套用 `/boost` 协同拉起机制。
-    3. **自愈提示词防污染隔离**：
+       - **已完工父级免疫门禁**：在 `_evaluate_resuscitation_eligibility` 增加 `parent_already_completed` 校验，当旧子 Agent 因服务重启中断时，若其父级会话已汇报完工，严禁拉起父级，彻底切断历史子 Agent 反复轰炸已完工哨兵会话的链路。
+    3. **自愈提示词防污染隔离与子代理通知精准去重**：
        - `check_session_has_boost_or_goal` 在检索 `/boost` / `/goal` 时自动过滤 Watchdog 自行注入的系统自愈前缀（如 `【系统自动`、`自愈拉起`、`服务重启延续` 等），彻底阻断“拉起一次后会话终身被污染为 boost 会话”的正反馈死循环链条。
-    4. **严格的“单次重启拉起一次”硬约束 (Once-Per-Restart Invariant Gate)**：
-       - `DatabaseManager` 新增 `has_resuscitation_since(conversation_id, since_epoch, error_prefix)` 方法。
+       - 优化子代理完成通知识别逻辑，精准比对通知语义与数据库拉起记录，避免将初始委派步骤误判为已通知。
+    4. **严格的“单次重启拉起一次”硬约束与 SQL 查询状态隔离 (Once-Per-Restart Invariant Gate)**：
+       - `DatabaseManager` 新增 `has_resuscitation_since(conversation_id, since_epoch, error_prefix)` 方法，限定有效拉起状态为 `('resuscitated', 'attempting', 'schedule_remounted')`，避免将失败尝试误计为已自愈；将重启提示词正则严格收敛至 `server_restart` 前缀校验。
        - 在 `_evaluate_resuscitation_eligibility` 门禁与 `resuscitate_session` 预检中双重设防：针对同一次 `ls_restart_time` 服务重启事件，无论发生多少次扫查或外部触发，单一会话及其父会话最多仅被拉起一次。后续扫查严格返回 `already_resuscitated_for_current_server_restart` 并安全跳过。
     5. **在途防重并发锁 (In-flight Mutex) 与跨轮防抖 (Cross-Sweep Debounce)**：
        - `AntigravityWatchdog` 初始化 `_in_flight_resuscitations: set[str]` 与 `_recently_resuscitated: dict[str, float]`。
        - `resuscitate_session` 增加并发互斥锁（In-flight lock），并发请求立即返回 `in_flight_skip`，根治 3 秒内并发触发 4 次重复注入问题；增加 `stall_grace_seconds` 跨轮防抖，避免同一会话在极短间隔内被重复扫查唤醒。
   - **全量测试与实机验证保障**：
-    - 新增 6 项专项单元测试（完工识别、重启后防重复、单次重启门禁、并发互斥锁、陈旧 DB 隔离、提示词防污染），`tests/unit/test_antigravity_watchdog.py` 72 项单测全绿；全仓库 342 项单元测试 100% 通过。
-    - 实机数据库真实扫描：原截图故障会话 `f71a0a44` 准确识别完工并豁免（0 stalled），真实环境 18 个历史会话全部安全拦截（skip_reason 明确），无一例误报或重复拉起。
+    - 新增 8 项专项单元测试（完工识别、重启后防重复、单次重启门禁、并发互斥锁、陈旧 DB 隔离、提示词防污染、已完工父级免疫、多行 Emoji 汇报识别），`tests/unit/test_antigravity_watchdog.py` 74 项单测全绿；全仓库 344 项单元测试 100% 通过。
+    - 实机数据库真实扫描：原截图故障会话 `f71a0a44` 准确识别完工并豁免（0 stalled），真实环境 16 个历史会话全部安全拦截（0 can_resuscitate，skip_reason 明确），无一例误报或重复拉起。
 
 ## [1.17.12] - 2026-09-24
 
