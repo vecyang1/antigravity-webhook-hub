@@ -151,7 +151,9 @@ class DiagnosticInspector:
         from hub.antigravity.watchdog import (
             AntigravityWatchdog,
             check_session_claimed_completion,
+            check_has_pending_resuscitation_prompt,
             extract_subagent_ids_from_transcript,
+            inspect_conversation_db_for_terminal_network_error,
             is_subagent_active,
             is_zombie_or_archived_subagent,
             detect_parent_conversation_id,
@@ -330,6 +332,22 @@ class DiagnosticInspector:
         else:
             decision_tree.append(("Completion Check", "PASS", "Session has not claimed completion"))
 
+        # Pending Queued Resuscitation Prompt Guard
+        is_pending, p_reason = check_has_pending_resuscitation_prompt(parsed_tail, time.time())
+        if is_pending:
+            can_resuscitate = False
+            skip_reason = p_reason
+            decision_tree.append(("Pending Resuscitation Check", "BLOCKED", f"Resuscitation prompt already pending in queue ({p_reason})"))
+        else:
+            decision_tree.append(("Pending Resuscitation Check", "PASS", "No pending resuscitation prompt awaiting reply"))
+
+        # Terminal DB Error / Crash Check
+        db_err = inspect_conversation_db_for_terminal_network_error(conversation_id)
+        if db_err:
+            decision_tree.append(("Terminal DB Error Check", "DETECTED", f"Terminal error found in conversation DB: {db_err.get('error')}"))
+        else:
+            decision_tree.append(("Terminal DB Error Check", "PASS", "No terminal network/executor error in DB"))
+
         # Verdict Determination
         if not transcript_info["found"] and not db_state["found"]:
             verdict = "NOT_FOUND"
@@ -339,6 +357,11 @@ class DiagnosticInspector:
             verdict = "COMPLETED"
         elif db_state.get("status") == "CASCADE_RUN_STATUS_RUNNING" or db_state.get("not_fully_idle"):
             verdict = "ACTIVE_RUNNING"
+        elif is_pending:
+            verdict = "PENDING_IN_FLIGHT_PROMPT"
+        elif db_err and can_resuscitate:
+            err_name = db_err.get("error") if isinstance(db_err, dict) else str(db_err)
+            verdict = f"TERMINAL_CRASH_ELIGIBLE ({err_name})"
         elif can_resuscitate:
             verdict = "STALLED_ELIGIBLE_FOR_RESUSCITATION"
         else:

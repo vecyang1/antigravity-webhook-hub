@@ -23,8 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - **完工识别扩充与外部 SSOT 成功对账**：
       1. 在 `COMPLETION_REPORT_PATTERNS` 中扩充 `今日多城天气速报`、`周期巡检执行与闭环凭据`、`系统已就绪，随时可接收新的指令`、`全绿健康，无新增异常` 等典型巡检闭环模式。
       2. 增加对 2nd Brain 外部 Cadence 成功标识对账（`.run/cadence/<card>/YYYY-MM-DD.success`），凡当天已成功交付的卡片会话直接权威判定为完工，重启后完全免疫。
+  - **对账器优先与统一诊断体系同步升级 (`hub/antigravity/diagnostics.py`)**:
+    - 将 Watchdog 底层最新门禁规则全面同步至统一对账器 `DiagnosticInspector`；
+    - 开发者/操作员通过 `python3 -m hub.cli explain <convo_id>` 或 Webhook Hub 诊断 API 时，可精确观测会话是否处于 `PENDING_IN_FLIGHT_PROMPT`（排队拦截中）、`TERMINAL_CRASH_ELIGIBLE`（检测到底层致命执行器崩溃）或 `COMPLETED`（已权威完工免疫），实现规则逻辑与对账器 100% 呼应，杜绝规则与界面两张皮。
   - **自动化测试保障**:
-    - `tests/unit/test_antigravity_watchdog.py` 79 项测试全部 100% 绿灯通过（新增 3 项高强度对抗测试）；实机对账验证百度网盘会话、天气速报会话、品牌增长会话状态全部完全符合预期。
+    - `tests/unit/test_antigravity_watchdog.py` 与 `tests/unit/test_diagnostics.py` 共 94 项单元测试全部 100% 绿灯通过；实机对账验证百度网盘会话、天气速报会话、品牌增长会话状态全部完全符合预期。
 
 ## [1.17.16] - 2026-09-25
 
