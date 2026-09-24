@@ -21,19 +21,24 @@ from hub.antigravity.agentapi_client import AgentAPIClient
 from hub.antigravity.watchdog import (
     BOOST_DELEGATION_RESUSCITATION_PROMPT,
     BOOST_GOAL_RESUSCITATION_PROMPT,
+    BOOST_SERVER_RESTART_RESUSCITATION_PROMPT,
     DEFAULT_RESUSCITATION_PROMPT,
     EMPTY_RESPONSE_RESUSCITATION_PROMPT,
     MCP_ERROR_RESUSCITATION_PROMPT,
     NETWORK_ERROR_RESUSCITATION_PROMPT,
     QUOTA_RESUSCITATION_PROMPT,
     SCHEDULE_REMOUNT_PROMPT,
+    SERVER_RESTART_RESUSCITATION_PROMPT,
     TOOL_RESULT_RESUSCITATION_PROMPT,
     AntigravityWatchdog,
     StalledSessionInfo,
     check_session_has_boost_or_goal,
     detect_parent_conversation_id,
     extract_active_schedule_from_transcript,
+    get_language_server_start_time,
+    get_unfinished_conversations_from_summaries,
     inspect_conversation_db_for_terminal_network_error,
+    is_subagent_active,
     parse_cron_interval_seconds,
     parse_quota_reset_seconds,
 )
@@ -2052,6 +2057,533 @@ class TestAntigravityWatchdog:
         # Active conversation schedule must have been marked as completed
         active_scheds = db.list_active_conversation_schedules()
         assert not any(s["conversation_id"] == convo_id for s in active_scheds)
+
+    def test_get_language_server_start_time(self):
+        """Verify get_language_server_start_time parses ps lstart output correctly."""
+        assert get_language_server_start_time(None) is None
+        assert get_language_server_start_time(0) is None
+
+        with patch("subprocess.check_output", return_value="Thu Sep 24 09:28:14 2026\n"):
+            t = get_language_server_start_time(12345)
+            assert t is not None
+            expected = time.mktime(time.strptime("Thu Sep 24 09:28:14 2026", "%a %b %d %H:%M:%S %Y"))
+            assert t == expected
+
+        with patch("subprocess.check_output", side_effect=Exception("process not found")):
+            assert get_language_server_start_time(99999) is None
+
+    def test_get_unfinished_conversations_from_summaries(self, temp_dir):
+        """Verify querying conversation_summaries.db extracts running and not_fully_idle sessions."""
+        import sqlite3
+        db_path = temp_dir / "conversation_summaries.db"
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE conversation_summaries (
+                conversation_id TEXT PRIMARY KEY,
+                title TEXT,
+                status TEXT,
+                not_fully_idle INTEGER,
+                killed INTEGER,
+                parent_conversation_id TEXT,
+                last_modified_time TEXT,
+                step_count INTEGER
+            )
+            """
+        )
+        cur.executemany(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("c-running", "Running Task", "CASCADE_RUN_STATUS_RUNNING", 1, 0, None, "2026-09-24 01:28:14", 45),
+                ("c-not-idle", "Subagent Task", "CASCADE_RUN_STATUS_IDLE", 1, 0, "parent-1", "2026-09-24 01:25:00", 12),
+                ("c-killed", "Killed Task", "CASCADE_RUN_STATUS_RUNNING", 1, 1, None, "2026-09-24 01:20:00", 5),
+                ("c-clean-idle", "Finished Task", "CASCADE_RUN_STATUS_IDLE", 0, 0, None, "2026-09-24 01:10:00", 30),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        res = get_unfinished_conversations_from_summaries(db_path)
+        assert "c-running" in res
+        assert res["c-running"]["title"] == "Running Task"
+        assert res["c-running"]["parent_conversation_id"] is None
+
+        assert "c-not-idle" in res
+        assert res["c-not-idle"]["parent_conversation_id"] == "parent-1"
+
+        # Killed and clean idle sessions must NOT be returned
+        assert "c-killed" not in res
+        assert "c-clean-idle" not in res
+
+    def test_is_subagent_active_with_server_restart(self, temp_dir):
+        """
+        Verify that subagents predating language_server restart are recognized as stopped,
+        while subagents modified on the current server process are recognized as active.
+        """
+        subagent_id = "test-subagent-lifecycle-001"
+        now = time.time()
+        restart_time = now - 300.0  # Server restarted 5 minutes ago
+
+        # 1. Subagent last modified 10m ago (before restart) -> stopped by server restart
+        steps_running = [
+            {"step_index": 1, "source": "USER", "type": "USER_INPUT", "status": "DONE", "content": "work"},
+            {"step_index": 2, "source": "MODEL", "type": "GENERIC", "status": "RUNNING", "content": "executing"},
+        ]
+        _create_fake_session(temp_dir, subagent_id, steps_running, mtime_offset_seconds=600.0)
+        is_act, reason = is_subagent_active(subagent_id, temp_dir, now=now, ls_restart_time=restart_time)
+        assert is_act is False
+        assert "stopped_by_server_restart" in reason
+
+        # 2. Subagent modified 60s ago (after restart) with RUNNING status -> active
+        _create_fake_session(temp_dir, subagent_id, steps_running, mtime_offset_seconds=60.0)
+        is_act2, reason2 = is_subagent_active(subagent_id, temp_dir, now=now, ls_restart_time=restart_time)
+        assert is_act2 is True
+        assert "subagent_step_running" in reason2
+
+        # 3. Subagent modified 60s ago with GOAL_COMPLETE -> inactive
+        steps_complete = [
+            {"step_index": 1, "source": "USER", "type": "USER_INPUT", "status": "DONE", "content": "work"},
+            {"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "<!-- GOAL_COMPLETE --> finished"},
+        ]
+        _create_fake_session(temp_dir, subagent_id, steps_complete, mtime_offset_seconds=60.0)
+        is_act3, reason3 = is_subagent_active(subagent_id, temp_dir, now=now, ls_restart_time=restart_time)
+        assert is_act3 is False
+        assert reason3 == "subagent_goal_completed"
+
+    def test_auto_pullup_unfinished_conversation_after_restart(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that a conversation left in RUNNING status when Antigravity restarted
+        is automatically detected and resuscitated with SERVER_RESTART_RESUSCITATION_PROMPT.
+        """
+        convo_id = "test-convo-restart-vpn-001"
+        now = time.time()
+        restart_time = now - 180.0  # Restarted 3 mins ago
+
+        # Fake transcript that was in RUNNING status 10 mins ago (prior to restart)
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "vpn fix"},
+            {"step_index": 48, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Checking vpn"},
+            {"step_index": 49, "source": "MODEL", "type": "GENERIC", "status": "RUNNING", "content": "Connecting..."},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=600.0)
+
+        # Create conversation_summaries.db
+        import sqlite3
+        db_path = temp_dir / "conversation_summaries.db"
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE conversation_summaries (
+                conversation_id TEXT PRIMARY KEY,
+                title TEXT,
+                status TEXT,
+                not_fully_idle INTEGER,
+                killed INTEGER,
+                parent_conversation_id TEXT,
+                last_modified_time TEXT,
+                step_count INTEGER
+            )
+            """
+        )
+        cur.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (convo_id, "vpn fix", "CASCADE_RUN_STATUS_RUNNING", 1, 0, None, "2026-09-24 01:28:14", 49),
+        )
+        conn.commit()
+        conn.close()
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            conversations_dir=str(temp_dir),
+            summaries_db_path=str(db_path),
+            stall_grace_seconds=90,
+            lookback_minutes=60,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.ls_restart_time = restart_time
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        s = stalled[0]
+        assert s.conversation_id == convo_id
+        assert s.is_server_restart is True
+        assert s.can_resuscitate is True
+        assert s.last_error == "server_restart_aborted_running_step"
+
+        # Resuscitate
+        res = asyncio.run(watchdog.resuscitate_session(s))
+        assert res["success"] is True
+        assert res["status"] == "resuscitated"
+
+        mock_agentapi.send_message.assert_called_once()
+        called_prompt = mock_agentapi.send_message.call_args[1]["content"]
+        assert "【系统自动自愈拉起：服务重启任务恢复】" in called_prompt
+        assert "检测到 Antigravity 应用/服务此前已重启" in called_prompt
+
+    def test_boost_mode_preserved_on_server_restart(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that in /boost or teamwork mode after server restart:
+        1. Dead subagent from before restart does not freeze the parent forever.
+        2. Parent is resuscitated with BOOST_SERVER_RESTART_RESUSCITATION_PROMPT.
+        3. Solo mode degradation is strictly prohibited.
+        """
+        parent_id = "11111111-2222-3333-4444-555555555555"
+        child_id = "66666666-7777-8888-9999-000000000000"
+        now = time.time()
+        restart_time = now - 120.0  # Restarted 2 mins ago
+
+        # Parent transcript references child_id and contains /boost
+        parent_steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "/boost Refactor module"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": f'Invoked subagent {{"conversationId": "{child_id}"}}',
+                "tool_calls": [{"name": "invoke_subagent"}],
+            },
+        ]
+        _create_fake_session(temp_dir, parent_id, parent_steps, mtime_offset_seconds=500.0)
+
+        # Child transcript last modified before restart (500s ago)
+        child_steps = [
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": f'<subagent_reminder>\ninvoked by a caller agent (name: "parent", id: "{parent_id}")\n</subagent_reminder>',
+            },
+            {"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "RUNNING", "content": "editing file"},
+        ]
+        _create_fake_session(temp_dir, child_id, child_steps, mtime_offset_seconds=500.0)
+
+        # Create conversation_summaries.db
+        import sqlite3
+        db_path = temp_dir / "conversation_summaries.db"
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE conversation_summaries (
+                conversation_id TEXT PRIMARY KEY,
+                title TEXT,
+                status TEXT,
+                not_fully_idle INTEGER,
+                killed INTEGER,
+                parent_conversation_id TEXT,
+                last_modified_time TEXT,
+                step_count INTEGER
+            )
+            """
+        )
+        cur.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (parent_id, "Boost Refactor", "CASCADE_RUN_STATUS_RUNNING", 1, 0, None, "2026-09-24 01:28:14", 2),
+        )
+        cur.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (child_id, "Subagent Refactor", "CASCADE_RUN_STATUS_RUNNING", 1, 0, parent_id, "2026-09-24 01:28:14", 2),
+        )
+        conn.commit()
+        conn.close()
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            conversations_dir=str(temp_dir),
+            summaries_db_path=str(db_path),
+            stall_grace_seconds=90,
+            lookback_minutes=60,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.ls_restart_time = restart_time
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) >= 1
+
+        # Locate the parent session
+        parent_items = [s for s in stalled if s.conversation_id == parent_id]
+        assert len(parent_items) == 1
+
+        target_item = parent_items[0]
+        assert target_item.is_server_restart is True
+        assert target_item.is_boost_goal is True
+
+        res = asyncio.run(watchdog.resuscitate_session(target_item))
+        assert res["success"] is True
+
+        mock_agentapi.send_message.assert_called_once()
+        called_prompt = mock_agentapi.send_message.call_args[1]["content"]
+        assert "【系统自动自愈拉起：/boost 服务重启延续】" in called_prompt
+        assert "严禁降级 Solo 模式" in called_prompt
+        assert "请检查此前委派的子 Agent 执行状态" in called_prompt
+
+    def test_retry_counter_and_debounce_reset_across_restarts(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that failed attempts that occurred BEFORE language_server restart
+        do not count against the retry limit on the new server instance.
+        """
+        convo_id = "test-session-prior-failures"
+        now = time.time()
+        restart_time = now - 60.0  # Restarted 1 min ago
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "analyze data"},
+            {"step_index": 10, "source": "SYSTEM", "type": "ERROR_MESSAGE", "status": "ERROR", "content": "Connection reset by peer"},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=1200.0)
+
+        # Record 3 failed attempts in DB occurring 20 minutes ago (before restart)
+        old_epoch = now - 1200.0
+        for i in range(3):
+            db.record_resuscitation(
+                conversation_id=convo_id,
+                last_error="Connection reset by peer",
+                status="failed",
+                last_step_index=10,
+            )
+        # Update last resuscitation to old epoch
+        last_res = db.get_last_resuscitation(convo_id)
+        assert last_res is not None
+        db.update_resuscitation_status(last_res["resuscitation_id"], "failed", cooldown_until=old_epoch)
+        old_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(old_epoch))
+        with db._lock:
+            db._conn.execute(
+                "UPDATE antigravity_resuscitations SET resuscitated_at = ? WHERE resuscitation_id = ?",
+                (old_ts, last_res["resuscitation_id"]),
+            )
+            db._conn.commit()
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            conversations_dir=str(temp_dir),
+            stall_grace_seconds=30,
+            max_retries_per_session=3,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.ls_restart_time = restart_time
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        s = stalled[0]
+        # Should be eligible for pull-up on the new server instance despite 3 past attempts
+        assert s.can_resuscitate is True
+        assert s.attempt_count == 0
+
+    def test_get_status_includes_restart_metadata(self, db, mock_agentapi, temp_dir):
+        """Verify get_status output includes ls_restart_time and is_server_restart flag."""
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.ls_restart_time = 1790213359.0
+
+        status = watchdog.get_status(force=True)
+        assert "ls_restart_time" in status
+        assert status["ls_restart_time"] == 1790213359.0
+
+    def test_unanswered_user_prompt_resuscitated_after_restart(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that a normal conversation where the user entered a prompt right
+        before restart (last_source == USER_EXPLICIT) is detected as stalled and
+        resuscitated with SERVER_RESTART_RESUSCITATION_PROMPT so user typing is not needed.
+        """
+        convo_id = "test-unanswered-user-prompt-restart"
+        now = time.time()
+        restart_time = now - 100.0  # Restarted 100s ago
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "vpn fix"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "I am checking VPN configuration..."},
+            {"step_index": 2, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "please scan patterns and audit sidecard if need"},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=300.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            conversations_dir=str(temp_dir),
+            stall_grace_seconds=90,
+            lookback_minutes=60,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.ls_restart_time = restart_time
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        s = stalled[0]
+        assert s.conversation_id == convo_id
+        assert s.is_server_restart is True
+        assert s.can_resuscitate is True
+        assert s.last_error == "server_restart_unanswered_user_prompt"
+
+        res = asyncio.run(watchdog.resuscitate_session(s))
+        assert res["success"] is True
+        mock_agentapi.send_message.assert_called_once()
+        prompt = mock_agentapi.send_message.call_args[1]["content"]
+        assert "【系统自动自愈拉起：服务重启任务恢复】" in prompt
+
+    def test_subagent_from_before_restart_does_not_disturb_active_parent(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that if a subagent died before restart, but its parent is ALREADY
+        active on the current server process, the watchdog does NOT send a resuscitation
+        prompt to the parent, preventing corruption of active teamwork.
+        """
+        parent_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        child_id = "ffffffff-1111-2222-3333-444444444444"
+        now = time.time()
+        restart_time = now - 200.0  # Restarted 200s ago
+
+        # Parent was active 20 seconds ago on the CURRENT server instance!
+        parent_steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "/boost Complex task"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": f'Invoked subagent {{"conversationId": "{child_id}"}}',
+                "tool_calls": [{"name": "invoke_subagent"}],
+            },
+            {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "Working on current server task...",
+                "tool_calls": [],
+            },
+        ]
+        _create_fake_session(temp_dir, parent_id, parent_steps, mtime_offset_seconds=20.0)
+
+        # Child was last modified 400s ago (before restart)
+        child_steps = [
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": f'<subagent_reminder>\ninvoked by a caller agent (name: "parent", id: "{parent_id}")\n</subagent_reminder>',
+            },
+            {"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "RUNNING", "content": "old task"},
+        ]
+        _create_fake_session(temp_dir, child_id, child_steps, mtime_offset_seconds=400.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            conversations_dir=str(temp_dir),
+            stall_grace_seconds=90,
+            lookback_minutes=60,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.ls_restart_time = restart_time
+
+        stalled = watchdog.scan_stalled_conversations()
+        # Child session should be detected as stalled, but can_resuscitate MUST be False
+        child_items = [s for s in stalled if s.conversation_id == child_id]
+        assert len(child_items) == 1
+        assert child_items[0].can_resuscitate is False
+        assert child_items[0].skip_reason == "parent_already_active_on_current_server"
+
+    def test_actively_running_step_on_current_server_not_killed_after_90s(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that a long-running step (e.g. tests running for 120s) on the CURRENT server
+        is NOT falsely classified as running_step_hung after stall_grace_seconds (90s).
+        """
+        convo_id = "test-active-long-running-step"
+        now = time.time()
+        restart_time = now - 3600.0  # Restarted 1 hour ago
+
+        # Step started 120s ago on CURRENT server (after restart)
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "run tests"},
+            {"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "RUNNING", "content": "pytest tests/unit/"},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=120.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            conversations_dir=str(temp_dir),
+            stall_grace_seconds=90,
+            boost_quiet_seconds=900,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.ls_restart_time = restart_time
+
+        stalled = watchdog.scan_stalled_conversations()
+        # Should NOT be in stalled list because it is legitimately executing on the current server
+        assert len(stalled) == 0
+
+    def test_dangling_tool_result_resuscitated_after_restart(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that a conversation where a tool finished right before restart
+        (last_source == MODEL, type == GENERIC, status == DONE) is detected as
+        server_restart_aborted_tool_followup and immediately resuscitated.
+        """
+        convo_id = "test-dangling-tool-restart"
+        now = time.time()
+        restart_time = now - 150.0
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "diagnose proxy"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "checking...", "tool_calls": [{"name": "run_command"}]},
+            {"step_index": 2, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": "Command finished with return code 0."},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=300.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            conversations_dir=str(temp_dir),
+            stall_grace_seconds=90,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.ls_restart_time = restart_time
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        s = stalled[0]
+        assert s.conversation_id == convo_id
+        assert s.is_server_restart is True
+        assert s.can_resuscitate is True
+        assert s.last_error == "server_restart_aborted_tool_followup"
+
+    def test_boost_session_done_waiting_resuscitated_even_without_summaries_db(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that a /boost session that was waiting for subagents before restart
+        is resuscitated with BOOST_SERVER_RESTART_RESUSCITATION_PROMPT even if
+        conversation_summaries.db does not contain an active entry.
+        """
+        convo_id = "test-boost-session-without-summaries-entry"
+        now = time.time()
+        restart_time = now - 100.0
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "/boost Implement feature"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Waiting for delegation..."},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=300.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            conversations_dir=str(temp_dir),
+            stall_grace_seconds=90,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.ls_restart_time = restart_time
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 1
+        s = stalled[0]
+        assert s.conversation_id == convo_id
+        assert s.is_server_restart is True
+        assert s.is_boost_goal is True
+        assert s.can_resuscitate is True
+
+        res = asyncio.run(watchdog.resuscitate_session(s))
+        assert res["success"] is True
+        prompt = mock_agentapi.send_message.call_args[1]["content"]
+        assert "【系统自动自愈拉起：/boost 服务重启延续】" in prompt
+        assert "严禁降级 Solo 模式" in prompt
 
 
 

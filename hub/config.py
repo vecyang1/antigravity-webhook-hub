@@ -109,6 +109,7 @@ class AntigravityWatchdogConfig:
     brain_dir: Optional[str] = None
     sidecar_data_dir: Optional[str] = None
     conversations_dir: Optional[str] = None
+    summaries_db_path: Optional[str] = None
 
 
 @dataclass(slots=True)
@@ -227,6 +228,8 @@ class AppConfig:
                 "probe_timeout_seconds": self.antigravity_watchdog.probe_timeout_seconds,
                 "brain_dir": self.antigravity_watchdog.brain_dir,
                 "sidecar_data_dir": self.antigravity_watchdog.sidecar_data_dir,
+                "conversations_dir": self.antigravity_watchdog.conversations_dir,
+                "summaries_db_path": self.antigravity_watchdog.summaries_db_path,
             },
             "antigravity_quota": {
                 "enabled": self.antigravity_quota.enabled,
@@ -501,6 +504,10 @@ def load_config(
             cfg.antigravity_watchdog.brain_dir = str(aw["brain_dir"])
         if "sidecar_data_dir" in aw:
             cfg.antigravity_watchdog.sidecar_data_dir = str(aw["sidecar_data_dir"])
+        if "conversations_dir" in aw:
+            cfg.antigravity_watchdog.conversations_dir = str(aw["conversations_dir"])
+        if "summaries_db_path" in aw:
+            cfg.antigravity_watchdog.summaries_db_path = str(aw["summaries_db_path"])
 
     # Antigravity Quota Sentinel & 5h Warmup
     if "antigravity_quota" in yaml_data and isinstance(yaml_data["antigravity_quota"], dict):
@@ -738,6 +745,10 @@ def load_config(
         cfg.antigravity_watchdog.brain_dir = str(combined_env["ANTIGRAVITY_WATCHDOG_BRAIN_DIR"])
     if "ANTIGRAVITY_WATCHDOG_SIDECAR_DATA_DIR" in combined_env:
         cfg.antigravity_watchdog.sidecar_data_dir = str(combined_env["ANTIGRAVITY_WATCHDOG_SIDECAR_DATA_DIR"])
+    if "ANTIGRAVITY_WATCHDOG_CONVERSATIONS_DIR" in combined_env:
+        cfg.antigravity_watchdog.conversations_dir = str(combined_env["ANTIGRAVITY_WATCHDOG_CONVERSATIONS_DIR"])
+    if "ANTIGRAVITY_WATCHDOG_SUMMARIES_DB_PATH" in combined_env:
+        cfg.antigravity_watchdog.summaries_db_path = str(combined_env["ANTIGRAVITY_WATCHDOG_SUMMARIES_DB_PATH"])
 
     # Antigravity Quota Sentinel
     if "ANTIGRAVITY_QUOTA_ENABLED" in combined_env:

@@ -20,6 +20,7 @@ import os
 import re
 import socket
 import sqlite3
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -149,6 +150,21 @@ PARENT_DELEGATION_COMPLETED_PROMPT = (
     "请根据子 Agent 的上述成果继续推进下一步、更新 walkthrough.md 成果记录，并在任务完成后以 <!-- GOAL_COMPLETE --> 闭环活跃目标（请全中文汇报进展）。"
 )
 
+SERVER_RESTART_RESUSCITATION_PROMPT = (
+    "【系统自动自愈拉起：服务重启任务恢复】\n"
+    "检测到 Antigravity 应用/服务此前已重启，本会话正在推进的任务已自动恢复连接。\n"
+    "请越过重启中断，检查上一步执行进展并直接继续推进原定任务计划（请全中文汇报进展）。"
+)
+
+BOOST_SERVER_RESTART_RESUSCITATION_PROMPT = (
+    "【系统自动自愈拉起：/boost 服务重启延续】\n"
+    "检测到 Antigravity 应用/服务此前已重启，未完成的 /boost、/goal 或多 Agent 协同任务已自动恢复连接。\n"
+    "⚠️ 关键执行纪律（严禁降级 Solo 模式）：\n"
+    "1. 本会话处于高阶自治与团队协同推进状态，严禁退化为单兵等待或打假卡，继续贯彻团队/委派协同推进。\n"
+    "2. 请检查此前委派的子 Agent 执行状态与最新记录（如 walkthrough.md）。若子 Agent 被中断，请直接通过 send_message 或 invoke_subagent 继续唤醒推进。\n"
+    "3. 请全中文汇报当前进展与下一步执行计划，并直接继续执行原定任务。"
+)
+
 
 @dataclass(slots=True)
 class StalledSessionInfo:
@@ -176,6 +192,7 @@ class StalledSessionInfo:
     completed_child_id: Optional[str] = None
     completed_child_summary: Optional[str] = None
     is_network_issue: bool = False
+    is_server_restart: bool = False
 
 
 def check_session_has_boost_or_goal(transcript_path: Path, parsed_steps: list[dict[str, Any]]) -> bool:
@@ -284,21 +301,94 @@ def extract_subagent_ids_from_transcript(transcript_path: Path, current_convo_id
     return child_ids
 
 
+def get_language_server_start_time(pid: Optional[int]) -> Optional[float]:
+    """Get the start time (epoch seconds) of language_server process on macOS / Unix."""
+    if not pid:
+        return None
+    try:
+        env = dict(os.environ)
+        env["LC_ALL"] = "C"
+        out = subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        ).strip()
+        if out:
+            # Format: 'Thu Sep 24 09:28:14 2026'
+            return time.mktime(time.strptime(out, "%a %b %d %H:%M:%S %Y"))
+    except Exception as e:
+        logger.debug("Failed getting lstart for pid %s: %s", pid, e)
+    return None
+
+
+def get_unfinished_conversations_from_summaries(
+    summaries_db_path: Optional[Path] = None,
+) -> dict[str, dict[str, Any]]:
+    """
+    Query ~/.gemini/antigravity/conversation_summaries.db for conversations
+    flagged as CASCADE_RUN_STATUS_RUNNING or not_fully_idle = 1 (authoritative Antigravity state).
+    """
+    db_file = summaries_db_path or Path(os.path.expanduser("~/.gemini/antigravity/conversation_summaries.db"))
+    if not db_file.exists():
+        return {}
+
+    unfinished: dict[str, dict[str, Any]] = {}
+    try:
+        conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True, timeout=1.0)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT conversation_id, title, status, not_fully_idle, killed, parent_conversation_id, last_modified_time, step_count
+            FROM conversation_summaries
+            WHERE (status = 'CASCADE_RUN_STATUS_RUNNING' OR not_fully_idle = 1)
+              AND (killed IS NULL OR killed = 0)
+            """
+        )
+        rows = cur.fetchall()
+        conn.close()
+        for row in rows:
+            cid = str(row[0])
+            mod_ts = 0.0
+            if row[6]:
+                try:
+                    ts_str = str(row[6]).replace(" ", "T")
+                    dt = datetime.fromisoformat(ts_str if "+" in ts_str else ts_str + "+00:00")
+                    mod_ts = dt.timestamp()
+                except Exception:
+                    pass
+            unfinished[cid] = {
+                "conversation_id": cid,
+                "title": row[1] or "",
+                "status": row[2] or "",
+                "not_fully_idle": bool(row[3]),
+                "killed": bool(row[4]),
+                "parent_conversation_id": row[5] or None,
+                "last_modified_time": mod_ts,
+                "step_count": row[7] or 0,
+            }
+    except Exception as e:
+        logger.debug("Failed querying conversation_summaries.db: %s", e)
+    return unfinished
+
+
 def is_subagent_active(
     cid: str,
     brain_dir: Path,
     quiet_seconds: float = 900.0,
     now: Optional[float] = None,
+    ls_restart_time: float = 0.0,
 ) -> tuple[bool, str]:
     """
     Check if a child subagent is actively working.
     Returns (is_active, reason).
     
     Principles:
-    1. If the subagent's transcript was modified within quiet_seconds (default 15m),
+    1. If language_server restarted and subagent was last modified BEFORE restart,
+       it was terminated by the server restart and cannot be running on the current server.
+    2. If the subagent's transcript was modified within quiet_seconds (default 15m),
        and it has NOT explicitly completed with <!-- GOAL_COMPLETE -->, it is ACTIVE.
-    2. If the subagent's last step status is "RUNNING", it is ACTIVE.
-    3. If the subagent has ongoing tool executions or model generations, it is ACTIVE.
+    3. If the subagent's last step status is "RUNNING", it is ACTIVE.
     4. Only when the subagent explicitly completed (<!-- GOAL_COMPLETE --> or final shutdown),
        or the entire session has been silent for > quiet_seconds with no running tasks,
        is it considered inactive.
@@ -312,6 +402,8 @@ def is_subagent_active(
         if c_dir.exists():
             try:
                 d_mtime = c_dir.stat().st_mtime
+                if ls_restart_time > 0 and d_mtime < ls_restart_time:
+                    return False, f"subagent_directory_predates_server_restart (mtime={int(d_mtime)} < restart={int(ls_restart_time)})"
                 if now - d_mtime < quiet_seconds:
                     return True, f"subagent_directory_recently_created ({int(now - d_mtime)}s ago)"
             except Exception:
@@ -322,6 +414,11 @@ def is_subagent_active(
         c_mtime = c_path.stat().st_mtime
     except Exception:
         return False, "stat_failed"
+
+    # If subagent was last modified BEFORE language_server restarted,
+    # its process was killed by the server restart and cannot be running on the current server.
+    if ls_restart_time > 0 and c_mtime < ls_restart_time:
+        return False, f"subagent_stopped_by_server_restart (mtime={int(c_mtime)} < restart={int(ls_restart_time)})"
 
     time_since_mod = now - c_mtime
 
@@ -346,11 +443,7 @@ def is_subagent_active(
     last_step = parsed_tail[-1]
     last_status = last_step.get("status")
 
-    # A. Actively running step
-    if last_status == "RUNNING":
-        return True, f"subagent_step_running (step {last_step.get('step_index', '?')})"
-
-    # B. Check for explicit goal completion
+    # A. Check for explicit goal completion
     has_goal_complete = False
     for step in reversed(parsed_tail):
         cnt = str(step.get("content") or "").lower()
@@ -360,6 +453,12 @@ def is_subagent_active(
 
     if has_goal_complete:
         return False, "subagent_goal_completed"
+
+    # B. Actively running step
+    if last_status == "RUNNING":
+        if time_since_mod < quiet_seconds:
+            return True, f"subagent_step_running (step {last_step.get('step_index', '?')})"
+        return False, f"subagent_running_step_stale ({int(time_since_mod)}s >= {int(quiet_seconds)}s)"
 
     # C. Within quiet_seconds window and not explicitly completed -> actively running
     if time_since_mod < quiet_seconds:
@@ -756,6 +855,11 @@ class AntigravityWatchdog:
             or os.environ.get("ANTIGRAVITY_CONVERSATIONS_DIR")
             or os.path.expanduser("~/.gemini/antigravity/conversations")
         )
+        self._summaries_db_path = Path(
+            getattr(self.config, "summaries_db_path", None)
+            or os.environ.get("ANTIGRAVITY_SUMMARIES_DB_PATH")
+            or (self._conversations_dir.parent / "conversation_summaries.db")
+        )
         self.last_known_ls_pid: Optional[int] = None
         self.ls_restart_time: float = 0.0
         if self.db and hasattr(self.db, "get_metadata"):
@@ -777,6 +881,7 @@ class AntigravityWatchdog:
                 self._quota_sentinel = AntigravityQuotaSentinel(db=self.db, broker=self.broker)
             except Exception as e:
                 logger.debug("Auto-initializing default AntigravityQuotaSentinel skipped: %s", e)
+            return self._quota_sentinel
         return self._quota_sentinel
 
     @quota_sentinel.setter
@@ -786,7 +891,8 @@ class AntigravityWatchdog:
     def check_language_server_lifecycle(self) -> tuple[bool, Optional[int], Optional[int]]:
         """
         Monitor language_server standalone process PID.
-        When PID changes, in-memory Node.js timers and schedules are wiped.
+        When PID changes, in-memory Node.js timers and schedules are wiped,
+        and unclosed tasks are stopped.
         Returns (pid_changed, current_pid, old_pid).
         """
         raw_pid = self.agentapi.get_language_server_pid() if hasattr(self.agentapi, "get_language_server_pid") else None
@@ -801,13 +907,15 @@ class AntigravityWatchdog:
             return False, None, self.last_known_ls_pid
 
         old_pid = self.last_known_ls_pid
+        start_t = get_language_server_start_time(current_pid)
+
         if old_pid is not None and current_pid != old_pid:
             logger.warning(
-                "Antigravity language_server restarted! PID changed from %d to %d. In-memory timers wiped.",
+                "Antigravity language_server restarted! PID changed from %d to %d. In-memory timers wiped and unclosed tasks stopped.",
                 old_pid, current_pid,
             )
             self.last_known_ls_pid = current_pid
-            self.ls_restart_time = time.time()
+            self.ls_restart_time = start_t or time.time()
             if self.db and hasattr(self.db, "set_metadata"):
                 self.db.set_metadata("last_known_ls_pid", str(current_pid))
                 self.db.set_metadata("ls_restart_time", str(self.ls_restart_time))
@@ -815,8 +923,12 @@ class AntigravityWatchdog:
 
         if old_pid is None:
             self.last_known_ls_pid = current_pid
+            if not self.ls_restart_time:
+                self.ls_restart_time = start_t or 0.0
             if self.db and hasattr(self.db, "set_metadata"):
                 self.db.set_metadata("last_known_ls_pid", str(current_pid))
+                if self.ls_restart_time > 0:
+                    self.db.set_metadata("ls_restart_time", str(self.ls_restart_time))
 
         return False, current_pid, old_pid
 
@@ -970,6 +1082,9 @@ class AntigravityWatchdog:
         # 2. Monitor language_server standalone process PID lifecycle
         pid_changed, current_ls_pid, old_ls_pid = self.check_language_server_lifecycle()
 
+        # Query authoritative conversation summaries DB for unfinished conversations
+        summaries_map = get_unfinished_conversations_from_summaries(self._summaries_db_path)
+
         # Gather monitored in-memory schedules to check across full brain directory
         active_sched_map: dict[str, dict[str, Any]] = {}
         if self.db and hasattr(self.db, "list_active_conversation_schedules"):
@@ -979,28 +1094,37 @@ class AntigravityWatchdog:
             except Exception as e:
                 logger.debug("Error loading active conversation schedules: %s", e)
 
-        try:
-            for convo_dir in self._brain_dir.iterdir():
-                if not convo_dir.is_dir():
-                    continue
-                convo_id = convo_dir.name
-                if convo_id == "tempmediaStorage" or len(convo_id) < 20:
-                    continue
+        candidate_convo_ids = set()
+        if self._brain_dir.exists():
+            try:
+                for convo_dir in self._brain_dir.iterdir():
+                    if convo_dir.is_dir() and convo_dir.name != "tempmediaStorage" and len(convo_dir.name) >= 20:
+                        candidate_convo_ids.add(convo_dir.name)
+            except Exception as e:
+                logger.debug("Error listing brain dir: %s", e)
+        for cid in summaries_map:
+            candidate_convo_ids.add(cid)
 
+        try:
+            for convo_id in candidate_convo_ids:
                 transcript_path = resolve_transcript_path(convo_id, self._brain_dir)
                 if not transcript_path or not transcript_path.exists():
                     continue
 
                 try:
                     trans_stat = transcript_path.stat()
-                    # Do not skip sessions with monitored active schedules, or unclosed /boost /goal sessions within 24h
-                    if convo_id not in active_sched_map:
+                    # Do not skip sessions with monitored active schedules, unfinished summaries in DB, or unclosed /boost /goal sessions within 24h
+                    if convo_id not in active_sched_map and convo_id not in summaries_map:
                         age = now - trans_stat.st_mtime
                         if age > max(lookback_seconds, 86400):
                             continue
                         elif age > lookback_seconds:
                             if not check_session_has_boost_or_goal(transcript_path, []):
                                 continue
+                    else:
+                        age = now - trans_stat.st_mtime
+                        if age > max(lookback_seconds, 86400):
+                            continue
                     file_mtime = trans_stat.st_mtime
                 except Exception:
                     continue
@@ -1048,7 +1172,13 @@ class AntigravityWatchdog:
                     boost_quiet = float(getattr(self.config, "boost_quiet_seconds", 900))
                     active_children = []
                     for cid in child_ids:
-                        is_act, reason = is_subagent_active(cid, self._brain_dir, quiet_seconds=boost_quiet, now=now)
+                        is_act, reason = is_subagent_active(
+                            cid,
+                            self._brain_dir,
+                            quiet_seconds=boost_quiet,
+                            now=now,
+                            ls_restart_time=self.ls_restart_time,
+                        )
                         if is_act:
                             active_children.append((cid, reason))
                     if active_children:
@@ -1059,6 +1189,20 @@ class AntigravityWatchdog:
                         continue
 
                 prior_attempts = self.db.get_resuscitation_attempts(convo_id, current_step_index=last_step_idx) if self.db else 0
+                if self.ls_restart_time > 0 and self.db and hasattr(self.db, "get_last_resuscitation"):
+                    last_res_chk = self.db.get_last_resuscitation(convo_id)
+                    if last_res_chk:
+                        chk_epoch = float(last_res_chk.get("resuscitated_epoch") or 0.0)
+                        if chk_epoch == 0.0 and last_res_chk.get("resuscitated_at"):
+                            try:
+                                ts_s = str(last_res_chk["resuscitated_at"]).replace(" ", "T")
+                                dt_s = datetime.fromisoformat(ts_s if "+" in ts_s else ts_s + "+00:00")
+                                chk_epoch = dt_s.timestamp()
+                            except Exception:
+                                pass
+                        if chk_epoch > 0.0 and chk_epoch < self.ls_restart_time:
+                            prior_attempts = 0
+
                 sidecar_slug: Optional[str] = None
 
                 parent_convo_id = None
@@ -1073,11 +1217,14 @@ class AntigravityWatchdog:
                         _parent_resolved = True
                         if sidecar_slug is None:
                             sidecar_slug = self._find_associated_sidecar(convo_id)
-                        parent_convo_id = detect_parent_conversation_id(
-                            convo_id,
-                            conversations_dir=self._conversations_dir,
-                            transcript_path=transcript_path,
-                        )
+                        if convo_id in summaries_map and summaries_map[convo_id].get("parent_conversation_id"):
+                            parent_convo_id = summaries_map[convo_id]["parent_conversation_id"]
+                        else:
+                            parent_convo_id = detect_parent_conversation_id(
+                                convo_id,
+                                conversations_dir=self._conversations_dir,
+                                transcript_path=transcript_path,
+                            )
                         is_subagent = bool(parent_convo_id)
                         if not is_subagent and parsed_steps:
                             first_content = str(parsed_steps[0].get("content") or "")
@@ -1103,6 +1250,33 @@ class AntigravityWatchdog:
                     if subagent and not parent_id:
                         return False, "orphaned_subagent_cannot_determine_parent"
 
+                    # 1b. Active parent protection: if subagent was stopped by server restart,
+                    # but the parent is already actively working on the current server process,
+                    # or the parent is waiting on another active subagent on the current server,
+                    # DO NOT interrupt or confuse the parent!
+                    if subagent and parent_id and is_prior_to_restart:
+                        p_path = resolve_transcript_path(parent_id, self._brain_dir)
+                        if p_path and p_path.exists():
+                            try:
+                                p_mtime = p_path.stat().st_mtime
+                                if self.ls_restart_time > 0 and p_mtime >= self.ls_restart_time:
+                                    return False, "parent_already_active_on_current_server"
+                            except Exception:
+                                pass
+                            p_children = extract_subagent_ids_from_transcript(p_path, parent_id)
+                            boost_quiet = float(getattr(self.config, "boost_quiet_seconds", 900))
+                            for pch_id in p_children:
+                                if pch_id != cid:
+                                    is_act, _ = is_subagent_active(
+                                        pch_id,
+                                        self._brain_dir,
+                                        quiet_seconds=boost_quiet,
+                                        now=now,
+                                        ls_restart_time=self.ls_restart_time,
+                                    )
+                                    if is_act:
+                                        return False, "parent_has_other_active_subagent"
+
                     # 2. Check last resuscitation record
                     last_res = self.db.get_last_resuscitation(cid) if (self.db and hasattr(self.db, "get_last_resuscitation")) else None
                     res_epoch = 0.0
@@ -1119,33 +1293,46 @@ class AntigravityWatchdog:
                             except Exception:
                                 pass
 
+                    effective_attempts = attempts
+                    if is_prior_to_restart:
+                        if self.ls_restart_time > 0 and res_epoch > 0.0 and res_epoch < self.ls_restart_time:
+                            effective_attempts = 0
+                            res_epoch = 0.0
+                        elif res_epoch == 0.0:
+                            effective_attempts = 0
+                    elif self.ls_restart_time > 0 and res_epoch > 0.0 and res_epoch < self.ls_restart_time:
+                        effective_attempts = 0
+                        res_epoch = 0.0
+
                     # 3. Circuit breaker & Exponential Backoff
                     backoff_window = float(getattr(self.config, "backoff_cooldown_seconds", 1800))
                     max_total = int(getattr(self.config, "max_total_attempts", 5))
-                    if attempts >= max_total:
-                        return False, f"max_retries_permanently_exhausted ({attempts}/{max_total})"
-                    if attempts >= self.config.max_retries_per_session:
+                    if effective_attempts >= max_total:
+                        return False, f"max_retries_permanently_exhausted ({effective_attempts}/{max_total})"
+                    if effective_attempts >= self.config.max_retries_per_session:
                         if res_epoch > 0.0:
                             elapsed = now - res_epoch
                             if elapsed < backoff_window:
                                 remaining = int(backoff_window - elapsed)
-                                return False, f"max_retries_exhausted ({attempts}/{self.config.max_retries_per_session}) (in backoff cooldown for {remaining}s)"
+                                return False, f"max_retries_exhausted ({effective_attempts}/{self.config.max_retries_per_session}) (in backoff cooldown for {remaining}s)"
                             else:
                                 logger.info(
                                     "Session %s backoff cooldown (%ds) expired after %d consecutive attempts. Granting probe pull-up.",
-                                    cid, int(backoff_window), attempts,
+                                    cid, int(backoff_window), effective_attempts,
                                 )
                         else:
-                            return False, f"max_retries_exhausted ({attempts}/{self.config.max_retries_per_session})"
+                            return False, f"max_retries_exhausted ({effective_attempts}/{self.config.max_retries_per_session})"
 
                     # 4. Debounce step cooldown to prevent rapid double-burning of retries at the same step
                     if res_epoch > 0.0 and last_res and last_res.get("status") in ("resuscitated", "failed", "exhausted", "schedule_remounted"):
-                        multiplier = 1.0 if attempts <= 1 else (1.5 if attempts == 2 else 2.5)
+                        multiplier = 1.0 if effective_attempts <= 1 else (1.5 if effective_attempts == 2 else 2.5)
                         step_cooldown = self.config.stall_grace_seconds * multiplier
                         if now - res_epoch < step_cooldown:
                             return False, f"recent_resuscitation_cooldown ({int(now - res_epoch)}s ago < {int(step_cooldown)}s)"
 
                     return True, None
+
+                is_prior_to_restart = bool(self.ls_restart_time > 0 and file_mtime < self.ls_restart_time)
 
                 # --- 1. Check Active Quota Cooldown in DB ---
                 if active_quota_healthy:
@@ -1159,7 +1346,7 @@ class AntigravityWatchdog:
                         # Session advanced past the recorded cooldown step!
                         active_cd = None
                     else:
-                        db_q = inspect_conversation_db_for_quota(convo_id)
+                        db_q = inspect_conversation_db_for_quota(convo_id, conversations_dir=self._conversations_dir)
                         has_recent_quota = (
                             any(
                                 s.get("type") != "CHECKPOINT"
@@ -1174,7 +1361,7 @@ class AntigravityWatchdog:
 
                 if active_cd:
                     cooldown_until = float(active_cd.get("cooldown_until") or 0.0)
-                    if now < cooldown_until and not (now - file_mtime > 300 and prior_attempts == 0):
+                    if not is_prior_to_restart and now < cooldown_until and not (now - file_mtime > 300 and prior_attempts == 0):
                         _resolve_subagent_and_parent()
                         remaining = int(cooldown_until - now)
                         stalled.append(
@@ -1192,11 +1379,12 @@ class AntigravityWatchdog:
                                 skip_reason=f"quota_cooldown (resets in {remaining}s)",
                                 is_quota_exhausted=True,
                                 quota_resets_in_seconds=remaining,
+                                is_server_restart=False,
                             )
                         )
                         continue
                     else:
-                        # Cooldown expired or probe allowed! Eligible for immediate automated pull-up
+                        # Cooldown expired, probe allowed, or server restarted! Eligible for immediate automated pull-up
                         _resolve_subagent_and_parent()
                         can_res, skip_reason = _evaluate_resuscitation_eligibility(convo_id, prior_attempts, is_subagent, parent_convo_id)
                         stalled.append(
@@ -1204,7 +1392,7 @@ class AntigravityWatchdog:
                                 conversation_id=convo_id,
                                 transcript_path=transcript_path,
                                 last_step_index=last_step_idx,
-                                last_error="quota_restored_pull_up",
+                                last_error="server_restart_pull_up" if is_prior_to_restart else "quota_restored_pull_up",
                                 last_error_time=file_mtime,
                                 is_subagent=is_subagent,
                                 parent_conversation_id=parent_convo_id,
@@ -1213,6 +1401,7 @@ class AntigravityWatchdog:
                                 can_resuscitate=can_res,
                                 skip_reason=skip_reason,
                                 is_quota_exhausted=False,
+                                is_server_restart=is_prior_to_restart,
                             )
                         )
                         continue
@@ -1238,7 +1427,7 @@ class AntigravityWatchdog:
                         break
 
                 if not quota_detected:
-                    db_quota = inspect_conversation_db_for_quota(convo_id)
+                    db_quota = inspect_conversation_db_for_quota(convo_id, conversations_dir=self._conversations_dir)
                     if db_quota and abs(db_quota.get("step_index", 0) - last_step_idx) <= 2:
                         quota_detected = True
                         quota_sec = db_quota.get("resets_in_seconds")
@@ -1254,7 +1443,7 @@ class AntigravityWatchdog:
                                 conversation_id=convo_id,
                                 transcript_path=transcript_path,
                                 last_step_index=last_step_idx,
-                                last_error="quota_restored_pull_up",
+                                last_error="server_restart_pull_up" if is_prior_to_restart else "quota_restored_pull_up",
                                 last_error_time=file_mtime,
                                 is_subagent=is_subagent,
                                 parent_conversation_id=parent_convo_id,
@@ -1263,6 +1452,7 @@ class AntigravityWatchdog:
                                 can_resuscitate=can_res,
                                 skip_reason=skip_reason,
                                 is_quota_exhausted=False,
+                                is_server_restart=is_prior_to_restart,
                             )
                         )
                         continue
@@ -1277,15 +1467,15 @@ class AntigravityWatchdog:
                     else:
                         cooldown_until = file_mtime + wait_sec + 30.0
 
-                    # If cooldown has expired OR stalled for > 300s without prior live attempts, allow pull-up probe!
-                    if now >= cooldown_until or (now - file_mtime > 300 and prior_attempts == 0):
+                    # If server restarted, or cooldown has expired OR stalled for > 300s without prior live attempts, allow pull-up probe!
+                    if is_prior_to_restart or now >= cooldown_until or (now - file_mtime > 300 and prior_attempts == 0):
                         can_res, skip_reason = _evaluate_resuscitation_eligibility(convo_id, prior_attempts, is_subagent, parent_convo_id)
                         stalled.append(
                             StalledSessionInfo(
                                 conversation_id=convo_id,
                                 transcript_path=transcript_path,
                                 last_step_index=last_step_idx,
-                                last_error="quota_restored_pull_up",
+                                last_error="server_restart_pull_up" if is_prior_to_restart else "quota_restored_pull_up",
                                 last_error_time=file_mtime,
                                 is_subagent=is_subagent,
                                 parent_conversation_id=parent_convo_id,
@@ -1294,6 +1484,7 @@ class AntigravityWatchdog:
                                 can_resuscitate=can_res,
                                 skip_reason=skip_reason,
                                 is_quota_exhausted=False,
+                                is_server_restart=is_prior_to_restart,
                             )
                         )
                         continue
@@ -1466,9 +1657,12 @@ class AntigravityWatchdog:
 
                         has_stop_hook = any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps)
 
+                        is_boost_or_summary = check_session_has_boost_or_goal(transcript_path, parsed_steps) or (convo_id in summaries_map)
                         if completed_child_id and (now - file_mtime > self.config.stall_grace_seconds):
                             pass
                         elif has_stop_hook:
+                            pass
+                        elif is_prior_to_restart and is_boost_or_summary:
                             pass
                         else:
                             continue
@@ -1482,14 +1676,25 @@ class AntigravityWatchdog:
                     if err_idx >= last_step_idx - 2:
                         is_terminal_db_error = True
 
-                # If the last step is an active user input or running tool, and NO terminal DB error occurred, it's not stalled.
-                if not is_terminal_db_error and (last_status == "RUNNING" or (last_source in ("USER_EXPLICIT", "USER") and now - file_mtime < self.config.stall_grace_seconds)):
-                    continue
+                # If the last step is an active user input or running tool, check if actively running.
+                if not is_terminal_db_error:
+                    is_actively_running = False
+                    running_quiet = float(getattr(self.config, "boost_quiet_seconds", 900))
+                    if last_status == "RUNNING":
+                        # Only actively running if on current server process AND within running_quiet window
+                        if not is_prior_to_restart and (now - file_mtime < running_quiet):
+                            is_actively_running = True
+                    elif last_source in ("USER_EXPLICIT", "USER") and (now - file_mtime < self.config.stall_grace_seconds):
+                        is_actively_running = True
+
+                    if is_actively_running:
+                        continue
 
                 is_stalled = False
                 matched_error = ""
                 is_mcp = False
                 is_network_issue = False
+                is_server_restart = is_prior_to_restart
 
                 if is_terminal_db_error:
                     is_network_issue = True
@@ -1497,11 +1702,44 @@ class AntigravityWatchdog:
                     is_stalled = True
 
                 is_boost_goal = check_session_has_boost_or_goal(transcript_path, parsed_steps)
+                is_boost_or_summary = is_boost_goal or (convo_id in summaries_map)
                 has_stop_hook = any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps)
                 has_goal_complete = any("<!-- goal_complete -->" in str(s.get("content") or "").lower() for s in parsed_steps)
                 if has_goal_complete:
                     continue
                 is_stop_hook_halt = has_stop_hook and not last_step.get("tool_calls")
+
+                # Check if aborted by server restart or hung in RUNNING state
+                if last_status == "RUNNING":
+                    is_stalled = True
+                    if is_prior_to_restart:
+                        matched_error = "server_restart_aborted_running_step"
+                    else:
+                        matched_error = "running_step_hung"
+
+                # Check authoritative conversation_summaries state
+                sum_info = summaries_map.get(convo_id)
+                if not is_stalled and sum_info and (sum_info.get("status") == "CASCADE_RUN_STATUS_RUNNING" or sum_info.get("not_fully_idle")):
+                    if is_prior_to_restart or (now - file_mtime >= self.config.stall_grace_seconds):
+                        is_stalled = True
+                        if is_prior_to_restart:
+                            matched_error = "server_restart_unfinished_conversation"
+                        else:
+                            matched_error = "unfinished_conversation_in_summaries"
+
+                # Check if pre-restart boost / goal / summaries session passed through
+                if not is_stalled and is_prior_to_restart and is_boost_or_summary:
+                    is_stalled = True
+                    matched_error = "server_restart_unfinished_conversation"
+
+                # Check if session ended on an unanswered user prompt
+                if not is_stalled and last_source in ("USER_EXPLICIT", "USER"):
+                    if is_prior_to_restart:
+                        is_stalled = True
+                        matched_error = "server_restart_unanswered_user_prompt"
+                    elif (now - file_mtime >= self.config.stall_grace_seconds):
+                        is_stalled = True
+                        matched_error = "unanswered_user_prompt_hang"
 
                 # Widen MCP error detection across all loaded parsed steps (up to 15 steps)
                 for s in reversed(parsed_steps):
@@ -1520,7 +1758,7 @@ class AntigravityWatchdog:
 
                 # 1. Check if the conversation ended in an empty planner response hang, halted after Stop Hook, or waiting on completed subagent
                 if len(parsed_steps) >= 2 and last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and (not last_content or is_stop_hook_halt or completed_child_id) and not last_step.get("tool_calls"):
-                    if now - file_mtime > self.config.stall_grace_seconds:
+                    if is_server_restart or (now - file_mtime > self.config.stall_grace_seconds):
                         is_stalled = True
                         if completed_child_id:
                             matched_error = f"parent_waiting_subagent_completed_hang:{completed_child_id}"
@@ -1535,9 +1773,11 @@ class AntigravityWatchdog:
 
                 # 2. Check if the conversation halted on a completed tool execution output without subsequent model response
                 elif len(parsed_steps) >= 2 and last_source == "MODEL" and last_type == "GENERIC" and last_status == "DONE":
-                    if now - file_mtime > self.config.stall_grace_seconds:
+                    if is_server_restart or (now - file_mtime > self.config.stall_grace_seconds):
                         is_stalled = True
-                        if has_stop_hook:
+                        if is_server_restart:
+                            matched_error = "server_restart_aborted_tool_followup"
+                        elif has_stop_hook:
                             matched_error = "stop_hook_mcp_hang" if is_mcp else "stop_hook_hang"
                         elif is_boost_goal:
                             matched_error = "tool_result_boost_goal_hang"
@@ -1548,7 +1788,7 @@ class AntigravityWatchdog:
 
                 # 3. Check if the conversation halted on a Stop Hook block without subsequent agent progress
                 elif last_source == "SYSTEM" and "stop hook blocked termination" in str(last_content).lower():
-                    if now - file_mtime > self.config.stall_grace_seconds:
+                    if is_server_restart or (now - file_mtime > self.config.stall_grace_seconds):
                         is_stalled = True
                         matched_error = "stop_hook_mcp_hang" if is_mcp else "stop_hook_hang"
 
@@ -1618,14 +1858,15 @@ class AntigravityWatchdog:
                             completed_child_id=completed_child_id,
                             completed_child_summary=completed_child_summary,
                             is_network_issue=is_network_issue,
+                            is_server_restart=is_server_restart,
                         )
                     )
                     continue
 
                 # Stall grace period: recent errors (< stall_grace_seconds) are given time to self-heal.
                 # However, deterministic terminal execution errors recorded in SQLite DB (step_type = 17)
-                # have completely terminated execution and cannot self-heal. They bypass the stall grace period.
-                if not is_terminal_db_error and (now - file_mtime < self.config.stall_grace_seconds):
+                # and server restart interrupted tasks bypass the stall grace period.
+                if not is_terminal_db_error and not is_server_restart and (now - file_mtime < self.config.stall_grace_seconds):
                     stalled.append(
                         StalledSessionInfo(
                             conversation_id=convo_id,
@@ -1645,6 +1886,7 @@ class AntigravityWatchdog:
                             completed_child_id=completed_child_id,
                             completed_child_summary=completed_child_summary,
                             is_network_issue=is_network_issue,
+                            is_server_restart=is_server_restart,
                         )
                     )
                     continue
@@ -1668,6 +1910,7 @@ class AntigravityWatchdog:
                         completed_child_id=completed_child_id,
                         completed_child_summary=completed_child_summary,
                         is_network_issue=is_network_issue,
+                        is_server_restart=is_server_restart,
                     )
                 )
 
@@ -1703,6 +1946,11 @@ class AntigravityWatchdog:
                 subagent_id=session_info.completed_child_id,
                 subagent_summary=session_info.completed_child_summary or "（已圆满完成原定子任务）",
             )
+        elif session_info.is_server_restart:
+            if session_info.is_boost_goal or is_delegated_boost:
+                prompt = custom_prompt or BOOST_SERVER_RESTART_RESUSCITATION_PROMPT
+            else:
+                prompt = custom_prompt or SERVER_RESTART_RESUSCITATION_PROMPT
         elif is_delegated_boost:
             # Active account info from QuotaSentinel
             active_account_email = "已恢复活跃账户"
@@ -2038,7 +2286,7 @@ class AntigravityWatchdog:
         probe_host = self.config.probe_host or "1.1.1.1"
         probe_port = self.config.probe_port or 53
 
-        return {
+        res = {
             "watchdog_enabled": self.config.enabled,
             "auto_resuscitate": self.config.auto_resuscitate,
             "interval_seconds": self.config.interval_seconds,
@@ -2048,6 +2296,7 @@ class AntigravityWatchdog:
             "language_server_connected": ls_ok,
             "language_server_address": addr,
             "last_known_ls_pid": self.last_known_ls_pid,
+            "ls_restart_time": self.ls_restart_time,
             "stalled_sessions_detected": len(stalled),
             "stalled_sessions": [
                 {
@@ -2067,6 +2316,7 @@ class AntigravityWatchdog:
                     "is_mcp_error": s.is_mcp_error,
                     "has_active_schedule": s.has_active_schedule,
                     "active_cron_expression": s.active_cron_expression,
+                    "is_server_restart": s.is_server_restart,
                 }
                 for s in stalled
             ],
