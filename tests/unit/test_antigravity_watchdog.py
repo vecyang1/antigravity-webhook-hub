@@ -3012,4 +3012,115 @@ class TestAntigravityWatchdog:
             assert res["success"] is False
             assert res["status"] == "dead_subagent_zombie_immunity"
 
+    def test_terminal_executor_crash_resuscitated_even_when_transcript_at_model_done(self, db, temp_dir):
+        """
+        Verify that when a session encounters 'Agent execution terminated due to error' /
+        'failed to construct executor' in DB step_type=17, but transcript only recorded up to
+        the prior MODEL PLANNER_RESPONSE DONE turn, the watchdog correctly detects it as a terminal
+        crash and marks can_resuscitate=True instead of skipping it as a completed turn.
+        """
+        import sqlite3
+        convo_id = "test-executor-crash-convo"
+        conv_dir = temp_dir / "conversations"
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        db_path = conv_dir / f"{convo_id}.db"
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)")
+        # Transcript stopped at step 74, but fatal crash recorded at step 76
+        payload = b"Agent execution terminated due to error. failed to construct executor: plan model not specified 89b81784-34f4-4667-9cda-a8fa0ff91bd6-76"
+        conn.execute("INSERT INTO steps VALUES (76, 17, ?)", (payload,))
+        conn.commit()
+        conn.close()
+
+        # Transcript only records up to step 74 (ordinary MODEL PLANNER_RESPONSE DONE)
+        steps = [
+            {"step_index": 73, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": "Tool output"},
+            {"step_index": 74, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Normal model turn without tools", "tool_calls": []},
+        ]
+        t_path = _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=50.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=30)
+        watchdog = AntigravityWatchdog(db=db, config=config)
+        watchdog._conversations_dir = conv_dir
+
+        stalled = watchdog.scan_stalled_conversations()
+        matched = [s for s in stalled if s.conversation_id == convo_id]
+        assert len(matched) == 1
+        assert matched[0].can_resuscitate is True
+        assert matched[0].is_network_issue is True
+        assert matched[0].last_error == "network_issue_server_error"
+
+    def test_pending_resuscitation_prompt_blocks_duplicate_bombardment(self, db, temp_dir):
+        """
+        Verify that if the transcript already ends in an automated resuscitation prompt
+        which is queued or waiting for model response, watchdog refuses to inject another
+        identical resuscitation prompt into the message queue.
+        Also verify that if the session is currently RUNNING, it is strictly immune to resuscitation.
+        """
+        convo_id = "test-pending-queue-bombardment"
+        # 1. Transcript with a network error followed by an automated resuscitation prompt
+        steps = [
+            {"step_index": 10, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Please boost this task /boost"},
+            {"step_index": 11, "source": "SYSTEM", "type": "ERROR_MESSAGE", "status": "ERROR", "content": "stream disconnected before completion"},
+            {"step_index": 12, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "【系统自动自愈拉起提醒：/boost 目标自治与协同推进延续】\n检测到本会话正在执行 /boost 任务..."},
+        ]
+        t_path = _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=40.0)
+
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=15)
+        watchdog = AntigravityWatchdog(db=db, config=config)
+
+        stalled = watchdog.scan_stalled_conversations()
+        matched = [s for s in stalled if s.conversation_id == convo_id]
+        # Crucial invariant: Must NEVER trigger live resuscitation while prompt is pending!
+        assert not any(s.can_resuscitate for s in matched)
+        if matched:
+            assert "pending_resuscitation_in_flight" in matched[0].skip_reason
+
+        # 2. Test running step immunity: if last step is RUNNING, session is completely skipped
+        running_steps = [
+            {"step_index": 20, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Execute long running task"},
+            {"step_index": 21, "source": "MODEL", "type": "GENERIC", "status": "RUNNING", "content": "Tool running in background..."},
+        ]
+        running_convo_id = "test-actively-running-convo"
+        _create_fake_session(temp_dir, running_convo_id, running_steps, mtime_offset_seconds=50.0)
+        stalled2 = watchdog.scan_stalled_conversations()
+        assert not any(s.conversation_id == running_convo_id for s in stalled2)
+
+    def test_weather_cadence_and_daily_success_tag_immune_to_restart_resuscitation(self, db, temp_dir):
+        """
+        Verify that a completed Multi-City Weather Check session ending in daily weather report
+        and cadence completion credentials is recognized as claimed completion, and is immune
+        to restart resuscitation even if language_server restarted.
+        """
+        from hub.antigravity.watchdog import check_session_claimed_completion
+
+        convo_id = "test-weather-cadence-session"
+        weather_report = (
+            "### 今日多城天气速报（2026-09-25）\n\n"
+            "| 城市 | 天气 | 气温(℃) |\n| :--- | :--- | :--- |\n| 佛山 | 晴 | 26~35℃ |\n\n"
+            "### 周期巡检执行与闭环凭据\n"
+            "- **任务卡片**：`CAD-20260618-weather-check`\n"
+            "- **检查点与成功标**：生成今日成功标识 `2026-09-25.success`。\n"
+            "- **履历与版本控制**：全绿健康，无新增异常。"
+        )
+        steps = [
+            {"step_index": 1, "source": "USER", "type": "USER_INPUT", "status": "DONE", "content": "Daily Multi-City Weather Check"},
+            {"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": weather_report, "tool_calls": []},
+        ]
+        # Session modified before restart
+        t_path = _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=1000.0)
+
+        # 1. Verify check_session_claimed_completion recognizes this as completed
+        assert check_session_claimed_completion(t_path, steps) is True
+
+        # 2. Verify watchdog does not pull it up after restart
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
+        watchdog = AntigravityWatchdog(db=db, config=config)
+        watchdog.ls_restart_time = time.time() - 500.0  # Server restarted 500s ago
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert not any(s.conversation_id == convo_id for s in stalled)
+
+
 

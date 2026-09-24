@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.17] - 2026-09-25
+
+### Fixed & Enhanced
+- **三大自愈核心故障彻底根治：执行器崩溃自动拉起、正在运行/在途会话防轰炸打断、周期巡检完工免疫 (`hub/antigravity/watchdog.py`, `tests/unit/test_antigravity_watchdog.py`)**:
+  - **核心修复 1 (执行器崩溃致命错误自动拉起与识别优先)**:
+    - **痛点根治**：彻底解决官方语言服务抛出 `Error Unknown: Agent execution terminated due to error. Error ID: ...`（如 `failed to construct executor: plan model not specified`）时，转录本仅记录到前序正常 MODEL 步骤，导致 Watchdog 误当常规 DONE 步骤跳过、漏拉起的严重缺陷（以 `ae9b4a91-f5bf-4d3b-af8a-bd1426e5a4f3` 百度网盘智能体为代表）。
+    - **底层重构**：将终端数据库错误探针（`inspect_conversation_db_for_terminal_network_error`）优先级提前至常规空闲判断之前；全面扩充签名覆盖 `error unknown`、`agent execution terminated due to error`、`failed to construct executor`、`plan model not specified`；新增 `AGENT_EXECUTOR_CRASH_RESUSCITATION_PROMPT` 专项自愈提示词，引导模型越过偶发崩溃继续推进原定计划。
+  - **核心修复 2 (根除活跃/长耗时任务在途重复注入轰炸与打断)**:
+    - **痛点根治**：彻底解决 `/boost` / `/goal` 等长任务在执行工具（`Working...` / `RUNNING`）耗时较长时，Watchdog 在几分钟内连续 4+ 次重复发送自愈提示词并堆积在 `Queued Messages` 队列中、严重打断正常推进的 Bug（以 `a7a63404-7098-4542-ab87-c033b738c050` Brand Growth Task Resolver 为代表）。
+    - **三层防轰炸铁律门禁**：
+      1. **活跃运行状态绝对保护 (Active Running Invariant)**：移除 `if not is_terminal_db_error:` 绕过逻辑，会话只要处于 `RUNNING`（在 900s 窗口内）或子代理正在工作，无论历史数据库是否有过错误，一律视为活跃执行中，绝对禁止插嘴打断。
+      2. **在途/排队拉起消息拦截 (`check_has_pending_resuscitation_prompt`)**：扫描转录本末尾，若最近已注入过自愈提示词且后续没有用户输入、模型尚未产生新回复，绝对禁止重复追加提示词，返回 `pending_resuscitation_in_flight` 拦截。
+      3. **切断自发自收套娃循环**：在检查未响应用户提问（`unanswered_user_prompt_hang`）时，严密排除 Watchdog 自身注入的 `【系统自动` / `自愈拉起` 消息，彻底杜绝系统把自身提示词误当成普通用户输入而产生的重复自锁拉起。
+  - **核心修复 3 (已完工定时 Cadence 任务免重启误拉起重跑)**:
+    - **痛点根治**：彻底解决周期巡检会话（以 `ec6a0995-bedc-4c56-962c-c30b4d1ce018` Multi-City Weather Check 为代表）在已汇报天气速报并落盘当日 `.success` 标志后，应用重启后仍被 Watchdog 误判为未完成并拉起重跑的问题。
+    - **完工识别扩充与外部 SSOT 成功对账**：
+      1. 在 `COMPLETION_REPORT_PATTERNS` 中扩充 `今日多城天气速报`、`周期巡检执行与闭环凭据`、`系统已就绪，随时可接收新的指令`、`全绿健康，无新增异常` 等典型巡检闭环模式。
+      2. 增加对 2nd Brain 外部 Cadence 成功标识对账（`.run/cadence/<card>/YYYY-MM-DD.success`），凡当天已成功交付的卡片会话直接权威判定为完工，重启后完全免疫。
+  - **自动化测试保障**:
+    - `tests/unit/test_antigravity_watchdog.py` 79 项测试全部 100% 绿灯通过（新增 3 项高强度对抗测试）；实机对账验证百度网盘会话、天气速报会话、品牌增长会话状态全部完全符合预期。
+
 ## [1.17.16] - 2026-09-25
 
 ### Fixed & Enhanced

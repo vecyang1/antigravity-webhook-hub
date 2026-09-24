@@ -91,6 +91,12 @@ COMPLETION_REPORT_PATTERNS = (
     r"(?:13/13|\d+/\d+)\s*(?:pass|passed|通过|正常)",
     r"(?:all\s+\d+\s+checks\s+passed|all\s+checks\s+passed|全部检查通过)",
     r"(?:保持全绿常驻待命|系统保持.*待命|已进入待命)",
+    r"(?:今日|每日|本周|定期|周期).{0,15}(?:天气速报|天气预报|巡检速报|巡检简报|巡检报告)",
+    r"周期巡检执行与闭环凭据",
+    r"系统已就绪[，,\s]*随时可接收新的指令",
+    r"(?:全绿健康|全绿待命|无新增异常)",
+    r"(?:今日成功标识|今日成功标|成功标识|成功标).*(?:\.success|\.done)",
+    r"(?:执行完毕|已圆满完成|圆满完成|已完成巡检)",
 )
 
 NETWORK_ERROR_RESUSCITATION_PROMPT = (
@@ -98,6 +104,13 @@ NETWORK_ERROR_RESUSCITATION_PROMPT = (
     "检测到底层与模型服务通信发生偶发网络中断、地域路由抖动或超时（Network Issue / User Location / Server Error）。\n"
     "现网络与接口通信已恢复正常。\n"
     "请越过偶发网络与终端中断报错，检查上一步执行进展并直接继续推进原定任务计划（请全中文汇报进展）。"
+)
+
+AGENT_EXECUTOR_CRASH_RESUSCITATION_PROMPT = (
+    "【系统自动执行器故障自愈拉起】\n"
+    "检测到底层 Agent 执行器发生偶发运行异常或崩溃中断（Agent execution terminated due to error）。\n"
+    "现底层执行器与运行环境已恢复就绪。\n"
+    "请越过偶发中断报错，检查上一步执行进展并直接继续推进原定任务计划（请全中文汇报进展）。"
 )
 
 DEFAULT_RESUSCITATION_PROMPT = (
@@ -320,7 +333,88 @@ def check_session_claimed_completion(
             if re.search(pat, cnt_clean, re.IGNORECASE | re.DOTALL):
                 return True
 
+        # 3. Check for Cadence task completion marker matching today's success tag on disk
+        try:
+            today_str = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
+            content_combined = " ".join(str(s.get("content") or "") for s in steps[-10:])
+            for m in re.finditer(r'(CAD-\d{8}-[a-zA-Z0-9_-]+)', content_combined):
+                card_id = m.group(1)
+                for base in (
+                    Path("/Users/vecsatfoxmailcom/Documents/Cowork/Antigravity Cowork/26.06.06 2nd Brain/.run/cadence"),
+                    Path(os.path.expanduser("~/Documents/Cowork/Antigravity Cowork/26.06.06 2nd Brain/.run/cadence")),
+                ):
+                    succ_file = base / card_id / f"{today_str}.success"
+                    if succ_file.exists():
+                        return True
+        except Exception:
+            pass
+
     return False
+
+
+def check_has_pending_resuscitation_prompt(
+    parsed_steps: list[dict[str, Any]],
+    now: float,
+    cooldown_seconds: float = 300.0,
+) -> tuple[bool, Optional[str]]:
+    """
+    Check if the conversation already contains a recent resuscitation prompt
+    that is still pending / queued or not yet answered by a substantive user or model turn.
+    Prevents duplicate prompt bombarding in Queued Messages.
+    """
+    if not parsed_steps:
+        return False, None
+
+    last_res_idx = -1
+    last_res_time = 0.0
+
+    for idx, s in enumerate(parsed_steps):
+        s_src = s.get("source", "")
+        cnt = str(s.get("content") or "")
+        if (
+            (s_src in ("SYSTEM", "USER_EXPLICIT", "USER") and "【系统自动" in cnt)
+            or ("自愈拉起" in cnt and "【" in cnt)
+        ):
+            last_res_idx = idx
+            ts_str = s.get("created_at")
+            if ts_str:
+                try:
+                    dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    last_res_time = dt.timestamp()
+                except Exception:
+                    pass
+
+    if last_res_idx == -1:
+        return False, None
+
+    # Check if there is any substantive USER message after the resuscitation prompt
+    for s in parsed_steps[last_res_idx + 1:]:
+        s_src = s.get("source", "")
+        cnt = str(s.get("content") or "")
+        if s_src in ("USER_EXPLICIT", "USER") and "【系统自动" not in cnt and "自愈拉起" not in cnt:
+            # Genuine user intervened, prompt is not lingering
+            return False, None
+
+    # Check if there is a completed MODEL PLANNER_RESPONSE turn with substantive content after it
+    has_subsequent_model_completion = False
+    for s in parsed_steps[last_res_idx + 1:]:
+        s_src = s.get("source", "")
+        s_type = s.get("type", "")
+        s_status = s.get("status", "")
+        cnt = str(s.get("content") or "").strip()
+        t_calls = s.get("tool_calls") or []
+        if s_src == "MODEL" and s_type == "PLANNER_RESPONSE" and s_status == "DONE" and cnt and not t_calls:
+            has_subsequent_model_completion = True
+            break
+
+    if not has_subsequent_model_completion:
+        # Prompt is still queued or model is currently working through it
+        age = now - last_res_time if last_res_time > 0 else 0.0
+        if last_res_time == 0.0 or age < cooldown_seconds:
+            step_idx = parsed_steps[last_res_idx].get("step_index", "?")
+            return True, f"pending_resuscitation_in_flight (prompt at step {step_idx}, age {int(age)}s < {int(cooldown_seconds)}s)"
+
+    return False, None
 
 
 def tail_transcript_lines(file_path: Path, max_lines: int = 15) -> list[str]:
@@ -834,6 +928,9 @@ def inspect_conversation_db_for_terminal_network_error(
             or "no capacity available for model" in p_lower
             or "agent execution terminated due to error" in p_lower
             or "agent terminated due to error" in p_lower
+            or "error unknown" in p_lower
+            or "failed to construct executor" in p_lower
+            or "plan model not specified" in p_lower
             or "user location is not supported" in p_lower
             or "location is not supported for the api use" in p_lower
             or "failed_precondition" in p_lower
@@ -855,6 +952,7 @@ def inspect_conversation_db_for_terminal_network_error(
             else:
                 m_eid = re.search(r'([0-9a-fA-F-]{36}-\d+)', payload_str)
                 error_id = m_eid.group(1) if m_eid else None
+
             return {
                 "step_index": row[0],
                 "error": "network_issue_server_error",
@@ -1595,6 +1693,16 @@ class AntigravityWatchdog:
                     if check_session_claimed_completion(transcript_path, parsed_steps):
                         return False, "session_already_completed"
 
+                    # 2d. Pending Queued Resuscitation Prompt Guard:
+                    # If the transcript already contains an automated resuscitation prompt
+                    # that has not yet been answered by a genuine user or completed model turn,
+                    # DO NOT send another resuscitation prompt into the message queue!
+                    is_pending, p_reason = check_has_pending_resuscitation_prompt(
+                        parsed_steps, now, cooldown_seconds=float(getattr(self.config, "boost_quiet_seconds", 300.0))
+                    )
+                    if is_pending:
+                        return False, p_reason
+
                     effective_attempts = attempts
                     if is_prior_to_restart:
                         if self.ls_restart_time > 0 and res_epoch > 0.0 and res_epoch < self.ls_restart_time:
@@ -1628,7 +1736,12 @@ class AntigravityWatchdog:
                     # 4. Debounce step cooldown to prevent rapid double-burning of retries at the same step
                     if res_epoch > 0.0 and last_res and last_res.get("status") in ("resuscitated", "failed", "exhausted", "schedule_remounted"):
                         multiplier = 1.0 if effective_attempts <= 1 else (1.5 if effective_attempts == 2 else 2.5)
-                        step_cooldown = self.config.stall_grace_seconds * multiplier
+                        base_cd = float(getattr(self.config, "stall_grace_seconds", 30))
+                        is_b = check_session_has_boost_or_goal(transcript_path, parsed_steps)
+                        if is_b:
+                            step_cooldown = max(base_cd * multiplier, 300.0)
+                        else:
+                            step_cooldown = base_cd * multiplier
                         if now - res_epoch < step_cooldown:
                             return False, f"recent_resuscitation_cooldown ({int(now - res_epoch)}s ago < {int(step_cooldown)}s)"
 
@@ -1822,6 +1935,16 @@ class AntigravityWatchdog:
                     )
                     continue
 
+                # --- 2.5 Terminal DB Error Probe (Prioritized before normal DONE check) ---
+                terminal_db_err = inspect_conversation_db_for_terminal_network_error(
+                    convo_id, conversations_dir=self._conversations_dir
+                )
+                is_terminal_db_error = False
+                if terminal_db_err:
+                    err_idx = terminal_db_err.get("step_index", 0)
+                    if err_idx >= last_step_idx - 2:
+                        is_terminal_db_error = True
+
                 # --- 3. Normal Active / Completed State Checks ---
                 if last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and last_status == "DONE" and last_content and not last_step.get("tool_calls"):
                     # Check if this session has an in-memory schedule dropped after restart
@@ -1980,33 +2103,25 @@ class AntigravityWatchdog:
                             pass
                         elif has_stop_hook:
                             pass
+                        elif is_terminal_db_error:
+                            pass
                         elif is_prior_to_restart and is_boost_goal and not check_session_claimed_completion(transcript_path, parsed_steps):
                             pass
                         else:
                             continue
 
-                terminal_db_err = inspect_conversation_db_for_terminal_network_error(
-                    convo_id, conversations_dir=self._conversations_dir
-                )
-                is_terminal_db_error = False
-                if terminal_db_err:
-                    err_idx = terminal_db_err.get("step_index", 0)
-                    if err_idx >= last_step_idx - 2:
-                        is_terminal_db_error = True
-
-                # If the last step is an active user input or running tool, check if actively running.
-                if not is_terminal_db_error:
-                    is_actively_running = False
-                    running_quiet = float(getattr(self.config, "boost_quiet_seconds", 900))
-                    if last_status == "RUNNING":
-                        # Only actively running if on current server process AND within running_quiet window
-                        if not is_prior_to_restart and (now - file_mtime < running_quiet):
-                            is_actively_running = True
-                    elif last_source in ("USER_EXPLICIT", "USER") and (now - file_mtime < self.config.stall_grace_seconds):
+                # Invariant: Actively running sessions must NEVER be interrupted or injected by watchdog!
+                is_actively_running = False
+                running_quiet = float(getattr(self.config, "boost_quiet_seconds", 900))
+                if last_status == "RUNNING":
+                    # Only actively running if on current server process AND within running_quiet window
+                    if not is_prior_to_restart and (now - file_mtime < running_quiet):
                         is_actively_running = True
+                elif last_source in ("USER_EXPLICIT", "USER") and (now - file_mtime < self.config.stall_grace_seconds):
+                    is_actively_running = True
 
-                    if is_actively_running:
-                        continue
+                if is_actively_running:
+                    continue
 
                 is_stalled = False
                 matched_error = ""
@@ -2014,9 +2129,9 @@ class AntigravityWatchdog:
                 is_network_issue = False
                 is_server_restart = is_prior_to_restart
 
-                if is_terminal_db_error:
+                if is_terminal_db_error and terminal_db_err:
                     is_network_issue = True
-                    matched_error = "network_issue_server_error"
+                    matched_error = terminal_db_err.get("error", "network_issue_server_error")
                     is_stalled = True
 
                 is_boost_goal = check_session_has_boost_or_goal(transcript_path, parsed_steps)
@@ -2063,12 +2178,17 @@ class AntigravityWatchdog:
 
                 # Check if session ended on an unanswered user prompt
                 if not is_stalled and last_source in ("USER_EXPLICIT", "USER"):
-                    if is_prior_to_restart:
-                        is_stalled = True
-                        matched_error = "server_restart_unanswered_user_prompt"
-                    elif (now - file_mtime >= self.config.stall_grace_seconds):
-                        is_stalled = True
-                        matched_error = "unanswered_user_prompt_hang"
+                    cnt_check = str(last_content or "")
+                    if "【系统自动" in cnt_check or "自愈拉起" in cnt_check or "【系统后台" in cnt_check:
+                        # Automated watchdog prompt is still pending / in flight, do not treat as genuine unanswered user prompt!
+                        pass
+                    else:
+                        if is_prior_to_restart:
+                            is_stalled = True
+                            matched_error = "server_restart_unanswered_user_prompt"
+                        elif (now - file_mtime >= self.config.stall_grace_seconds):
+                            is_stalled = True
+                            matched_error = "unanswered_user_prompt_hang"
 
                 # Widen MCP error detection across all loaded parsed steps (up to 15 steps)
                 for s in reversed(parsed_steps):
@@ -2420,6 +2540,12 @@ class AntigravityWatchdog:
             prompt = custom_prompt or QUOTA_RESUSCITATION_PROMPT
         elif session_info.is_boost_goal or session_info.is_stop_hook_hang or "stop_hook" in str(session_info.last_error).lower() or "boost" in str(session_info.last_error).lower() or "goal" in str(session_info.last_error).lower():
             prompt = custom_prompt or BOOST_GOAL_RESUSCITATION_PROMPT
+        elif (
+            session_info.last_error in ("agent_executor_crash", "agent execution terminated due to error")
+            or "executor" in str(session_info.last_error).lower()
+            or "crash" in str(session_info.last_error).lower()
+        ):
+            prompt = custom_prompt or AGENT_EXECUTOR_CRASH_RESUSCITATION_PROMPT
         elif session_info.is_network_issue or "network" in str(session_info.last_error).lower() or "server_error" in str(session_info.last_error).lower():
             prompt = custom_prompt or NETWORK_ERROR_RESUSCITATION_PROMPT
         elif session_info.is_mcp_error or "mcp" in str(session_info.last_error).lower():
