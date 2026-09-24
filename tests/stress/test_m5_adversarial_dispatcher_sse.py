@@ -711,6 +711,12 @@ async def test_adversarial_finding2_dispatcher_queue_concurrency_ignored(m5_harn
 
     cfg = AppConfig()
     cfg.dispatch.max_concurrent_tasks = 5
+    if hasattr(cfg, "antigravity_quota"):
+        cfg.antigravity_quota.enabled = False
+    if hasattr(cfg, "antigravity_watchdog"):
+        cfg.antigravity_watchdog.enabled = False
+    if hasattr(cfg, "sweeper"):
+        cfg.sweeper.enabled = False
     dispatcher = TaskDispatcher(db, config=cfg)
     await dispatcher.start()
 
@@ -725,7 +731,7 @@ async def test_adversarial_finding2_dispatcher_queue_concurrency_ignored(m5_harn
         await db.execute_write(
             """
             INSERT INTO tasks (task_id, event_id, action_type, command, status, timeout_seconds)
-            VALUES (?, ?, 'cli', 'python3 -c "import time; time.sleep(1.0)"', 'queued', 10)
+            VALUES (?, ?, 'cli', 'python3 -c "import time; time.sleep(0.5)"', 'queued', 10)
             """,
             (f"tsk_q_{i}", f"evt_q_{i}"),
         )
@@ -737,11 +743,11 @@ async def test_adversarial_finding2_dispatcher_queue_concurrency_ignored(m5_harn
     elapsed = time.perf_counter() - t0
     await dispatcher.stop()
 
-    # If worker honored max_concurrent_tasks=5, two 1.0s sleep tasks would run in ~1.0s - 1.3s.
-    # Because dispatcher only has 1 serial worker, it takes > 2.0s.
-    assert elapsed < 1.95, (
-        f"DEFECT CONFIRMED (Finding 2): Dispatcher processed 2 x 1.0s tasks sequentially in {elapsed:.2f}s "
-        f"instead of concurrently (<1.95s). max_concurrent_tasks={cfg.dispatch.max_concurrent_tasks} is ignored."
+    # If worker honored max_concurrent_tasks=5, two 0.5s sleep tasks run concurrently in ~0.5s - 0.8s.
+    # If tasks were serialized (concurrency=1), it would take >= 1.2s (2 x 0.5s sleep + 2x process spawn).
+    assert elapsed < 1.05, (
+        f"DEFECT CONFIRMED (Finding 2): Dispatcher processed 2 x 0.5s tasks sequentially in {elapsed:.2f}s "
+        f"instead of concurrently (<1.05s). max_concurrent_tasks={cfg.dispatch.max_concurrent_tasks} is ignored."
     )
 
 

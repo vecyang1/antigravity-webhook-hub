@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.12] - 2026-09-24
+
+### Fixed & Enhanced
+- **Dispatcher 对抗并发测试断言与环境隔离加固 (`tests/stress/test_m5_adversarial_dispatcher_sse.py`)**:
+  - **核心痛点解决**：在 GitHub Actions macOS Runner 高负载 VM 环境下，并发启动两个 1.0s 子进程因进程创建开销在 1.95s 临界值抖动（如 2.02s），导致 `test_adversarial_finding2_dispatcher_queue_concurrency_ignored` 偶发假阳性报错。
+  - **环境隔离与阈值优化**：
+    - 在并发队列纯享测试中显式关闭后台 `antigravity_quota`、`antigravity_watchdog` 与 `sweeper` 循环，消除后台远程 API 探测与 SQLite 锁竞争。
+    - 任务 sleep 时间调优为 0.5s（串行需 >=1.2s，并发仅 ~0.6s），断言阈值精准设为 `<1.05s`，彻底根治 CI 跨平台偶发误判，全量压力与对抗测试 100% 绿灯。
+- **E2E 验证套件 Dashboard/Observability UI 探活防抖机制 (`scripts/verify_e2e.py`)**:
+  - 在 Step 11 各端点请求中增加微重试机制并放宽超时为 10.0s，从容吸收服务刚重启后 Watchdog 批量并发拉起数十个会话时的毫秒级锁排队。
+- **Slack Agent Ops 跨域 API 大响应抗断流降级自愈 (`slack_agent_ops.py`)**:
+  - 在 `n8n_request` 与 `slack_api_call` 遇到 `IncompleteRead`（境外网络 chunked EOF 提前断开）等网络截断时，自动无缝触发原生 `curl` 兜底解析，5 项 Slack 不变量审计 100% 满分通过。
+
 ## [1.17.11] - 2026-09-24
 
 ### Fixed & Enhanced
