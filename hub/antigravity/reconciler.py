@@ -151,18 +151,48 @@ class SlackReconciler:
         }
         encoded_data = urllib.parse.urlencode(params).encode("utf-8")
         req = urllib.request.Request(url, data=encoded_data, headers=headers, method="POST")
+        import http.client
+
         max_retries = 3
         last_err = ""
         for attempt in range(max_retries):
             try:
                 with urllib.request.urlopen(req, timeout=20) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+                    raw = resp.read()
+                    data = json.loads(raw.decode("utf-8"))
                     return data
+            except http.client.IncompleteRead as e:
+                try:
+                    data = json.loads(e.partial.decode("utf-8"))
+                    if isinstance(data, dict) and data.get("ok"):
+                        return data
+                except Exception:
+                    pass
+                last_err = str(e)
+                logger.warning("Slack API call %s attempt %d/%d failed (IncompleteRead): %s", endpoint, attempt + 1, max_retries, e)
+                if attempt < max_retries - 1:
+                    time.sleep(0.5 * (2 ** attempt))
             except Exception as e:
                 last_err = str(e)
                 logger.warning("Slack API call %s attempt %d/%d failed: %s", endpoint, attempt + 1, max_retries, e)
                 if attempt < max_retries - 1:
                     time.sleep(0.5 * (2 ** attempt))
+
+        # System curl fallback: bypasses macOS Python TLS/chunked EOF issues
+        try:
+            cmd = [
+                "curl", "-s", "--max-time", "15",
+                "-H", f"Authorization: Bearer {self.token}",
+                "-d", urllib.parse.urlencode(params),
+                url,
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            if proc.returncode == 0 and proc.stdout:
+                data = json.loads(proc.stdout)
+                if isinstance(data, dict):
+                    return data
+        except Exception as e:
+            logger.debug("Slack API curl fallback failed: %s", e)
 
         return {"ok": False, "error": last_err}
 
@@ -217,6 +247,11 @@ class SlackReconciler:
         """
         target_channel = channel or self.channel_id
         history = self._slack_api_call("conversations.history", {"channel": target_channel, "limit": limit})
+        if not history.get("ok") and limit > 20:
+            fallback_limit = max(15, limit // 2)
+            logger.info("Conversations.history failed with limit=%d, retrying with fallback_limit=%d", limit, fallback_limit)
+            history = self._slack_api_call("conversations.history", {"channel": target_channel, "limit": fallback_limit})
+
         if not history.get("ok"):
             logger.error("Failed to fetch conversations.history: %s", history.get("error"))
             return []

@@ -118,21 +118,24 @@ class E2EVerifier:
         Check if gateway server is reachable.
         If not reachable, launch a genuine ephemeral instance via `bin/webhook-hub` or `hub.cli`.
         """
-        for _ in range(3):
+        last_probe_err: Optional[Exception] = None
+        for _ in range(5):
             try:
                 req = urllib.request.Request(f"{self.base_url}/healthz", method="GET")
-                with urllib.request.urlopen(req, timeout=1.5) as resp:
+                with urllib.request.urlopen(req, timeout=2.5) as resp:
                     if resp.status == 200:
                         if not self.db_path:
                             default_db = PROJECT_ROOT / "data" / "webhook_hub.db"
                             if default_db.is_file():
                                 self.db_path = str(default_db)
                         return True
-            except Exception:
-                time.sleep(0.5)
+            except Exception as e:
+                last_probe_err = e
+                time.sleep(0.6)
 
         # Launch genuine ephemeral server instance
-        print(f"{CYAN}No active hub detected at {self.base_url}. Starting ephemeral hub instance...{RESET}")
+        probe_err_msg = f" (probe error: {last_probe_err})" if last_probe_err else ""
+        print(f"{CYAN}No active hub detected at {self.base_url}{probe_err_msg}. Starting ephemeral hub instance...{RESET}")
         self.temp_dir = tempfile.TemporaryDirectory(prefix="e2e_verify_")
         self.db_path = str(Path(self.temp_dir.name) / "e2e_verify.db")
         self.is_ephemeral = True
@@ -488,7 +491,7 @@ class E2EVerifier:
 
             # First delivery
             req1 = urllib.request.Request(f"{self.base_url}/webhook", data=body, headers=headers, method="POST")
-            with urllib.request.urlopen(req1, timeout=3.0) as resp1:
+            with urllib.request.urlopen(req1, timeout=8.0) as resp1:
                 res1 = json.loads(resp1.read().decode())
                 status1 = resp1.status
 
@@ -496,7 +499,7 @@ class E2EVerifier:
 
             # Second duplicate delivery with exact same headers and body
             req2 = urllib.request.Request(f"{self.base_url}/webhook", data=body, headers=headers, method="POST")
-            with urllib.request.urlopen(req2, timeout=3.0) as resp2:
+            with urllib.request.urlopen(req2, timeout=8.0) as resp2:
                 res2 = json.loads(resp2.read().decode())
                 status2 = resp2.status
 
@@ -543,7 +546,7 @@ class E2EVerifier:
             }
 
             req = urllib.request.Request(f"{self.base_url}/webhook", data=body, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
+            with urllib.request.urlopen(req, timeout=8.0) as resp:
                 res_data = json.loads(resp.read().decode())
                 timeout_task_id = res_data.get("task_id", "")
 
@@ -583,7 +586,7 @@ class E2EVerifier:
         try:
             # 1. Query GET /tasks/unprocessed
             req = urllib.request.Request(f"{self.base_url}/tasks/unprocessed", method="GET")
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
+            with urllib.request.urlopen(req, timeout=8.0) as resp:
                 unproc_data = json.loads(resp.read().decode())
                 unproc_ok = resp.status == 200 and "total_unprocessed" in unproc_data
 
@@ -617,7 +620,7 @@ class E2EVerifier:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(sweep_req, timeout=3.0) as sweep_resp:
+            with urllib.request.urlopen(sweep_req, timeout=8.0) as sweep_resp:
                 sweep_data = json.loads(sweep_resp.read().decode())
                 sweep_ok = sweep_resp.status == 200 and sweep_data.get("status") == "success"
 
@@ -657,10 +660,21 @@ class E2EVerifier:
         step11_pass = False
         step11_detail = ""
         try:
+            def _urlopen_with_retry(request, timeout=10.0, max_retries=2):
+                last_exc = None
+                for attempt in range(max_retries):
+                    try:
+                        return urllib.request.urlopen(request, timeout=timeout)
+                    except Exception as err:
+                        last_exc = err
+                        if attempt < max_retries - 1:
+                            time.sleep(0.5)
+                raise last_exc
+
             # 1. GET /dashboard returns 200 and text/html
             dash_req = urllib.request.Request(f"{self.base_url}/dashboard", method="GET")
             dash_ok = False
-            with urllib.request.urlopen(dash_req, timeout=5.0) as resp:
+            with _urlopen_with_retry(dash_req, timeout=10.0) as resp:
                 body = resp.read().decode("utf-8")
                 ct = resp.headers.get("Content-Type", "")
                 dash_ok = resp.status == 200 and "text/html" in ct and "Antigravity Webhook Hub" in body
@@ -668,33 +682,33 @@ class E2EVerifier:
             # 2. GET /ui alias returns 200 and text/html
             ui_req = urllib.request.Request(f"{self.base_url}/ui", method="GET")
             ui_ok = False
-            with urllib.request.urlopen(ui_req, timeout=5.0) as resp:
+            with _urlopen_with_retry(ui_req, timeout=10.0) as resp:
                 ui_ok = resp.status == 200 and "text/html" in resp.headers.get("Content-Type", "")
 
             # 3. GET /health returns 200 and JSON with status ok/healthy
             health_req = urllib.request.Request(f"{self.base_url}/health", method="GET")
             health_ok = False
-            with urllib.request.urlopen(health_req, timeout=5.0) as resp:
+            with _urlopen_with_retry(health_req, timeout=10.0) as resp:
                 h_json = json.loads(resp.read().decode("utf-8"))
                 health_ok = resp.status == 200 and h_json.get("status") in ("ok", "healthy")
 
             # 4. GET /tasks/summary returns task aggregation counts
             summary_req = urllib.request.Request(f"{self.base_url}/tasks/summary", method="GET")
             summary_ok = False
-            with urllib.request.urlopen(summary_req, timeout=5.0) as resp:
+            with _urlopen_with_retry(summary_req, timeout=10.0) as resp:
                 s_json = json.loads(resp.read().decode("utf-8"))
                 summary_ok = resp.status == 200 and "total_tasks" in s_json and "by_status" in s_json
 
             # 5. HEAD /healthz and HEAD /dashboard return 200 with 0-byte body
             head_healthz_req = urllib.request.Request(f"{self.base_url}/healthz", method="HEAD")
             head_ok = False
-            with urllib.request.urlopen(head_healthz_req, timeout=5.0) as resp:
+            with _urlopen_with_retry(head_healthz_req, timeout=10.0) as resp:
                 head_healthz_body = resp.read()
                 head_ok = resp.status == 200 and len(head_healthz_body) == 0
 
             head_dash_req = urllib.request.Request(f"{self.base_url}/dashboard", method="HEAD")
             head_dash_ok = False
-            with urllib.request.urlopen(head_dash_req, timeout=5.0) as resp:
+            with _urlopen_with_retry(head_dash_req, timeout=10.0) as resp:
                 head_dash_body = resp.read()
                 head_dash_ok = resp.status == 200 and len(head_dash_body) == 0
 

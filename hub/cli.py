@@ -2797,7 +2797,7 @@ def _add_antigravity_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_catchup_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--channel", default="C0C1B86AMCN", help="Slack channel ID to scan")
-    parser.add_argument("--limit", type=int, default=50, help="Maximum number of recent messages to scan")
+    parser.add_argument("--limit", type=int, default=30, help="Maximum number of recent messages to scan")
     parser.add_argument("--dry-run", action="store_true", help="Inspect offline tasks without dispatching")
     parser.add_argument("--execute", action="store_true", help="Execute live catch-up dispatch for unfulfilled tasks")
     parser.add_argument("--diagnose", action="store_true", help="Display full diagnostic explain report for each thread")

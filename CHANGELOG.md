@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.11] - 2026-09-24
+
+### Fixed & Enhanced
+- **Slack Reconciler 网络防抖与 `IncompleteRead` 容错加固 (`hub/antigravity/reconciler.py`, `hub/cli.py`)**:
+  - **核心痛点解决**：在弱网或 Slack 响应体积较大时，urllib 读取偶发 `http.client.IncompleteRead` 导致对账被中断。
+  - **优雅降级与分块自愈**：
+    - 捕获 `http.client.IncompleteRead` 并尝试从其 `partial` 字节中解析有效 JSON，若已包含完整业务响应（`ok: true`）则直接采纳，避免无谓重试。
+    - 针对 `conversations.history` 失败情况，自动将扫描批次减半（降级至 15 条）进行二次兜底请求，免疫超大响应包传输截断。
+    - 将 CLI `--catchup` 默认扫描上限从 50 调优至 30，显著提升离线任务扫查速度与网络稳定性。
+- **E2E 验证套件 Step 11 HTTP 重试与抗抖机制 (`scripts/verify_e2e.py`)**:
+  - 在 Step 11 Dashboard 及 UI 可观测性探测中引入 `_urlopen_with_retry`，支持自动指数退避重试，杜绝极端本地高负载或端口切换瞬时的探测抖动。
+
 ## [1.17.10] - 2026-09-24
 
 ### Fixed & Enhanced
