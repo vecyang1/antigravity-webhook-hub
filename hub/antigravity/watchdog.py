@@ -899,7 +899,9 @@ class AntigravityWatchdog:
         current_pid: Optional[int] = None
         if raw_pid is not None:
             try:
-                current_pid = int(raw_pid)
+                if isinstance(raw_pid, (int, str)):
+                    parsed = int(raw_pid)
+                    current_pid = parsed if parsed > 1 else None
             except (ValueError, TypeError):
                 current_pid = None
 
@@ -1575,9 +1577,14 @@ class AntigravityWatchdog:
                                 ls_pid=sched_ls_pid,
                             )
 
-                        lost_due_to_pid = bool(current_ls_pid and sched_ls_pid != current_ls_pid)
+                        lost_due_to_pid = False if has_genuine_mount_evidence else bool(
+                            current_ls_pid and (
+                                pid_changed
+                                or (sched_ls_pid and sched_ls_pid != current_ls_pid)
+                            )
+                        )
                         lost_due_to_timeout = (
-                            bool(current_ls_pid and sched_ls_pid == current_ls_pid)
+                            (not current_ls_pid or sched_ls_pid == current_ls_pid)
                             and baseline_time > 0
                             and (now - baseline_time > interval * 1.25)
                             and (now - file_mtime > 300)

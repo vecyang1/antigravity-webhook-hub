@@ -193,4 +193,4 @@ echo "Config: ${CONFIG_FILE}"
 echo "Local Ingress Target: http://127.0.0.1:${PORT:-9423}"
 echo "=================================================================="
 
-exec cloudflared tunnel --config "${CONFIG_FILE}" run
+exec cloudflared tunnel --config "${CONFIG_FILE}" run --dns-resolver-addrs 1.1.1.1:53

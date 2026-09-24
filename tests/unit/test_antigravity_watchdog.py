@@ -68,6 +68,7 @@ def mock_agentapi():
     client.is_available.return_value = True
     client.ensure_credentials.return_value = ("127.0.0.1:50858", "csrf_token_xyz")
     client.send_message = AsyncMock(return_value=(True, '{"status": "ok"}', None))
+    client.get_language_server_pid.return_value = None
     return client
 
 
