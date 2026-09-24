@@ -258,6 +258,30 @@ class TestDiagnosticInspector(unittest.TestCase):
         resp_invalid = asyncio.run(handler(req_invalid))
         self.assertEqual(resp_invalid.status_code, 400)
 
+    def test_explain_antigravity_conversation(self):
+        """Verify explain and diagnose on an Antigravity conversation UUID."""
+        uuid_str = "00000000-1111-2222-3333-444444444444"
+        res = self.inspector.explain(uuid_str)
+        self.assertEqual(res["target_type"], "antigravity_conversation")
+        self.assertEqual(res["conversation_id"], uuid_str)
+        self.assertEqual(res["verdict"], "NOT_FOUND")
+        self.assertFalse(res["resuscitation_eligibility"]["can_resuscitate"])
+
+        # Format report check
+        report = format_diagnostic_report(res)
+        self.assertIn("ANTIGRAVITY CONVERSATION TOPOLOGY & STATE", report)
+        self.assertIn(uuid_str, report)
+        self.assertIn("NOT_FOUND", report)
+
+        # Prefixed target forms (ag:..., convo:...)
+        res_ag = self.inspector.explain(f"ag:{uuid_str}")
+        self.assertEqual(res_ag["target_type"], "antigravity_conversation")
+        self.assertEqual(res_ag["conversation_id"], uuid_str)
+
+        res_convo = self.inspector.explain(f"convo:{uuid_str}")
+        self.assertEqual(res_convo["target_type"], "antigravity_conversation")
+        self.assertEqual(res_convo["conversation_id"], uuid_str)
+
 
 if __name__ == "__main__":
     unittest.main()

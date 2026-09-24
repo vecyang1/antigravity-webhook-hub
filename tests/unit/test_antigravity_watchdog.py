@@ -2867,15 +2867,149 @@ class TestAntigravityWatchdog:
             tpath = _create_fake_session(temp_dir, cid, steps)
             assert check_session_claimed_completion(tpath, steps) is True, f"Failed to recognize completion for: {text}"
 
+    def test_dead_subagent_zombie_immunity_conditions(self, temp_dir):
+        """
+        Verify is_zombie_or_archived_subagent detects all dead/archived conditions:
+        1. Explicitly killed in conversation_summaries.db
+        2. Claimed completion in transcript
+        3. Explicit kill by parent in transcript
+        4. Parent turn supersession
+        """
+        import sqlite3
+        from hub.antigravity.watchdog import is_zombie_or_archived_subagent
 
+        # Setup mock summaries db
+        db_path = temp_dir / "conversation_summaries.db"
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE conversation_summaries (
+                conversation_id TEXT PRIMARY KEY,
+                title TEXT,
+                status TEXT,
+                not_fully_idle INTEGER,
+                killed INTEGER,
+                parent_conversation_id TEXT
+            )
+            """
+        )
+        cur.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
+            ("sub-killed-1", "Killed Sub", "CASCADE_RUN_STATUS_IDLE", 0, 1, "parent-1"),
+        )
+        cur.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
+            ("sub-running-1", "Running Sub", "CASCADE_RUN_STATUS_RUNNING", 1, 0, "parent-1"),
+        )
+        conn.commit()
+        conn.close()
 
+        # 1. Killed in DB
+        is_z, reason = is_zombie_or_archived_subagent("sub-killed-1", summaries_db_path=db_path)
+        assert is_z is True
+        assert reason == "killed_in_conversation_summaries"
 
+        # 2. Goal completed in transcript
+        sub_comp_id = "sub-completed-1"
+        sub_steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "<subagent_reminder> Task"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Done! <!-- GOAL_COMPLETE -->"},
+        ]
+        _create_fake_session(temp_dir, sub_comp_id, sub_steps)
+        is_z, reason = is_zombie_or_archived_subagent(sub_comp_id, brain_dir=temp_dir, summaries_db_path=db_path)
+        assert is_z is True
+        assert reason == "subagent_goal_completed"
 
+        # 3. Explicit kill in parent transcript
+        parent_id = "parent-with-kill"
+        sub_kill_id = "sub-killed-by-parent"
+        _create_fake_session(temp_dir, sub_kill_id, [{"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "<subagent_reminder>"}])
+        parent_steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Start work"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "manage_subagents", "args": {"action": "kill", "subagent_id": sub_kill_id}}]},
+        ]
+        _create_fake_session(temp_dir, parent_id, parent_steps)
+        is_z, reason = is_zombie_or_archived_subagent(sub_kill_id, parent_id=parent_id, brain_dir=temp_dir, summaries_db_path=db_path)
+        assert is_z is True
+        assert reason == "parent_explicitly_killed_subagent"
 
+        # 4. Turn supersession (parent received subsequent USER_INPUT)
+        parent_super_id = "parent-superseded"
+        sub_super_id = "sub-superseded"
+        _create_fake_session(temp_dir, sub_super_id, [{"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "<subagent_reminder>"}])
+        super_steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": f"invoke_subagent: {sub_super_id}"},
+            {"step_index": 1, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Never mind, start a new task completely"},
+        ]
+        _create_fake_session(temp_dir, parent_super_id, super_steps)
+        is_z, reason = is_zombie_or_archived_subagent(sub_super_id, parent_id=parent_super_id, brain_dir=temp_dir, summaries_db_path=db_path)
+        assert is_z is True
+        assert "subagent_superseded_by_subsequent_user_turn" in reason
 
+    def test_resuscitation_eligibility_blocks_dead_subagent(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that watchdog scanning and resuscitation blocks dead subagents
+        with status/skip_reason indicating dead_subagent_zombie_immunity.
+        """
+        import sqlite3
+        sub_id = "88888888-8888-8888-8888-888888888888"
+        parent_id = "11111111-2222-3333-4444-555555555555"
 
+        # Mock summaries DB in temp_dir / .gemini / antigravity
+        antigravity_dir = temp_dir / ".gemini" / "antigravity"
+        antigravity_dir.mkdir(parents=True, exist_ok=True)
+        db_path = antigravity_dir / "conversation_summaries.db"
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE conversation_summaries (
+                conversation_id TEXT PRIMARY KEY,
+                title TEXT,
+                status TEXT,
+                not_fully_idle INTEGER,
+                killed INTEGER,
+                parent_conversation_id TEXT
+            )
+            """
+        )
+        cur.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
+            (sub_id, "Dead Sub", "CASCADE_RUN_STATUS_IDLE", 0, 1, parent_id),
+        )
+        conn.commit()
+        conn.close()
 
+        # Transcript with an error that would normally trigger resuscitation
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": f'<subagent_reminder> invoked by a caller agent (name: "parent", id: "{parent_id}")'},
+            {"step_index": 1, "source": "SYSTEM", "type": "ERROR_MESSAGE", "status": "ERROR", "content": "network error"},
+        ]
+        tpath = _create_fake_session(temp_dir, sub_id, steps, mtime_offset_seconds=30.0)
 
+        # Parent session transcript
+        p_steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": f"invoke_subagent: {sub_id}"},
+        ]
+        _create_fake_session(temp_dir, parent_id, p_steps, mtime_offset_seconds=60.0)
 
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir), stall_grace_seconds=15)
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog._summaries_db_path = db_path
+
+        # Patch Path.home so it finds our mocked ~/.gemini/antigravity/conversation_summaries.db
+        with patch.object(Path, "home", return_value=temp_dir):
+            stalled = watchdog.scan_stalled_conversations()
+            sub_stalled = [s for s in stalled if s.conversation_id == sub_id]
+            assert len(sub_stalled) == 1
+            assert sub_stalled[0].can_resuscitate is False
+            assert "dead_subagent_zombie_immunity" in sub_stalled[0].skip_reason
+            assert "killed_in_conversation_summaries" in sub_stalled[0].skip_reason
+
+            # Test direct resuscitation attempt is also blocked
+            res = asyncio.run(watchdog.resuscitate_session(sub_stalled[0]))
+            assert res["success"] is False
+            assert res["status"] == "dead_subagent_zombie_immunity"
 
 

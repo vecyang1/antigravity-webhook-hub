@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.15] - 2026-09-24
+
+### Fixed & Enhanced
+- **彻底根治语言服务重启后会话未激活（未拉起执行循环）及历史僵尸子代理错误唤醒父任务 Bug (`hub/antigravity/agentapi_client.py`, `hub/antigravity/watchdog.py`, `hub/antigravity/diagnostics.py`, `hub/cli.py`)**:
+  - **核心痛点 1（执行循环未触发 / 仅落盘未激活）**：此前自愈拉起使用 `agentapi send-message`，仅调用 gRPC `SendAgentMessage`（Agent 间通信通道），消息仅作为 unread 写入 transcript / inbox，若 Language Server 推理循环处于挂起/空闲状态，该消息无法激活推理循环，导致会话停滞、排队消息被阻塞。
+    - **Connect RPC SendUserCascadeMessage 深度重构 (`hub/antigravity/agentapi_client.py`)**：新增 `send_user_cascade_message`，通过 Connect RPC HTTP/JSON 协议调用 `/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage` 并携带 `X-Codeium-Csrf-Token`，以用户输入通道直接唤醒 Cascade 执行循环。`send_message(trigger_execution=True)` 默认对真实 UUID 会话优先启用 Connect RPC 直接拉起，失败或单元测试非 UUID 会话时自动降级至 CLI，兼顾生产真实拉起能力与测试桩兼容性。
+  - **核心痛点 2（已完工/已废弃僵尸子代理诈尸唤醒旧任务）**：此前任务完成后用户在主会话发送新消息时，Watchdog 误扫历史轮次中未完工或已报错的子代理（如 `317f9466-601e-4361-9e7e-df569a0dd763` / `DeepCoder`），向主会话注入 `BOOST_DELEGATION_RESUSCITATION_PROMPT`，导致已完成的历史子代理死灰复燃、打断用户当前任务。
+    - **僵尸子代理免疫门禁 (`is_zombie_or_archived_subagent`, `hub/antigravity/watchdog.py`)**：多维权威校验子代理存活状态：
+      1. `conversation_summaries.db` 权威标记：`killed = 1` 或状态为 `COMPLETED` / `FINISHED` 时立即判定为僵尸。
+      2. 转录本显式完工：子代理转录本包含 `<!-- GOAL_COMPLETE -->` 或自报完工时判定为已完工。
+      3. 父会话显式 kill：父转录本中存在 `manage_subagents` 或 `manage_task` 针对该子代理的 kill 指令。
+      4. 用户轮次覆盖 (Turn Supersession)：父会话在创建子代理之后又收到了后续的用户输入轮次（`USER_INPUT` / `USER_EXPLICIT`），说明历史子代理已过时被覆盖。
+      5. 父任务总体完工与语言服务跨重启失效。
+    - 门禁深度接入 `is_subagent_active`、`_evaluate_resuscitation_eligibility` 以及 `resuscitate_session` 预检中，返回 `dead_subagent_zombie_immunity`，从源头杜绝僵尸子代理被拉起或向父会话注入自愈提示词。
+  - **核心痛点 3（对账与诊断优先架构落地）**：
+    - `DiagnosticInspector` 与 `format_diagnostic_report` 深度适配 Antigravity 会话诊断（`hub/antigravity/diagnostics.py`）：完整展示拓扑（Root/Subagent 及 Parent ID）、权威数据库状态、转录本真实完工证据、僵尸子代理免疫状态、Connect RPC 连通性、决策树逐项校验及历史自愈记录。
+    - CLI 原生收敛（`hub/cli.py`）：扩展 `./bin/webhook-hub antigravity diagnose <conversation_id>`、`./bin/webhook-hub antigravity explain <conversation_id>`，并无缝支持顶级命令 `./bin/webhook-hub explain <conversation_id>`，支持直接输入 UUID 自动路由。
+  - **自动化测试保障**：
+    - 全量单测套件 `tests/unit/test_antigravity_watchdog.py`（76 项）、`tests/unit/test_antigravity_agent.py`（52 项）、`tests/unit/test_cli.py`（46 项）、`tests/unit/test_diagnostics.py`（15 项）共计 189 项测试全部 100% 绿灯通过，无任何破坏性变更。
+
 ## [1.17.14] - 2026-09-24
 
 ### Fixed & Enhanced

@@ -469,6 +469,57 @@ class AgentAPIClient:
             logger.exception("Unexpected error in agentapi new_conversation: %s", e)
             return False, "", str(e)
 
+    async def send_user_cascade_message(
+        self,
+        conversation_id: str,
+        content: str,
+        timeout_seconds: float = 30.0,
+    ) -> tuple[bool, str, Optional[str]]:
+        """
+        Send a user cascade message directly to Language Server via Connect RPC.
+        This triggers the Language Server execution loop / model inference cycle,
+        unlike SendAgentMessage which merely deposits an unread message.
+        Returns: (success, result_str, error_message)
+        """
+        addr, token = self.ensure_credentials(force=False)
+        if not addr or not token:
+            addr, token = self.ensure_credentials(force=True)
+        if not addr or not token:
+            return False, "", "Language server credentials (address/token) unavailable"
+
+        url = f"http://{addr}/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage"
+        payload = json.dumps({
+            "cascade_id": conversation_id,
+            "items": [{"text": content}],
+        }).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "X-Codeium-Csrf-Token": token,
+        }
+
+        async def _do_post() -> tuple[bool, str, Optional[str]]:
+            def _sync_request():
+                req = urllib.request.Request(url, data=payload, headers=headers)
+                with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+                    resp_bytes = resp.read()
+                    return resp.status, resp_bytes.decode("utf-8", errors="replace")
+
+            loop = asyncio.get_running_loop()
+            try:
+                status, resp_str = await loop.run_in_executor(None, _sync_request)
+                if status == 200:
+                    logger.info("Successfully dispatched SendUserCascadeMessage to %s via Connect RPC", conversation_id)
+                    return True, resp_str, None
+                return False, "", f"Connect RPC returned HTTP {status}: {resp_str}"
+            except urllib.error.HTTPError as he:
+                err_body = he.read().decode("utf-8", errors="replace")
+                return False, "", f"HTTP {he.code}: {err_body}"
+            except Exception as ex:
+                return False, "", str(ex)
+
+        success, out, err = await _do_post()
+        return success, out, err
+
     async def send_message(
         self,
         conversation_id: str,
@@ -476,11 +527,34 @@ class AgentAPIClient:
         title: Optional[str] = None,
         timeout_seconds: int = 60,
         project_id: Optional[str] = None,
+        trigger_execution: bool = True,
     ) -> tuple[bool, str, Optional[str]]:
         """
-        Send a follow-up inquiry (追问) or message into an existing Antigravity conversation.
+        Send a follow-up inquiry (追问), resuscitation, or message into an existing Antigravity conversation.
+        If trigger_execution is True (default) and conversation_id is a valid UUID, attempts Connect RPC
+        SendUserCascadeMessage first to ensure the Language Server execution loop is actively resumed.
+        Falls back to agentapi send-message CLI if Connect RPC is unavailable.
         Returns: (success, result_message, error_message)
         """
+        is_uuid = bool(re.match(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", conversation_id.strip()))
+        if trigger_execution and is_uuid:
+            try:
+                rpc_ok, rpc_out, rpc_err = await self.send_user_cascade_message(
+                    conversation_id=conversation_id,
+                    content=content,
+                    timeout_seconds=min(30.0, float(timeout_seconds)),
+                )
+                if rpc_ok:
+                    logger.info("Successfully sent user cascade message and triggered execution loop for %s", conversation_id)
+                    return True, rpc_out, None
+                logger.warning(
+                    "Connect RPC execution trigger failed for %s (%s). Falling back to AgentAPI CLI send-message...",
+                    conversation_id,
+                    rpc_err,
+                )
+            except Exception as trigger_ex:
+                logger.warning("Error attempting execution trigger for %s: %s. Falling back to AgentAPI CLI...", conversation_id, trigger_ex)
+
         if not self.is_available():
             return False, "", f"agentapi executable not available at '{self.executable_path}'"
 

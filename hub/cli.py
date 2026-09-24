@@ -2728,13 +2728,18 @@ def _add_antigravity_args(parser: argparse.ArgumentParser) -> None:
         "action",
         nargs="?",
         default="doctor",
-        choices=["doctor", "status", "health", "pull-up", "resuscitate", "wake", "quota", "warmup"],
-        help="Antigravity command: 'doctor' (diagnostics), 'quota' (5h/weekly quota monitor), 'warmup' (ping 1-token refresh), 'pull-up' (revive stalled sessions)",
+        help="Antigravity command: 'doctor' (diagnostics), 'diagnose'/'explain' (deep session inspection), 'quota' (5h/weekly quota monitor), 'warmup' (ping 1-token refresh), 'pull-up' (revive stalled sessions)",
+    )
+    parser.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="Target conversation ID for diagnose/explain",
     )
     parser.add_argument(
         "--conversation", "-c",
         default=None,
-        help="Target specific conversation ID for resuscitation",
+        help="Target specific conversation ID for resuscitation, diagnose, or explain",
     )
     parser.add_argument(
         "--account", "-a",
@@ -2921,6 +2926,13 @@ def cmd_antigravity(args: Any) -> int:
 
     action = getattr(args, "action", "doctor") or "doctor"
     is_json = getattr(args, "json", False)
+    target = getattr(args, "target", None)
+
+    # Auto-detect if action is passed as a conversation UUID or prefix
+    import re
+    if re.match(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", action) or action.startswith(("ag:", "convo:", "conversation:")):
+        target = action
+        action = "diagnose"
 
     config_path = getattr(args, "config", None)
     env_file = getattr(args, "env_file", None)
@@ -2939,7 +2951,26 @@ def cmd_antigravity(args: Any) -> int:
 
     watchdog = AntigravityWatchdog(db=db, config=cfg.antigravity_watchdog, quota_sentinel=quota_sentinel)
 
-    if action in ("doctor", "status", "health"):
+    if action in ("diagnose", "explain"):
+        from hub.antigravity.diagnostics import DiagnosticInspector, format_diagnostic_report
+        target_convo = target or getattr(args, "conversation", None)
+        if not target_convo:
+            msg = "错误: 请指定要诊断/解析的会话 ID (例如: ./bin/webhook-hub antigravity diagnose <conversation_id>)"
+            if is_json:
+                print(json.dumps({"error": msg, "success": False}, ensure_ascii=False))
+            else:
+                print(f"❌ {msg}", file=sys.stderr)
+            return 1
+
+        inspector = DiagnosticInspector(db=db, config=cfg)
+        res = inspector.explain(target_convo)
+        if is_json:
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+        else:
+            print(format_diagnostic_report(res))
+        return 0
+
+    elif action in ("doctor", "status", "health"):
         status_info = watchdog.get_status()
         if is_json:
             print(json.dumps(status_info, indent=2, ensure_ascii=False))
@@ -3192,6 +3223,14 @@ def cmd_antigravity(args: Any) -> int:
                 st_icon = "✅" if w.get("status") == "success" else "❌"
                 print(f"  {st_icon} {w.get('account_email')} | {w.get('bucket_id')} -> 模型: {w.get('model_name')} ({w.get('duration_ms')}ms)")
         return 0
+
+    else:
+        msg = f"错误: 未知的 Antigravity 命令 '{action}'。支持的命令: doctor, diagnose, explain, pull-up, quota, warmup"
+        if is_json:
+            print(json.dumps({"error": msg, "success": False}, ensure_ascii=False))
+        else:
+            print(f"❌ {msg}", file=sys.stderr)
+        return 1
 
     return 0
 

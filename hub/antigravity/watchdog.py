@@ -464,29 +464,181 @@ def get_unfinished_conversations_from_summaries(
     return unfinished
 
 
+def is_zombie_or_archived_subagent(
+    subagent_id: str,
+    parent_id: Optional[str] = None,
+    brain_dir: Optional[Path] = None,
+    now: Optional[float] = None,
+    ls_restart_time: float = 0.0,
+    summaries_db_path: Optional[Path] = None,
+) -> tuple[bool, str]:
+    """
+    Evaluate whether a subagent is dead, terminated, killed, superseded, or archived.
+    Dead subagents are immune to resuscitation and must NEVER trigger resuscitation
+    or delegation prompts back into their parent session.
+
+    Principles & Checks:
+    1. Authoritative DB status: If conversation_summaries.db flags killed=1,
+       or status is finished/completed and not_fully_idle=0, it is dead.
+    2. Explicit completion: If the subagent's transcript contains <!-- GOAL_COMPLETE -->
+       or check_session_claimed_completion returns True, it completed its job.
+    3. Parent termination: If the parent's transcript contains an explicit kill command
+       (e.g. manage_subagents action=kill, manage_task kill, or 'Successfully killed' for this subagent).
+    4. Turn supersession: If the parent received a subsequent USER / USER_INPUT / USER_EXPLICIT turn
+       after the subagent was spawned or last active, the subagent belongs to a superseded earlier turn.
+    5. Parent already completed: If parent's transcript indicates overall goal completion.
+    6. Language server restart: If subagent mtime predates ls_restart_time.
+    """
+    if now is None:
+        now = time.time()
+
+    # 1. Authoritative SQLite conversation_summaries.db check
+    s_db = summaries_db_path or Path(os.path.expanduser("~/.gemini/antigravity/conversation_summaries.db"))
+    if s_db.exists():
+        try:
+            conn = sqlite3.connect(f"file:{s_db}?mode=ro", uri=True, timeout=1.0)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT killed, status, not_fully_idle, parent_conversation_id FROM conversation_summaries WHERE conversation_id = ?",
+                (subagent_id,),
+            )
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                killed_flag, status_str, not_fully_idle, p_id_db = row
+                if killed_flag:
+                    return True, "killed_in_conversation_summaries"
+                if status_str in ("CASCADE_RUN_STATUS_COMPLETED", "CASCADE_RUN_STATUS_FINISHED") and not not_fully_idle:
+                    return True, f"completed_in_conversation_summaries ({status_str})"
+                if not parent_id and p_id_db:
+                    parent_id = str(p_id_db)
+        except Exception as e:
+            logger.debug("Failed querying conversation_summaries.db for %s: %s", subagent_id, e)
+
+    # 2. Check subagent transcript and verify subagent identity
+    b_dir = brain_dir or Path(os.path.expanduser("~/.gemini/antigravity/brain"))
+    sub_path = resolve_transcript_path(subagent_id, b_dir)
+
+    is_sub = bool(parent_id)
+    if not is_sub and sub_path and sub_path.exists():
+        parent_id = detect_parent_conversation_id(subagent_id, transcript_path=sub_path)
+        if parent_id:
+            is_sub = True
+        else:
+            try:
+                with open(sub_path, "r", encoding="utf-8", errors="ignore") as f:
+                    first_line = f.readline(4096)
+                if any(k in first_line for k in ("<subagent_reminder>", "You are running as a subagent", "invoked by a caller agent", "<original_task>", "invoke_subagent")):
+                    is_sub = True
+            except Exception:
+                pass
+
+    if not is_sub and not parent_id:
+        return False, "not_a_subagent"
+
+    if not sub_path or not sub_path.exists():
+        sub_dir = b_dir / subagent_id
+        if not sub_dir.exists():
+            return True, "subagent_directory_not_found"
+        try:
+            d_mtime = sub_dir.stat().st_mtime
+            if ls_restart_time > 0 and d_mtime < ls_restart_time:
+                return True, f"subagent_predates_server_restart (mtime={int(d_mtime)} < restart={int(ls_restart_time)})"
+            if (now - d_mtime) > 900:
+                return True, f"subagent_empty_and_stale ({int(now - d_mtime)}s old)"
+        except Exception:
+            pass
+    else:
+        try:
+            sub_mtime = sub_path.stat().st_mtime
+            if ls_restart_time > 0 and sub_mtime < ls_restart_time:
+                return True, f"subagent_stopped_by_server_restart (mtime={int(sub_mtime)} < restart={int(ls_restart_time)})"
+            if check_session_claimed_completion(sub_path, None):
+                return True, "subagent_goal_completed"
+        except Exception as e:
+            logger.debug("Failed checking subagent transcript %s: %s", sub_path, e)
+
+    # 3. Check Parent relationship if parent_id is available
+    if parent_id:
+        p_path = resolve_transcript_path(parent_id, b_dir)
+        if p_path and p_path.exists():
+            # 3a. Parent already completed overarching task
+            if check_session_claimed_completion(p_path, None):
+                return True, "parent_already_completed"
+
+            try:
+                p_text = p_path.read_text(encoding="utf-8", errors="ignore")
+
+                # 3b. Check for explicit parent kill commands
+                if (
+                    ("manage_subagents" in p_text and subagent_id in p_text and ('"kill"' in p_text or "'kill'" in p_text))
+                    or ("manage_task" in p_text and subagent_id in p_text and ('"kill"' in p_text or "'kill'" in p_text))
+                    or ("Successfully killed" in p_text and subagent_id in p_text)
+                    or ("Killed roles:" in p_text and subagent_id in p_text)
+                ):
+                    return True, "parent_explicitly_killed_subagent"
+
+                # 3c. Turn supersession:
+                # Find the first line where the subagent was spawned / referenced by parent
+                lines = p_text.splitlines()
+                subagent_first_seen_line = -1
+                latest_user_line = -1
+                for idx, line in enumerate(lines):
+                    if subagent_id in line and subagent_first_seen_line == -1:
+                        subagent_first_seen_line = idx
+                    if (
+                        '"type":"USER_INPUT"' in line
+                        or '"type": "USER_INPUT"' in line
+                        or '"source":"USER_EXPLICIT"' in line
+                        or '"source": "USER_EXPLICIT"' in line
+                        or '"type":"USER"' in line
+                        or '"type": "USER"' in line
+                    ):
+                        latest_user_line = idx
+
+                if subagent_first_seen_line != -1 and latest_user_line > subagent_first_seen_line:
+                    return True, f"subagent_superseded_by_subsequent_user_turn (spawn_line={subagent_first_seen_line} < latest_user_line={latest_user_line})"
+            except Exception as ex:
+                logger.debug("Failed inspecting parent transcript %s: %s", p_path, ex)
+
+    return False, ""
+
+
 def is_subagent_active(
     cid: str,
     brain_dir: Path,
     quiet_seconds: float = 900.0,
     now: Optional[float] = None,
     ls_restart_time: float = 0.0,
+    parent_id: Optional[str] = None,
 ) -> tuple[bool, str]:
     """
     Check if a child subagent is actively working.
     Returns (is_active, reason).
     
     Principles:
-    1. If language_server restarted and subagent was last modified BEFORE restart,
+    1. If subagent is dead/zombie/killed/superseded (is_zombie_or_archived_subagent), it is NOT active.
+    2. If language_server restarted and subagent was last modified BEFORE restart,
        it was terminated by the server restart and cannot be running on the current server.
-    2. If the subagent's transcript was modified within quiet_seconds (default 15m),
+    3. If the subagent's transcript was modified within quiet_seconds (default 15m),
        and it has NOT explicitly completed with <!-- GOAL_COMPLETE -->, it is ACTIVE.
-    3. If the subagent's last step status is "RUNNING", it is ACTIVE.
-    4. Only when the subagent explicitly completed (<!-- GOAL_COMPLETE --> or final shutdown),
+    4. If the subagent's last step status is "RUNNING", it is ACTIVE.
+    5. Only when the subagent explicitly completed (<!-- GOAL_COMPLETE --> or final shutdown),
        or the entire session has been silent for > quiet_seconds with no running tasks,
        is it considered inactive.
     """
     if now is None:
         now = time.time()
+
+    is_zombie, z_reason = is_zombie_or_archived_subagent(
+        subagent_id=cid,
+        parent_id=parent_id,
+        brain_dir=brain_dir,
+        now=now,
+        ls_restart_time=ls_restart_time,
+    )
+    if is_zombie:
+        return False, z_reason
 
     c_path = resolve_transcript_path(cid, brain_dir)
     if not c_path or not c_path.exists():
@@ -1273,6 +1425,7 @@ class AntigravityWatchdog:
                             quiet_seconds=boost_quiet,
                             now=now,
                             ls_restart_time=self.ls_restart_time,
+                            parent_id=convo_id,
                         )
                         if is_act:
                             active_children.append((cid, reason))
@@ -1377,9 +1530,25 @@ class AntigravityWatchdog:
                                         quiet_seconds=boost_quiet,
                                         now=now,
                                         ls_restart_time=self.ls_restart_time,
+                                        parent_id=parent_id,
                                     )
                                     if is_act:
                                         return False, "parent_has_other_active_subagent"
+
+                    # 1d. Dead Subagent Zombie Immunity Gate:
+                    # If subagent was killed, finished, or superseded by subsequent parent turns,
+                    # DO NOT resuscitate it and DO NOT delegate to parent!
+                    if subagent:
+                        is_zombie, z_reason = is_zombie_or_archived_subagent(
+                            subagent_id=cid,
+                            parent_id=parent_id,
+                            brain_dir=self._brain_dir,
+                            now=now,
+                            ls_restart_time=self.ls_restart_time,
+                            summaries_db_path=self._summaries_db_path,
+                        )
+                        if is_zombie:
+                            return False, f"dead_subagent_zombie_immunity ({z_reason})"
 
                     # 2. Check last resuscitation record
                     last_res = self.db.get_last_resuscitation(cid) if (self.db and hasattr(self.db, "get_last_resuscitation")) else None
@@ -2121,6 +2290,31 @@ class AntigravityWatchdog:
                 "status": "session_already_completed",
                 "error": "task_claimed_completion",
             }
+
+        # 2b. Dead Subagent Zombie Immunity Gate
+        if is_delegated_boost or session_info.is_subagent:
+            is_zombie, z_reason = is_zombie_or_archived_subagent(
+                subagent_id=convo_id,
+                parent_id=session_info.parent_conversation_id,
+                brain_dir=self._brain_dir,
+                now=time.time(),
+                ls_restart_time=self.ls_restart_time,
+                summaries_db_path=self._summaries_db_path,
+            )
+            if is_zombie:
+                logger.info(
+                    "Subagent %s is zombie/archived (%s). Skipping resuscitation/delegation.",
+                    convo_id,
+                    z_reason,
+                )
+                return {
+                    "success": False,
+                    "conversation_id": convo_id,
+                    "target_conversation_id": target_convo_id,
+                    "is_delegated_boost": is_delegated_boost,
+                    "status": "dead_subagent_zombie_immunity",
+                    "error": f"dead_subagent_zombie_immunity ({z_reason})",
+                }
 
         # 3. Once-Per-Restart Pre-flight Defense-In-Depth
         if self.ls_restart_time > 0:

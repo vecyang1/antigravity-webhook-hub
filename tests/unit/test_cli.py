@@ -548,6 +548,30 @@ def test_cmd_dashboard_output(capsys):
     assert "tunnel_url" in data
 
 
+def test_cmd_antigravity_diagnose_and_explain(capsys):
+    """Verify `webhook-hub antigravity diagnose <uuid>` outputs formatted report and handles JSON mode."""
+    uuid_str = "12345678-1234-1234-1234-123456789abc"
+    code = main(["antigravity", "diagnose", uuid_str])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "ANTIGRAVITY CONVERSATION TOPOLOGY & STATE" in captured.out
+    assert uuid_str in captured.out
+
+    # Top-level explain command on conversation UUID
+    code_exp = main(["explain", uuid_str])
+    assert code_exp == 0
+    cap_exp = capsys.readouterr()
+    assert "ANTIGRAVITY CONVERSATION TOPOLOGY & STATE" in cap_exp.out
+
+    # JSON mode
+    code_json = main(["antigravity", "diagnose", uuid_str, "--json"])
+    assert code_json == 0
+    cap_json = capsys.readouterr()
+    data = json.loads(cap_json.out)
+    assert data["target_type"] == "antigravity_conversation"
+    assert data["conversation_id"] == uuid_str
+
+
 def test_cmd_rerun_direct_sqlite(tmp_path, capsys):
     """Verify `webhook-hub rerun` directly modifies SQLite SSOT when gateway is offline."""
     db_file = tmp_path / "test_cli_rerun.db"

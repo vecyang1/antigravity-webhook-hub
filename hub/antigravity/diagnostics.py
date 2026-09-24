@@ -52,6 +52,20 @@ class DiagnosticInspector:
         if not clean_target:
             return {"error": "Target must not be empty", "verdict": "INVALID_INPUT"}
 
+        # 0. Antigravity Conversation Target (UUID, ag:..., convo:..., conversation:...)
+        ag_convo_id = None
+        if clean_target.startswith("ag:"):
+            ag_convo_id = clean_target[3:].strip()
+        elif clean_target.startswith("convo:"):
+            ag_convo_id = clean_target[6:].strip()
+        elif clean_target.startswith("conversation:"):
+            ag_convo_id = clean_target[13:].strip()
+        elif re.match(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", clean_target):
+            ag_convo_id = clean_target
+
+        if ag_convo_id:
+            return self._explain_antigravity_conversation(ag_convo_id)
+
         # 1. Task ID
         if clean_target.startswith("tsk_"):
             return self._explain_task(clean_target, reconcile=reconcile, force=force)
@@ -112,6 +126,7 @@ class DiagnosticInspector:
             "verdict": "UNRECOGNIZED_TARGET",
             "error": f"Target '{clean_target}' does not match any recognized diagnostic schema.",
             "supported_formats": [
+                "Antigravity Conversation (<uuid>, ag:<uuid>, convo:<uuid>)",
                 "Task ID (tsk_...)",
                 "Event ID (evt_...)",
                 "URL (https://n.worldinspirelab.com/... or /webhook/...)",
@@ -121,6 +136,232 @@ class DiagnosticInspector:
                 "Email Domain (email:orders@carradiocodes.co.uk or user@xinchaovi.com)",
             ],
             "details": f"Target '{clean_target}' could not be disambiguated. Please specify a prefix (e.g. spark:, email:, https://) or check the identifier format.",
+        }
+
+    def _explain_antigravity_conversation(self, conversation_id: str) -> dict[str, Any]:
+        """
+        Deep diagnostic inspection for an Antigravity conversation or subagent.
+        Evaluates real execution flow, transcript logs, SQLite SSOT states,
+        parent/subagent topology, dead subagent zombie immunity, resuscitation eligibility,
+        and Connect RPC Language Server execution trigger readiness.
+        """
+        from pathlib import Path
+        import sqlite3
+        from hub.antigravity.result_delivery import resolve_transcript_path
+        from hub.antigravity.watchdog import (
+            AntigravityWatchdog,
+            check_session_claimed_completion,
+            extract_subagent_ids_from_transcript,
+            is_subagent_active,
+            is_zombie_or_archived_subagent,
+            detect_parent_conversation_id,
+            tail_transcript_lines,
+        )
+        from hub.antigravity.agentapi_client import (
+            AgentAPIClient,
+            discover_active_antigravity_credentials,
+            find_active_language_server_pid,
+        )
+
+        brain_dir = Path(os.path.expanduser("~/.gemini/antigravity/brain"))
+        summaries_db = Path(os.path.expanduser("~/.gemini/antigravity/conversation_summaries.db"))
+
+        # 1. Authoritative SQLite conversation_summaries.db state
+        db_state: dict[str, Any] = {"found": False}
+        parent_id_from_db = None
+        if summaries_db.exists():
+            try:
+                conn = sqlite3.connect(f"file:{summaries_db}?mode=ro", uri=True, timeout=1.0)
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT conversation_id, title, status, not_fully_idle, killed, parent_conversation_id, last_modified_time, step_count
+                    FROM conversation_summaries
+                    WHERE conversation_id = ?
+                    """,
+                    (conversation_id,),
+                )
+                row = cur.fetchone()
+                conn.close()
+                if row:
+                    parent_id_from_db = row[5] or None
+                    db_state = {
+                        "found": True,
+                        "title": row[1] or "",
+                        "status": row[2] or "",
+                        "not_fully_idle": bool(row[3]),
+                        "killed": bool(row[4]),
+                        "parent_conversation_id": parent_id_from_db,
+                        "last_modified_time": str(row[6] or ""),
+                        "step_count": row[7] or 0,
+                    }
+            except Exception as e:
+                db_state["error"] = str(e)
+
+        # 2. Transcript file inspection
+        t_path = resolve_transcript_path(conversation_id, brain_dir)
+        transcript_info: dict[str, Any] = {
+            "found": bool(t_path and t_path.exists()),
+            "path": str(t_path) if t_path else None,
+            "step_count": 0,
+            "claimed_completion": False,
+            "last_step": None,
+        }
+
+        parsed_tail: list[dict[str, Any]] = []
+        if t_path and t_path.exists():
+            try:
+                t_stat = t_path.stat()
+                transcript_info["size_bytes"] = t_stat.st_size
+                transcript_info["mtime"] = t_stat.st_mtime
+                transcript_info["mtime_str"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t_stat.st_mtime))
+
+                lines = tail_transcript_lines(t_path, max_lines=30)
+                for l in lines:
+                    try:
+                        parsed_tail.append(json.loads(l.strip()))
+                    except Exception:
+                        pass
+                transcript_info["step_count"] = len(parsed_tail)
+                if parsed_tail:
+                    ls = parsed_tail[-1]
+                    transcript_info["last_step"] = {
+                        "step_index": ls.get("step_index"),
+                        "type": ls.get("type"),
+                        "status": ls.get("status"),
+                        "source": ls.get("source"),
+                        "content_preview": (str(ls.get("content") or ls.get("error") or ""))[:160],
+                    }
+                transcript_info["claimed_completion"] = check_session_claimed_completion(t_path, parsed_tail)
+            except Exception as e:
+                transcript_info["error"] = str(e)
+
+        # 3. Topology & Subagent Resolution
+        parent_id = parent_id_from_db
+        if not parent_id and t_path:
+            parent_id = detect_parent_conversation_id(conversation_id, transcript_path=t_path)
+
+        is_subagent = bool(parent_id)
+        if not is_subagent and parsed_tail:
+            first_c = str(parsed_tail[0].get("content") or "")
+            if any(k in first_c for k in ("<subagent_reminder>", "You are running as a subagent", "invoked by a caller agent", "<original_task>", "invoke_subagent")):
+                is_subagent = True
+
+        # Check child subagents if this is a parent/root
+        child_subagents: list[dict[str, Any]] = []
+        if t_path:
+            c_ids = extract_subagent_ids_from_transcript(t_path, conversation_id)
+            for cid in c_ids:
+                is_act, act_r = is_subagent_active(cid, brain_dir, parent_id=conversation_id)
+                is_z, z_r = is_zombie_or_archived_subagent(cid, parent_id=conversation_id, brain_dir=brain_dir)
+                child_subagents.append({
+                    "conversation_id": cid,
+                    "is_active": is_act,
+                    "active_reason": act_r,
+                    "is_zombie": is_z,
+                    "zombie_reason": z_r,
+                })
+
+        # 4. Dead Subagent Zombie Immunity Gate
+        zombie_immunity: dict[str, Any] = {"is_zombie": False, "reason": "not_applicable_root_session"}
+        if is_subagent:
+            is_z, z_r = is_zombie_or_archived_subagent(
+                subagent_id=conversation_id,
+                parent_id=parent_id,
+                brain_dir=brain_dir,
+                summaries_db_path=summaries_db,
+            )
+            zombie_immunity = {
+                "is_zombie": is_z,
+                "reason": z_r,
+                "immune_to_resuscitation": is_z,
+            }
+
+        # 5. Language Server Connect RPC Readiness
+        addr, token = discover_active_antigravity_credentials(force=False)
+        ls_pid = find_active_language_server_pid()
+        connect_rpc_ready = bool(addr and token and ls_pid)
+        rpc_info = {
+            "ready": connect_rpc_ready,
+            "address": addr,
+            "token_masked": (token[:4] + "..." + token[-4:]) if token and len(token) > 8 else ("present" if token else None),
+            "pid": ls_pid,
+            "trigger_mode": "Connect RPC SendUserCascadeMessage (direct execution loop resumption)" if connect_rpc_ready else "Fallback to AgentAPI CLI send-message (message deposit only)",
+        }
+
+        # 6. Resuscitation History in SQLite DB
+        res_history = []
+        if self.db and hasattr(self.db, "get_last_resuscitation"):
+            last_res = self.db.get_last_resuscitation(conversation_id)
+            if last_res:
+                res_history.append(last_res)
+
+        # 7. Resuscitation Eligibility Decision Tree
+        decision_tree = []
+        can_resuscitate = True
+        skip_reason = None
+
+        if not transcript_info["found"] and not db_state["found"]:
+            can_resuscitate = False
+            skip_reason = "session_not_found"
+            decision_tree.append(("Target Check", "FAIL", "Neither transcript file nor DB summary found"))
+        else:
+            decision_tree.append(("Target Check", "PASS", "Session found in local runtime / DB"))
+
+        if is_subagent:
+            if not parent_id:
+                can_resuscitate = False
+                skip_reason = "orphaned_subagent"
+                decision_tree.append(("Subagent Orphan Check", "FAIL", "Orphaned subagent cannot determine parent"))
+            else:
+                decision_tree.append(("Subagent Orphan Check", "PASS", f"Parent identified: {parent_id}"))
+
+            if zombie_immunity["is_zombie"]:
+                can_resuscitate = False
+                skip_reason = f"dead_subagent_zombie_immunity ({zombie_immunity['reason']})"
+                decision_tree.append(("Zombie Immunity Check", "BLOCKED", f"Subagent is dead/archived: {zombie_immunity['reason']}"))
+            else:
+                decision_tree.append(("Zombie Immunity Check", "PASS", "Subagent is not dead/zombie"))
+
+        if transcript_info.get("claimed_completion"):
+            can_resuscitate = False
+            skip_reason = "session_already_completed"
+            decision_tree.append(("Completion Check", "BLOCKED", "Session explicitly claimed goal completion"))
+        else:
+            decision_tree.append(("Completion Check", "PASS", "Session has not claimed completion"))
+
+        # Verdict Determination
+        if not transcript_info["found"] and not db_state["found"]:
+            verdict = "NOT_FOUND"
+        elif zombie_immunity.get("is_zombie"):
+            verdict = "ZOMBIE_SUBAGENT_PROTECTED"
+        elif transcript_info.get("claimed_completion"):
+            verdict = "COMPLETED"
+        elif db_state.get("status") == "CASCADE_RUN_STATUS_RUNNING" or db_state.get("not_fully_idle"):
+            verdict = "ACTIVE_RUNNING"
+        elif can_resuscitate:
+            verdict = "STALLED_ELIGIBLE_FOR_RESUSCITATION"
+        else:
+            verdict = f"PROTECTED ({skip_reason})"
+
+        return {
+            "target_type": "antigravity_conversation",
+            "target": conversation_id,
+            "conversation_id": conversation_id,
+            "verdict": verdict,
+            "is_subagent": is_subagent,
+            "parent_conversation_id": parent_id,
+            "child_subagents": child_subagents,
+            "summaries_db": db_state,
+            "transcript": transcript_info,
+            "zombie_immunity": zombie_immunity,
+            "connect_rpc": rpc_info,
+            "resuscitation_eligibility": {
+                "can_resuscitate": can_resuscitate,
+                "skip_reason": skip_reason,
+                "decision_tree": decision_tree,
+            },
+            "resuscitation_history": res_history,
         }
 
     def _explain_task(self, task_id: str, reconcile: bool = False, force: bool = False) -> dict[str, Any]:
@@ -648,7 +889,7 @@ def format_diagnostic_report(diag: dict[str, Any]) -> str:
     lines = []
     lines.append("=" * 64)
     lines.append("🔍 ANTIGRAVITY WEBHOOK HUB — DIAGNOSTIC & EXPLAIN REPORT")
-    lines.append(f"   Target:  {diag.get('target') or diag.get('task_id') or diag.get('event_id') or diag.get('url')}")
+    lines.append(f"   Target:  {diag.get('target') or diag.get('task_id') or diag.get('event_id') or diag.get('url') or diag.get('conversation_id')}")
     lines.append(f"   Type:    {target_type.upper()}")
     lines.append(f"   Verdict: {verdict}")
     lines.append("=" * 64)
@@ -768,6 +1009,85 @@ def format_diagnostic_report(diag: dict[str, Any]) -> str:
         lines.append(f"  • System Owner:   {diag.get('system_owner')}")
         lines.append(f"  • Operator CLI:   {diag.get('operator_cli')}")
         lines.append(f"  • Details:        {diag.get('details')}")
+
+    elif target_type == "antigravity_conversation":
+        convo_id = diag.get("conversation_id", "")
+        is_subagent = diag.get("is_subagent", False)
+        parent_id = diag.get("parent_conversation_id")
+
+        lines.append("\n🤖 ANTIGRAVITY CONVERSATION TOPOLOGY & STATE")
+        lines.append(f"  • Conversation ID:   {convo_id}")
+        lines.append(f"  • Topology:          {'Subagent (Child Task)' if is_subagent else 'Root / Primary Session'}")
+        if is_subagent and parent_id:
+            lines.append(f"  • Parent ID:         {parent_id}")
+
+        db = diag.get("summaries_db", {})
+        lines.append("\n📊 AUTHORITATIVE SQLITE STATE (conversation_summaries.db)")
+        if db.get("found"):
+            lines.append(f"  • Title:             {db.get('title') or '(none)'}")
+            lines.append(f"  • Status:            {db.get('status')}")
+            lines.append(f"  • Not Fully Idle:    {'⚠️ Yes (running)' if db.get('not_fully_idle') else '✅ No (idle)'}")
+            lines.append(f"  • Killed:            {'💀 Yes (terminated)' if db.get('killed') else 'No'}")
+            lines.append(f"  • DB Step Count:     {db.get('step_count')}")
+            lines.append(f"  • Last Modified:     {db.get('last_modified_time')}")
+        else:
+            lines.append("  • Found in DB:       ❌ Not found in conversation_summaries.db")
+
+        tr = diag.get("transcript", {})
+        lines.append("\n📜 RUNTIME TRANSCRIPT (brain/...)")
+        if tr.get("found"):
+            lines.append(f"  • Path:              {tr.get('path')}")
+            lines.append(f"  • Size:              {tr.get('size_bytes', 0):,} bytes")
+            lines.append(f"  • Last Modified:     {tr.get('mtime_str')}")
+            lines.append(f"  • Tail Steps Count:  {tr.get('step_count')}")
+            lines.append(f"  • Goal Complete:     {'✅ Yes' if tr.get('claimed_completion') else '❌ No'}")
+            ls = tr.get("last_step")
+            if ls:
+                lines.append(f"  • Last Step:         [Index {ls.get('step_index')}] {ls.get('type')}/{ls.get('source')} ({ls.get('status')})")
+                lines.append(f"    Preview:           {ls.get('content_preview')}")
+        else:
+            lines.append("  • Transcript File:   ❌ Not found on disk")
+
+        # Zombie Immunity
+        zim = diag.get("zombie_immunity", {})
+        lines.append("\n🛡️ DEAD SUBAGENT ZOMBIE IMMUNITY GATE")
+        lines.append(f"  • Is Zombie/Archived: {'💀 Yes (Immune to resuscitation)' if zim.get('is_zombie') else '✅ No'}")
+        lines.append(f"  • Reason Code:       {zim.get('reason')}")
+
+        # Connect RPC
+        crpc = diag.get("connect_rpc", {})
+        lines.append("\n⚡ LANGUAGE SERVER CONNECT RPC STATUS")
+        lines.append(f"  • Channel Ready:     {'✅ Yes' if crpc.get('ready') else '⚠️ No'}")
+        lines.append(f"  • LS Process PID:    {crpc.get('pid') or 'Not running'}")
+        lines.append(f"  • LS Address:        {crpc.get('address') or 'None'}")
+        lines.append(f"  • Execution Mode:    {crpc.get('trigger_mode')}")
+
+        # Child Subagents (if any)
+        children = diag.get("child_subagents", [])
+        if children:
+            lines.append(f"\n👶 CHILD SUBAGENTS ({len(children)} detected)")
+            for idx, c in enumerate(children, 1):
+                c_icon = "🟢" if c.get("is_active") else ("💀" if c.get("is_zombie") else "⚪")
+                lines.append(f"  {idx}. {c_icon} {c.get('conversation_id')}")
+                lines.append(f"     Active: {c.get('is_active')} ({c.get('active_reason')}) | Zombie: {c.get('is_zombie')} ({c.get('zombie_reason')})")
+
+        # Resuscitation Eligibility Decision Tree
+        re_info = diag.get("resuscitation_eligibility", {})
+        tree = re_info.get("decision_tree", [])
+        lines.append("\n🌲 RESUSCITATION ELIGIBILITY DECISION TREE")
+        lines.append(f"  • Can Resuscitate:   {'🟢 YES' if re_info.get('can_resuscitate') else '⛔ NO'}")
+        if re_info.get("skip_reason"):
+            lines.append(f"  • Skip Reason:       {re_info.get('skip_reason')}")
+        for check_name, status, reason in tree:
+            s_icon = "✅" if status == "PASS" else ("⛔" if status == "BLOCKED" else "❌")
+            lines.append(f"  [{s_icon} {status}] {check_name}: {reason}")
+
+        # Resuscitation History
+        history = diag.get("resuscitation_history", [])
+        if history:
+            lines.append("\n⏱️ PAST RESUSCITATION HISTORY")
+            for h in history:
+                lines.append(f"  • [{h.get('status')}] Attempts: {h.get('attempt_count')} | Last: {h.get('resuscitation_id')} at {h.get('resuscitation_time')}")
 
     elif target_type == "unknown":
         lines.append("\n⚠️ UNRECOGNIZED TARGET FORMAT")
