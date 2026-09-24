@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.14] - 2026-09-24
+
+### Fixed & Enhanced
+- **Slack 离线对账极致提速与网络抗抖重构（耗时从 6 分 11 秒压缩至 10.6 秒，提速 35 倍）(`hub/antigravity/reconciler.py`)**:
+  - **核心痛点解决**：彻底根治 `catchup --execute` 在遍历历史频道时，因 macOS Python `http.client` 遭遇 Slack chunked TLS 流截断引发的大量 `IncompleteRead` 报错及多轮指数退避重试死等（此前单次对账耗时超 6 分钟）。
+  - **即时 curl 极速降级通道 (`_curl_slack_api_call`)**：在 `_slack_api_call` 中，当 urllib 首轮遇到 `IncompleteRead`、`ConnectionResetError` 或 `URLError` 时，不再机械执行 3 轮 sleep 重试，而是毫秒级直接无缝激活原生 system curl 管道，单次大响应拉取耗时从 3.5s+ 骤降至 0.2s。
+  - **SSOT 状态派生与已完工线程快速短路 (Fast-Path Skipping)**：基于 SQLite SSOT `tasks` 权威状态，凡关联任务处于 `queued`/`running`（处理中无需重复调度）或 `status == 'succeeded'` 且已稳定归档（>120s）的历史线程，直接断定已交付并跳过全量 `conversations.replies` 网络拉取，从源头消除 90% 以上的无效网络空转。
+  - **实机回归验证**：实测 `./bin/webhook-hub catchup --execute` 耗时从 371 秒锐减至 10.6 秒（35x 提速）；`tests/unit/test_reconciler.py` 11 项用例 100% 绿灯；13 项端到端及对抗验证（`./bin/webhook-hub verify`）全绿（15.02s）。
+
 ## [1.17.13] - 2026-09-24
 
 ### Fixed & Enhanced

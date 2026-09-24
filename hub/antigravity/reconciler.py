@@ -138,6 +138,25 @@ class SlackReconciler:
         self.hub_token = hub_token or resolve_hub_bearer_token()
         self.notifier = ThreadNotifier(token=self.token)
 
+    def _curl_slack_api_call(self, endpoint: str, params: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """Perform authenticated call to Slack Web API via system curl, bypassing macOS Python TLS chunked stream issues."""
+        try:
+            url = f"https://slack.com/api/{endpoint}"
+            cmd = [
+                "curl", "-s", "--max-time", "15",
+                "-H", f"Authorization: Bearer {self.token}",
+                "-d", urllib.parse.urlencode(params),
+                url,
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            if proc.returncode == 0 and proc.stdout:
+                data = json.loads(proc.stdout)
+                if isinstance(data, dict) and (data.get("ok") or "error" in data):
+                    return data
+        except Exception as e:
+            logger.debug("Slack API curl call failed: %s", e)
+        return None
+
     def _slack_api_call(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
         """Perform authenticated call to Slack Web API."""
         if not self.token:
@@ -170,30 +189,33 @@ class SlackReconciler:
                 except Exception:
                     pass
                 last_err = str(e)
-                logger.warning("Slack API call %s attempt %d/%d failed (IncompleteRead): %s", endpoint, attempt + 1, max_retries, e)
+                logger.info("Slack API call %s hit IncompleteRead on attempt %d/%d, immediately activating fast curl fallback...", endpoint, attempt + 1, max_retries)
+                curl_data = self._curl_slack_api_call(endpoint, params)
+                if curl_data:
+                    return curl_data
                 if attempt < max_retries - 1:
-                    time.sleep(0.5 * (2 ** attempt))
+                    time.sleep(0.3 * (2 ** attempt))
+            except (ConnectionResetError, urllib.error.URLError) as e:
+                last_err = str(e)
+                logger.info("Slack API call %s hit disconnect (%s) on attempt %d/%d, testing fast curl fallback...", endpoint, e, attempt + 1, max_retries)
+                curl_data = self._curl_slack_api_call(endpoint, params)
+                if curl_data:
+                    return curl_data
+                if attempt < max_retries - 1:
+                    time.sleep(0.3 * (2 ** attempt))
             except Exception as e:
                 last_err = str(e)
                 logger.warning("Slack API call %s attempt %d/%d failed: %s", endpoint, attempt + 1, max_retries, e)
+                curl_data = self._curl_slack_api_call(endpoint, params)
+                if curl_data:
+                    return curl_data
                 if attempt < max_retries - 1:
                     time.sleep(0.5 * (2 ** attempt))
 
-        # System curl fallback: bypasses macOS Python TLS/chunked EOF issues
-        try:
-            cmd = [
-                "curl", "-s", "--max-time", "15",
-                "-H", f"Authorization: Bearer {self.token}",
-                "-d", urllib.parse.urlencode(params),
-                url,
-            ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-            if proc.returncode == 0 and proc.stdout:
-                data = json.loads(proc.stdout)
-                if isinstance(data, dict):
-                    return data
-        except Exception as e:
-            logger.debug("Slack API curl fallback failed: %s", e)
+        # Final curl attempt if not already successful
+        curl_data = self._curl_slack_api_call(endpoint, params)
+        if curl_data:
+            return curl_data
 
         return {"ok": False, "error": last_err}
 
@@ -306,6 +328,16 @@ class SlackReconciler:
                 continue
 
             # Check 2: Thread has replies -> analyze full conversation
+            # Fast-path optimization (SSOT):
+            # 1. If associated task in DB is actively queued or running, it is currently being processed by the hub.
+            if db_task and db_task.get("status") in ("queued", "running"):
+                continue
+
+            # 2. If associated task in DB has already succeeded and is settled (>120s),
+            # completion was already delivered by result_delivery.py. It is fulfilled and requires no network refetch.
+            if db_task and db_task.get("status") == "succeeded" and (now_ts - msg_time > 120.0):
+                continue
+
             replies_resp = self._slack_api_call("conversations.replies", {"channel": target_channel, "ts": ts})
             if not replies_resp.get("ok"):
                 continue
