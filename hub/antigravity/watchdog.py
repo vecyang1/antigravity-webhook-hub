@@ -77,6 +77,18 @@ INTERRUPTED_STREAM_PATTERNS = (
     "blocked termination",
 )
 
+COMPLETION_REPORT_PATTERNS = (
+    r"<!--\s*goal_complete\s*-->",
+    r"<!--\s*goal_finished\s*-->",
+    r"🟢.*(?:all green|哨兵|巡检|快照|汇报|完成|通过)",
+    r"(?:哨兵|巡检|健康|自愈).*(?:all green|全部正常|全绿|已完成|顺利完成|圆满完成|全部通过)",
+    r"(?:任务|目标|goal).*(?:已完成|圆满完成|已闭环|顺利完成|执行完毕|successfully completed|task complete)",
+    r"(?:13/13|\d+/\d+)\s*(?:pass|通过|正常)",
+    r"【最终完成汇报】",
+    r"【哨兵巡检快照】",
+    r"###\s*🟢",
+)
+
 NETWORK_ERROR_RESUSCITATION_PROMPT = (
     "【系统自动网络/服务故障自愈拉起提醒】\n"
     "检测到底层与模型服务通信发生偶发网络中断、地域路由抖动或超时（Network Issue / User Location / Server Error）。\n"
@@ -199,12 +211,17 @@ def check_session_has_boost_or_goal(transcript_path: Path, parsed_steps: list[di
     """
     Determine whether a session is operating in /boost, /goal, /teamwork-preview,
     or multi-agent delegation mode, even if it is a root conversation.
+    Filters out automated watchdog prompts to prevent self-contamination.
     """
     for s in parsed_steps:
-        cnt = str(s.get("content") or "").lower()
-        if any(k in cnt for k in ("/boost", "/goal", "/teamwork-preview", "delegated agents")):
+        cnt = str(s.get("content") or "")
+        # Filter out automated watchdog resuscitation prompts to avoid self-contamination
+        if "【系统自动" in cnt or "【系统后台" in cnt or "自愈拉起" in cnt or "服务重启延续" in cnt:
+            continue
+        cnt_lower = cnt.lower()
+        if any(k in cnt_lower for k in ("/boost", "/goal", "/teamwork-preview", "delegated agents")):
             return True
-        if "stop hook blocked termination" in cnt:
+        if "stop hook blocked termination" in cnt_lower:
             return True
         for tc in s.get("tool_calls") or []:
             tc_name = str(tc.get("name") or "").lower()
@@ -217,11 +234,73 @@ def check_session_has_boost_or_goal(transcript_path: Path, parsed_steps: list[di
             first_line = fp.readline()
             if first_line:
                 first_data = json.loads(first_line)
-                first_content = str(first_data.get("content") or "").lower()
-                if any(k in first_content for k in ("/boost", "/goal", "/teamwork-preview", "delegated agents")):
-                    return True
+                first_content = str(first_data.get("content") or "")
+                if not ("【系统自动" in first_content or "【系统后台" in first_content or "自愈拉起" in first_content):
+                    first_content_lower = first_content.lower()
+                    if any(k in first_content_lower for k in ("/boost", "/goal", "/teamwork-preview", "delegated agents")):
+                        return True
     except Exception:
         pass
+
+    return False
+
+
+def check_session_claimed_completion(
+    transcript_path: Optional[Path] = None,
+    parsed_steps: Optional[list[dict[str, Any]]] = None,
+) -> bool:
+    """
+    Check if a session has explicitly claimed completion.
+    A session is considered completed if:
+    1. Any step in the window contains explicit completion marker (<!-- goal_complete -->)
+       that was not followed by subsequent user prompts.
+    2. The last MODEL turn contains completion signatures (e.g. All Green sentinel snapshot,
+       13/13 PASS, task completion report) without active tool calls.
+    """
+    steps = parsed_steps if parsed_steps is not None else []
+    if not steps and transcript_path and transcript_path.exists():
+        steps = []
+        for line in tail_transcript_lines(transcript_path, max_lines=15):
+            line_s = line.strip()
+            if line_s:
+                try:
+                    steps.append(json.loads(line_s))
+                except Exception:
+                    pass
+
+    if not steps:
+        return False
+
+    # 1. First check if any step contains explicit goal_complete marker
+    last_user_idx = -1
+    last_complete_idx = -1
+    for idx, s in enumerate(steps):
+        s_src = s.get("source", "")
+        if s_src in ("USER_EXPLICIT", "USER"):
+            last_user_idx = idx
+        cnt_lower = str(s.get("content") or "").lower()
+        if "<!-- goal_complete -->" in cnt_lower or "<!-- goal_finished -->" in cnt_lower:
+            last_complete_idx = idx
+
+    if last_complete_idx != -1 and last_complete_idx > last_user_idx:
+        return True
+
+    # 2. Check the last step
+    last_step = steps[-1]
+    last_source = last_step.get("source", "")
+    last_type = last_step.get("type", "")
+    last_status = last_step.get("status", "")
+    last_content = str(last_step.get("content") or "")
+    has_tool_calls = bool(last_step.get("tool_calls"))
+
+    if last_source in ("USER_EXPLICIT", "USER"):
+        return False
+
+    if last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and last_status == "DONE" and not has_tool_calls:
+        cnt_clean = last_content.strip()
+        for pat in COMPLETION_REPORT_PATTERNS:
+            if re.search(pat, cnt_clean, re.IGNORECASE):
+                return True
 
     return False
 
@@ -872,6 +951,8 @@ class AntigravityWatchdog:
                     self.ls_restart_time = float(saved_rt)
                 except ValueError:
                     pass
+        self._in_flight_resuscitations: set[str] = set()
+        self._recently_resuscitated: dict[str, float] = {}
 
     @property
     def quota_sentinel(self):
@@ -1156,10 +1237,9 @@ class AntigravityWatchdog:
                 last_content = last_step.get("content", "")
 
                 # --- GOAL COMPLETE ARCHIVE GUARD ---
-                # If a session has explicitly recorded completion (<!-- GOAL_COMPLETE -->), it has cleanly finished.
+                # If a session has explicitly recorded completion (<!-- GOAL_COMPLETE --> or sentinel all green), it has cleanly finished.
                 # Auto-archive any lingering conversation schedule in the DB and skip resuscitation immediately.
-                has_goal_complete = any("<!-- goal_complete -->" in str(s.get("content") or "").lower() for s in parsed_steps)
-                if has_goal_complete:
+                if check_session_claimed_completion(transcript_path, parsed_steps):
                     if self.db and hasattr(self.db, "complete_conversation_schedule"):
                         self.db.complete_conversation_schedule(convo_id)
                     continue
@@ -1294,6 +1374,22 @@ class AntigravityWatchdog:
                                 res_epoch = dt.timestamp()
                             except Exception:
                                 pass
+
+                    # 2b. Strict Once-Per-Restart Gate:
+                    # A session or its target parent must be resuscitated at most ONCE per server restart event.
+                    if is_prior_to_restart and self.ls_restart_time > 0:
+                        target_cid = parent_id if (subagent and parent_id) else cid
+                        if self.db and hasattr(self.db, "has_resuscitation_since"):
+                            if self.db.has_resuscitation_since(cid, self.ls_restart_time) or (
+                                target_cid != cid and self.db.has_resuscitation_since(target_cid, self.ls_restart_time)
+                            ):
+                                return False, "already_resuscitated_for_current_server_restart"
+                        elif res_epoch >= (self.ls_restart_time - 5.0):
+                            return False, "already_resuscitated_for_current_server_restart"
+
+                    # 2c. Completed session gate:
+                    if check_session_claimed_completion(transcript_path, parsed_steps):
+                        return False, "session_already_completed"
 
                     effective_attempts = attempts
                     if is_prior_to_restart:
@@ -1617,8 +1713,7 @@ class AntigravityWatchdog:
                             )
                     if not sched_info:
                         # Check if session has already closed with goal complete
-                        has_goal_complete = any("<!-- goal_complete -->" in str(s.get("content") or "").lower() for s in parsed_steps)
-                        if has_goal_complete:
+                        if check_session_claimed_completion(transcript_path, parsed_steps):
                             continue
 
                         # Check 1: Is this session waiting on a child subagent that already completed?
@@ -1664,12 +1759,12 @@ class AntigravityWatchdog:
 
                         has_stop_hook = any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps)
 
-                        is_boost_or_summary = check_session_has_boost_or_goal(transcript_path, parsed_steps) or (convo_id in summaries_map)
+                        is_boost_goal = check_session_has_boost_or_goal(transcript_path, parsed_steps)
                         if completed_child_id and (now - file_mtime > self.config.stall_grace_seconds):
                             pass
                         elif has_stop_hook:
                             pass
-                        elif is_prior_to_restart and is_boost_or_summary:
+                        elif is_prior_to_restart and is_boost_goal and not check_session_claimed_completion(transcript_path, parsed_steps):
                             pass
                         else:
                             continue
@@ -1709,10 +1804,8 @@ class AntigravityWatchdog:
                     is_stalled = True
 
                 is_boost_goal = check_session_has_boost_or_goal(transcript_path, parsed_steps)
-                is_boost_or_summary = is_boost_goal or (convo_id in summaries_map)
                 has_stop_hook = any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps)
-                has_goal_complete = any("<!-- goal_complete -->" in str(s.get("content") or "").lower() for s in parsed_steps)
-                if has_goal_complete:
+                if check_session_claimed_completion(transcript_path, parsed_steps):
                     continue
                 is_stop_hook_halt = has_stop_hook and not last_step.get("tool_calls")
 
@@ -1726,16 +1819,29 @@ class AntigravityWatchdog:
 
                 # Check authoritative conversation_summaries state
                 sum_info = summaries_map.get(convo_id)
-                if not is_stalled and sum_info and (sum_info.get("status") == "CASCADE_RUN_STATUS_RUNNING" or sum_info.get("not_fully_idle")):
-                    if is_prior_to_restart or (now - file_mtime >= self.config.stall_grace_seconds):
-                        is_stalled = True
-                        if is_prior_to_restart:
-                            matched_error = "server_restart_unfinished_conversation"
-                        else:
-                            matched_error = "unfinished_conversation_in_summaries"
+                if (
+                    not is_stalled
+                    and sum_info
+                    and (sum_info.get("status") == "CASCADE_RUN_STATUS_RUNNING" or sum_info.get("not_fully_idle"))
+                    and not check_session_claimed_completion(transcript_path, parsed_steps)
+                ):
+                    is_cleanly_done = (
+                        last_source == "MODEL"
+                        and last_type == "PLANNER_RESPONSE"
+                        and last_status == "DONE"
+                        and not last_step.get("tool_calls")
+                        and not has_stop_hook
+                    )
+                    if not is_cleanly_done:
+                        if is_prior_to_restart or (now - file_mtime >= self.config.stall_grace_seconds):
+                            is_stalled = True
+                            if is_prior_to_restart:
+                                matched_error = "server_restart_unfinished_conversation"
+                            else:
+                                matched_error = "unfinished_conversation_in_summaries"
 
-                # Check if pre-restart boost / goal / summaries session passed through
-                if not is_stalled and is_prior_to_restart and is_boost_or_summary:
+                # Check if pre-restart boost / goal session passed through (and not already completed)
+                if not is_stalled and is_prior_to_restart and is_boost_goal and not check_session_claimed_completion(transcript_path, parsed_steps):
                     is_stalled = True
                     matched_error = "server_restart_unfinished_conversation"
 
@@ -1941,11 +2047,102 @@ class AntigravityWatchdog:
         and records final status.
         """
         convo_id = session_info.conversation_id
-        sidecar_slug = session_info.sidecar_slug
-        last_error = session_info.last_error
-
         is_delegated_boost = bool(session_info.is_subagent and session_info.parent_conversation_id)
         target_convo_id = session_info.parent_conversation_id if is_delegated_boost else convo_id
+        last_error = session_info.last_error
+
+        # 1. In-flight concurrency mutex: prevent duplicate parallel pull-up calls
+        if convo_id in self._in_flight_resuscitations or target_convo_id in self._in_flight_resuscitations:
+            logger.warning(
+                "Session %s (target %s) is already in-flight for resuscitation. Skipping duplicate concurrent call.",
+                convo_id, target_convo_id,
+            )
+            return {
+                "success": False,
+                "conversation_id": convo_id,
+                "target_conversation_id": target_convo_id,
+                "is_delegated_boost": is_delegated_boost,
+                "status": "in_flight_skip",
+                "error": "resuscitation_already_in_flight",
+            }
+
+        # 2. Completed session pre-flight check
+        if check_session_claimed_completion(session_info.transcript_path, None):
+            logger.info("Session %s has already claimed completion. Skipping resuscitation.", convo_id)
+            return {
+                "success": False,
+                "conversation_id": convo_id,
+                "target_conversation_id": target_convo_id,
+                "is_delegated_boost": is_delegated_boost,
+                "status": "session_already_completed",
+                "error": "task_claimed_completion",
+            }
+
+        # 3. Once-Per-Restart Pre-flight Defense-In-Depth
+        is_restart_case = session_info.is_server_restart or "server_restart" in str(last_error).lower()
+        if is_restart_case and self.ls_restart_time > 0:
+            if self.db and hasattr(self.db, "has_resuscitation_since"):
+                if self.db.has_resuscitation_since(convo_id, self.ls_restart_time) or (
+                    target_convo_id != convo_id and self.db.has_resuscitation_since(target_convo_id, self.ls_restart_time)
+                ):
+                    logger.info(
+                        "Session %s (target %s) already resuscitated for current server restart (ls_restart_time=%s). Skipping duplicate resuscitation.",
+                        convo_id, target_convo_id, self.ls_restart_time,
+                    )
+                    return {
+                        "success": False,
+                        "conversation_id": convo_id,
+                        "target_conversation_id": target_convo_id,
+                        "is_delegated_boost": is_delegated_boost,
+                        "status": "already_resuscitated_for_restart",
+                        "error": "already_resuscitated_for_current_server_restart",
+                    }
+
+        # 4. Debounce step cooldown (< stall_grace_seconds)
+        now_ts = time.time()
+        recent_ts = max(
+            self._recently_resuscitated.get(convo_id, 0.0),
+            self._recently_resuscitated.get(target_convo_id, 0.0),
+        )
+        if (now_ts - recent_ts) < self.config.stall_grace_seconds:
+            logger.info(
+                "Session %s (target %s) was resuscitated %ds ago (< %ds). Skipping debounce.",
+                convo_id, target_convo_id, int(now_ts - recent_ts), int(self.config.stall_grace_seconds),
+            )
+            return {
+                "success": False,
+                "conversation_id": convo_id,
+                "target_conversation_id": target_convo_id,
+                "is_delegated_boost": is_delegated_boost,
+                "status": "debounced",
+                "error": "recent_resuscitation_cooldown",
+            }
+
+        self._in_flight_resuscitations.add(convo_id)
+        self._in_flight_resuscitations.add(target_convo_id)
+        try:
+            return await self._execute_resuscitation(
+                session_info=session_info,
+                target_convo_id=target_convo_id,
+                is_delegated_boost=is_delegated_boost,
+                custom_prompt=custom_prompt,
+            )
+        finally:
+            self._in_flight_resuscitations.discard(convo_id)
+            self._in_flight_resuscitations.discard(target_convo_id)
+            self._recently_resuscitated[convo_id] = time.time()
+            self._recently_resuscitated[target_convo_id] = time.time()
+
+    async def _execute_resuscitation(
+        self,
+        session_info: StalledSessionInfo,
+        target_convo_id: str,
+        is_delegated_boost: bool,
+        custom_prompt: Optional[str] = None,
+    ) -> dict[str, Any]:
+        convo_id = session_info.conversation_id
+        sidecar_slug = session_info.sidecar_slug
+        last_error = session_info.last_error
 
         # Determine tailored prompt based on scenario
         if session_info.completed_child_id:
@@ -2244,6 +2441,17 @@ class AntigravityWatchdog:
                     "Skipping session %s because parent %s was already contacted in this tick",
                     item.conversation_id,
                     item.parent_conversation_id,
+                )
+                continue
+
+            # Cross-sweep debounce: skip if resuscitated within stall_grace_seconds
+            now_sweep = time.time()
+            if (now_sweep - self._recently_resuscitated.get(item.conversation_id, 0.0) < self.config.stall_grace_seconds) or (
+                now_sweep - self._recently_resuscitated.get(target_id, 0.0) < self.config.stall_grace_seconds
+            ):
+                logger.debug(
+                    "Skipping session %s due to cross-sweep debounce (< %ds)",
+                    item.conversation_id, self.config.stall_grace_seconds,
                 )
                 continue
 

@@ -2586,6 +2586,209 @@ class TestAntigravityWatchdog:
         assert "【系统自动自愈拉起：/boost 服务重启延续】" in prompt
         assert "严禁降级 Solo 模式" in prompt
 
+    def test_sentinel_all_green_completion_not_resuscitated_on_server_restart(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that a Sentinel or health-check session that claimed completion
+        with '🟢 Antigravity Webhook Hub 哨兵巡检快照 (All Green)' is never flagged as stalled
+        or resuscitated on server restart.
+        """
+        convo_id = "test-sentinel-all-green-session"
+        now = time.time()
+        restart_time = now - 100.0
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Antigravity Webhook Hub Sentinel health check"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "### 🟢 Antigravity Webhook Hub 哨兵巡检快照 (All Green)\n13/13 Checks Passed."},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=300.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            conversations_dir=str(temp_dir),
+            stall_grace_seconds=90,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.ls_restart_time = restart_time
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 0, f"Expected 0 stalled sessions, got: {stalled}"
+
+    def test_post_restart_all_green_not_repeatedly_resuscitated(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that a session that previously recovered post-restart and posted
+        '🟢 服务自愈与哨兵巡检汇报 (Post-Restart All Green)' is recognized as completed
+        and not repeatedly resuscitated.
+        """
+        convo_id = "test-post-restart-all-green-session"
+        now = time.time()
+        restart_time = now - 500.0
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "/boost Sentinel"},
+            {"step_index": 1, "source": "USER", "type": "USER_INPUT", "status": "DONE", "content": "【系统自动自愈拉起：/boost 服务重启延续】"},
+            {"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "### 🟢 服务自愈与哨兵巡检汇报 (Post-Restart All Green)\n所有哨兵组件运行正常。"},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=50.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            conversations_dir=str(temp_dir),
+            stall_grace_seconds=45,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.ls_restart_time = restart_time
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 0
+
+    def test_once_per_restart_gate_blocks_duplicate_pullup_for_same_restart(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that a genuine unfinished session before restart is resuscitated ONCE,
+        and subsequent scans/calls for the same server restart are strictly blocked.
+        """
+        convo_id = "test-once-per-restart-session"
+        now = time.time()
+        restart_time = now - 100.0
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "/boost Run migration"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Waiting for worker..."},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=300.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            conversations_dir=str(temp_dir),
+            stall_grace_seconds=90,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog.ls_restart_time = restart_time
+
+        # 1. First scan should detect the session as eligible
+        stalled1 = watchdog.scan_stalled_conversations()
+        assert len(stalled1) == 1
+        assert stalled1[0].can_resuscitate is True
+
+        # 2. Resuscitate once
+        res1 = asyncio.run(watchdog.resuscitate_session(stalled1[0]))
+        assert res1["success"] is True
+
+        # 3. Second scan for the same server restart MUST mark can_resuscitate = False
+        stalled2 = watchdog.scan_stalled_conversations()
+        assert len(stalled2) == 1
+        assert stalled2[0].can_resuscitate is False
+        assert stalled2[0].skip_reason == "already_resuscitated_for_current_server_restart"
+
+        # 4. Direct call to resuscitate_session must also be rejected by defense-in-depth preflight
+        res2 = asyncio.run(watchdog.resuscitate_session(stalled2[0]))
+        assert res2["success"] is False
+        assert res2["error"] == "already_resuscitated_for_current_server_restart"
+
+    def test_in_flight_mutex_blocks_concurrent_resuscitation(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that concurrent calls to resuscitate_session for the same session
+        are blocked by the in-flight mutex.
+        """
+        convo_id = "test-in-flight-mutex-session"
+        now = time.time()
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Do task"},
+            {"step_index": 1, "source": "MODEL", "type": "ERROR", "status": "ERROR", "content": "network error"},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=200.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            conversations_dir=str(temp_dir),
+            stall_grace_seconds=90,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        # Artificially acquire in-flight lock
+        watchdog._in_flight_resuscitations.add(convo_id)
+
+        info = StalledSessionInfo(
+            conversation_id=convo_id,
+            transcript_path=temp_dir / convo_id / "transcript.jsonl",
+            last_step_index=1,
+            last_error="network_error",
+            last_error_time=now - 200.0,
+            is_subagent=False,
+            can_resuscitate=True,
+        )
+
+        res = asyncio.run(watchdog.resuscitate_session(info))
+        assert res["success"] is False
+        assert res["status"] == "in_flight_skip"
+        assert res["error"] == "resuscitation_already_in_flight"
+
+    def test_stale_conversation_summaries_ignored_when_transcript_is_cleanly_done(self, db, mock_agentapi, temp_dir):
+        """
+        Verify that stale entries in conversation_summaries.db (e.g. not_fully_idle=1 or CASCADE_RUN_STATUS_RUNNING)
+        do NOT falsely flag a cleanly completed MODEL PLANNER_RESPONSE DONE turn as stalled.
+        """
+        convo_id = "test-stale-summaries-clean-turn"
+        now = time.time()
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Analyze logs"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Analysis completed. Here are the findings."},
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=120.0)
+
+        # Create conversation_summaries.db with stale running entry
+        import sqlite3
+        db_path = temp_dir / "conversation_summaries.db"
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversation_summaries (
+                conversation_id TEXT PRIMARY KEY,
+                title TEXT,
+                status TEXT,
+                not_fully_idle INTEGER,
+                killed INTEGER,
+                parent_conversation_id TEXT,
+                last_modified_time TEXT,
+                step_count INTEGER
+            )
+            """
+        )
+        cur.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (convo_id, "Analyze logs", "CASCADE_RUN_STATUS_RUNNING", 1, 0, None, "2026-09-24 01:28:14", 2),
+        )
+        conn.commit()
+        conn.close()
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            conversations_dir=str(temp_dir),
+            summaries_db_path=str(db_path),
+            stall_grace_seconds=45,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert len(stalled) == 0, f"Expected 0 stalled, got: {stalled}"
+
+    def test_watchdog_prompts_do_not_contaminate_boost_detection(self, temp_dir):
+        """
+        Verify that a non-boost session which received a prior watchdog prompt
+        containing '【系统自动自愈拉起：/boost 服务重启延续】' is NOT falsely categorized as a boost session.
+        """
+        convo_id = "test-no-boost-contamination"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Regular non-boost question"},
+            {"step_index": 1, "source": "USER", "type": "USER_INPUT", "status": "DONE", "content": "【系统自动自愈拉起：/boost 服务重启延续】\n检测到服务重启..."},
+            {"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Regular answer"},
+        ]
+        tpath = _create_fake_session(temp_dir, convo_id, steps)
+        is_boost = check_session_has_boost_or_goal(tpath, steps)
+        assert is_boost is False, "Watchdog prompt contaminated session into boost detection!"
+
 
 
 
