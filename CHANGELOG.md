@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.16] - 2026-09-25
+
+### Fixed & Enhanced
+- **Connect RPC 轨迹冷加载与完工判定角色边界加固 (`hub/antigravity/agentapi_client.py`, `hub/antigravity/watchdog.py`)**:
+  - **Connect RPC LoadTrajectory 冷加载自愈 (`hub/antigravity/agentapi_client.py`)**: 针对语言服务重启后因内存清空导致 `SendUserCascadeMessage` 偶发抛出 `trajectory not found` 异常的问题，新增 `load_trajectory` 方法，通过 `/exa.language_server_pb.LanguageServerService/LoadTrajectory` 端点在发送前或错误时自动从磁盘热加载会话轨迹并重试，根治冷会话拉起失败。
+  - **完工检测来源角色严格校验 (`hub/antigravity/watchdog.py`)**: 在 `check_session_claimed_completion` 中严格限定仅当 `source == 'MODEL'` 时才识别 `<!-- goal_complete -->` 等完工标签，杜绝系统注入提示词或用户输入文本包含完工关键词时误判会话已完成。
+  - **完善中文完工汇报正则模式**: 补充“已全部安全执行完毕”、“全部核实闭环”等中文结项模式，提升哨兵健康巡检会话的智能识别率。
+
 ## [1.17.15] - 2026-09-24
 
 ### Fixed & Enhanced

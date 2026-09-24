@@ -469,16 +469,63 @@ class AgentAPIClient:
             logger.exception("Unexpected error in agentapi new_conversation: %s", e)
             return False, "", str(e)
 
+    async def load_trajectory(
+        self,
+        conversation_id: str,
+        timeout_seconds: float = 10.0,
+    ) -> tuple[bool, str, Optional[str]]:
+        """
+        Explicitly load a trajectory (conversation) from disk into Language Server memory
+        via Connect RPC LoadTrajectory. This prevents 'trajectory not found' errors after
+        language_server process restart.
+        """
+        addr, token = self.ensure_credentials(force=False)
+        if not addr or not token:
+            addr, token = self.ensure_credentials(force=True)
+        if not addr or not token:
+            return False, "", "Language server credentials unavailable"
+
+        url = f"http://{addr}/exa.language_server_pb.LanguageServerService/LoadTrajectory"
+        payload = json.dumps({"cascade_id": conversation_id}).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "X-Codeium-Csrf-Token": token,
+        }
+
+        async def _do_post() -> tuple[bool, str, Optional[str]]:
+            def _sync_request():
+                req = urllib.request.Request(url, data=payload, headers=headers)
+                with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+                    resp_bytes = resp.read()
+                    return resp.status, resp_bytes.decode("utf-8", errors="replace")
+
+            loop = asyncio.get_running_loop()
+            try:
+                status, resp_str = await loop.run_in_executor(None, _sync_request)
+                if status == 200:
+                    logger.debug("Successfully loaded trajectory %s into Language Server", conversation_id)
+                    return True, resp_str, None
+                return False, "", f"LoadTrajectory returned HTTP {status}: {resp_str}"
+            except urllib.error.HTTPError as he:
+                err_body = he.read().decode("utf-8", errors="replace")
+                return False, "", f"HTTP {he.code}: {err_body}"
+            except Exception as ex:
+                return False, "", str(ex)
+
+        return await _do_post()
+
     async def send_user_cascade_message(
         self,
         conversation_id: str,
         content: str,
         timeout_seconds: float = 30.0,
+        blocking: bool = False,
     ) -> tuple[bool, str, Optional[str]]:
         """
         Send a user cascade message directly to Language Server via Connect RPC.
         This triggers the Language Server execution loop / model inference cycle,
         unlike SendAgentMessage which merely deposits an unread message.
+        Automatically attempts LoadTrajectory if trajectory is not loaded in memory.
         Returns: (success, result_str, error_message)
         """
         addr, token = self.ensure_credentials(force=False)
@@ -491,6 +538,7 @@ class AgentAPIClient:
         payload = json.dumps({
             "cascade_id": conversation_id,
             "items": [{"text": content}],
+            "blocking": blocking,
         }).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -518,6 +566,12 @@ class AgentAPIClient:
                 return False, "", str(ex)
 
         success, out, err = await _do_post()
+        if not success and err and "trajectory not found" in err:
+            logger.info("Trajectory %s not found in memory. Attempting LoadTrajectory and retry...", conversation_id)
+            load_ok, _, load_err = await self.load_trajectory(conversation_id, timeout_seconds=10.0)
+            if load_ok:
+                success, out, err = await _do_post()
+
         return success, out, err
 
     async def send_message(
@@ -543,6 +597,7 @@ class AgentAPIClient:
                     conversation_id=conversation_id,
                     content=content,
                     timeout_seconds=min(30.0, float(timeout_seconds)),
+                    blocking=False,
                 )
                 if rpc_ok:
                     logger.info("Successfully sent user cascade message and triggered execution loop for %s", conversation_id)

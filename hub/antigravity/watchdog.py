@@ -84,7 +84,8 @@ COMPLETION_REPORT_PATTERNS = (
     r"【(?:最终完成汇报|哨兵巡检快照|巡检快照|目标完成|闭环汇报|自愈延续确认报告)】",
     r"(?:###|##|#|\*\*)\s*(?:[🟢✅🛡️🚀🎯🏁✨🎉])\s*(?:[^\n]*)(?:all green|哨兵|巡检|快照|汇报|完成|通过|闭环|已闭环|pass)",
     r"(?:[🟢✅🛡️🚀🎯🏁✨🎉])\s*(?:[^\n]{0,80})(?:all green|哨兵|巡检|快照|汇报|完成|通过|闭环|已闭环|正常|pass)",
-    r"(?:任务|目标|工作|sentinel|哨兵|巡检|健康|自愈).{0,30}(?:已完成|圆满完成|已闭环|顺利完成|执行完毕|完成汇报|100%\s*闭环|闭环完成|已达成|all\s+green|全部正常|全绿|全部通过|固化报告|确认报告)",
+    r"(?:任务|目标|工作|指令|要求|需求|sentinel|哨兵|巡检|健康|自愈|全部动作|所有指令).{0,30}(?:已完成|圆满完成|已闭环|顺利完成|执行完毕|安全执行完毕|全部安全执行完毕|完成汇报|100%\s*闭环|闭环完成|核实闭环|全部核实闭环|已达成|all\s+green|全部正常|全绿|全部通过|固化报告|确认报告)",
+    r"(?:已全部安全执行完毕|全部安全执行完毕|已全部核实闭环|全部核实闭环)",
     r"\b(?:task|goal|work)\s+(?:has\s+been\s+|is\s+)?(?:completed|complete|finished|closed)\b",
     r"\b(?:task\s+complete|task\s+completed|successfully\s+completed|completed\s+successfully)\b",
     r"(?:13/13|\d+/\d+)\s*(?:pass|passed|通过|正常)",
@@ -281,9 +282,13 @@ def check_session_claimed_completion(
         s_src = s.get("source", "")
         if s_src in ("USER_EXPLICIT", "USER"):
             last_user_idx = idx
-        cnt_lower = str(s.get("content") or "").lower()
-        if "<!-- goal_complete -->" in cnt_lower or "<!-- goal_finished -->" in cnt_lower or "[goal_complete]" in cnt_lower:
-            last_complete_idx = idx
+        # CRITICAL PROTECTION: Only MODEL steps can claim completion!
+        # SYSTEM messages (e.g. system prompts instructing agent to use <!-- GOAL_COMPLETE -->)
+        # and USER prompts MUST NEVER be treated as agent completion!
+        if s_src == "MODEL":
+            cnt_lower = str(s.get("content") or "").lower()
+            if "<!-- goal_complete -->" in cnt_lower or "<!-- goal_finished -->" in cnt_lower or "[goal_complete]" in cnt_lower:
+                last_complete_idx = idx
 
     if last_complete_idx != -1 and last_complete_idx > last_user_idx:
         return True
