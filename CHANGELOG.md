@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.18] - 2026-09-25
+
+### Fixed & Enhanced
+- **彻底根治已完工任务在重启后重复拉起重跑与转录本提示词自锁污染缺陷 (`hub/antigravity/watchdog.py`, `tests/unit/test_antigravity_watchdog.py`)**:
+  - **核心修复 1 (切断转录本提示词自锁污染，重构真实人类输入探针 `is_genuine_user_turn`)**:
+    - **痛点根治**：彻底解决此前 Connect RPC 注入的系统自愈提示词（如 `【系统自动自愈拉起：/boost 服务重启延续】`）作为 `source: USER_EXPLICIT` 写入转录本后，`check_session_claimed_completion` 简单将任何 USER 步骤误当作真实人类新用户提问，导致先前模型输出的完工汇报（如 GlintMuse 会话 step 123）被新一轮“伪用户输入”完全抹除覆盖，诱发持续误判未完工并陷入无限重启拉起重跑的严重缺陷。
+    - **底层重构**：新增 `is_genuine_user_turn` 探针，严格将 Watchdog 自身注入的各类系统自愈提示词与系统消息排除在外；`check_session_claimed_completion` 仅跟踪最近一次真人用户的实际提问，一旦真人提问后产出过合规完工汇报，完工标记永不被自愈提示词污染抹除。
+  - **核心修复 2 (完工识别模式多维扩充与全工作区 Cadence 标识权威校验)**:
+    - **完工识别正则全面覆盖**：在 `COMPLETION_REPORT_PATTERNS` 中扩充图表汇报类 Emoji（`📊📋📈📌🔍📝`）、`专项审计完成汇报`、`全链路闭环执行完成`、`一致性对齐`、Git 提交记录哈希、周度巡检标志（`2026-W39.success`）等标准工程结项模式。
+    - **跨工作区 Cadence 闭环凭据核验 (`check_cadence_completed_for_card`)**：全链路打通转录本内 `file:///` 引用、2nd Brain 根目录、Cowork 多工作区及项目本地 `.run/cadence/<card_id>`，直接校验 `state.json` 的 `last_success_at`（24h 内）与 `*.success` 成功标识。
+  - **核心修复 3 (精准隔离一次性定时任务完工与周期调度任务恢复)**:
+    - 细化 `COMPLETION_REPORT_PATTERNS` 边界，避免将 periodic cron 调度中临时单次 "Sync complete" 误判为会话总目标达成，确保周期调度任务在重启后能按期唤醒与重新挂载。
+  - **自动化测试保障**:
+    - 全量单测套件 `tests/unit/test_antigravity_watchdog.py` 增补至 80 项单元测试，全库 494 项测试全部通过（493 passed, 1 skipped），包含针对 GlintMuse 专项审计完工与转录本注入污染免疫的实机对抗用例。
+
 ## [1.17.17] - 2026-09-25
 
 ### Fixed & Enhanced

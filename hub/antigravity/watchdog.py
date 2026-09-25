@@ -14,6 +14,7 @@ Key Capabilities:
 from __future__ import annotations
 
 import asyncio
+import glob
 import json
 import logging
 import os
@@ -22,6 +23,7 @@ import socket
 import sqlite3
 import subprocess
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,21 +84,26 @@ COMPLETION_REPORT_PATTERNS = (
     r"<!--\s*goal_finished\s*-->",
     r"\[(?:goal_complete|goal_finished)\]",
     r"【(?:最终完成汇报|哨兵巡检快照|巡检快照|目标完成|闭环汇报|自愈延续确认报告)】",
-    r"(?:###|##|#|\*\*)\s*(?:[🟢✅🛡️🚀🎯🏁✨🎉])\s*(?:[^\n]*)(?:all green|哨兵|巡检|快照|汇报|完成|通过|闭环|已闭环|pass)",
-    r"(?:[🟢✅🛡️🚀🎯🏁✨🎉])\s*(?:[^\n]{0,80})(?:all green|哨兵|巡检|快照|汇报|完成|通过|闭环|已闭环|正常|pass)",
-    r"(?:任务|目标|工作|指令|要求|需求|sentinel|哨兵|巡检|健康|自愈|全部动作|所有指令).{0,30}(?:已完成|圆满完成|已闭环|顺利完成|执行完毕|安全执行完毕|全部安全执行完毕|完成汇报|100%\s*闭环|闭环完成|核实闭环|全部核实闭环|已达成|all\s+green|全部正常|全绿|全部通过|固化报告|确认报告)",
-    r"(?:已全部安全执行完毕|全部安全执行完毕|已全部核实闭环|全部核实闭环)",
-    r"\b(?:task|goal|work)\s+(?:has\s+been\s+|is\s+)?(?:completed|complete|finished|closed)\b",
-    r"\b(?:task\s+complete|task\s+completed|successfully\s+completed|completed\s+successfully)\b",
+    r"(?:###|##|#|\*\*)\s*(?:[🟢✅🛡️🚀🎯🏁✨🎉📊📋📈📌🔍📝])\s*(?:[^\n]*)(?:all green|哨兵|巡检|快照|汇报|报告|简报|速报|预报|总结|完成|通过|闭环|已闭环|对齐|结项|复盘|pass)",
+    r"(?:[🟢✅🛡️🚀🎯🏁✨🎉📊📋📈📌🔍📝])\s*(?:[^\n]{0,80})(?:all green|哨兵|巡检|快照|汇报|报告|简报|速报|预报|总结|完成|通过|闭环|已闭环|正常|对齐|pass)",
+    r"(?:任务|目标|工作|指令|要求|需求|sentinel|哨兵|巡检|健康|自愈|全部动作|所有指令|审计|编年史|周报|月报|对齐|盘点|同步|核验|测试|构建|发版|部署).{0,30}(?:已完成|圆满完成|已闭环|顺利完成|执行完毕|安全执行完毕|全部安全执行完毕|完成汇报|100%\s*闭环|闭环完成|核实闭环|全部核实闭环|已达成|all\s+green|全部正常|全绿|全部通过|固化报告|确认报告|已全链路闭环|全链路闭环|全链路完成|已保持.*对齐|已对齐|已全量同步|已落盘|全部交付|已全部完成|闭环执行完成|全链路闭环执行完成|保持.*100%\s*一致性对齐|100%\s*一致性对齐|一致性对齐)",
+    r"(?:已全部安全执行完毕|全部安全执行完毕|已全部核实闭环|全部核实闭环|已全链路闭环执行完成|全链路闭环执行完成)",
+    r"\b(?:task|goal|work|audit|build|deploy)\s+(?:has\s+been\s+|is\s+)?(?:completed|complete|finished|closed|aligned)\b",
+    r"\b(?:task\s+complete|task\s+completed|successfully\s+completed|completed\s+successfully|all\s+done)\b",
     r"(?:13/13|\d+/\d+)\s*(?:pass|passed|通过|正常)",
     r"(?:all\s+\d+\s+checks\s+passed|all\s+checks\s+passed|全部检查通过)",
     r"(?:保持全绿常驻待命|系统保持.*待命|已进入待命)",
-    r"(?:今日|每日|本周|定期|周期).{0,15}(?:天气速报|天气预报|巡检速报|巡检简报|巡检报告)",
+    r"(?:今日|每日|本周|定期|周期).{0,15}(?:天气速报|天气预报|巡检速报|巡检简报|巡检报告|对齐报告|审计报告)",
     r"周期巡检执行与闭环凭据",
     r"系统已就绪[，,\s]*随时可接收新的指令",
     r"(?:全绿健康|全绿待命|无新增异常)",
     r"(?:今日成功标识|今日成功标|成功标识|成功标).*(?:\.success|\.done)",
-    r"(?:执行完毕|已圆满完成|圆满完成|已完成巡检)",
+    r"(?:state\.json\s*与\s*.*?\.(?:success|done)|\d{4}-W\d{1,2}\.success|\d{4}-\d{2}-\d{2}\.success)",
+    r"(?:Git\s*提交记录|git\s*commit|git\s*提交|commit\s*hash|git\s*hash).*?[0-9a-f]{7,40}",
+    r"(?:变更文件与版本控制|文件变更与版本控制|代码变更与版本控制)",
+    r"(?:核心审计指标与快照|审计指标与快照|核心指标与快照)",
+    r"(?:双端.*?保持.*?一致性对齐|本地与.*?云端.*?一致性对齐)",
+    r"(?:执行完毕|已圆满完成|圆满完成|已完成巡检|已完成审计)",
 )
 
 NETWORK_ERROR_RESUSCITATION_PROMPT = (
@@ -262,22 +269,120 @@ def check_session_has_boost_or_goal(transcript_path: Path, parsed_steps: list[di
     return False
 
 
+def is_watchdog_resuscitation_prompt(content: str) -> bool:
+    """Check if a prompt string was automatically injected by Watchdog or system resuscitation sidecar."""
+    c = str(content or "")
+    return any(
+        k in c
+        for k in (
+            "【系统自动",
+            "【系统后台",
+            "自愈拉起",
+            "服务重启延续",
+            "服务重启任务恢复",
+            "配额恢复拉起",
+            "目标自治与协同推进延续",
+            "工具响应自愈拉起",
+            "子代理完成通知",
+            "子代理异常提醒",
+        )
+    )
+
+
+def is_genuine_user_turn(step: dict[str, Any]) -> bool:
+    """Check if a transcript step represents a genuine interactive human user message."""
+    src = step.get("source", "")
+    if src not in ("USER_EXPLICIT", "USER"):
+        return False
+    cnt = str(step.get("content") or "")
+    if is_watchdog_resuscitation_prompt(cnt):
+        return False
+    if "<SYSTEM_MESSAGE>" in cnt and "not actually sent by the user" in cnt:
+        return False
+    return True
+
+
+def check_cadence_completed_for_card(card_id: str, text_corpus: str = "") -> bool:
+    """
+    Check if a Cadence card has successfully completed today (or within the last 24h).
+    Checks:
+    1. Direct file:/// links in transcript.
+    2. 2nd Brain .run/cadence/<card_id>.
+    3. Cowork roots .run/cadence/<card_id>.
+    4. Project-local .run/cadence/<card_id>.
+    Validates state.json last_success_at timestamp and *.success files.
+    """
+    today_str = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
+    now_ts = datetime.now(timezone.utc).astimezone().timestamp()
+
+    # 1. Direct path matches from transcript file:/// or absolute paths
+    for m in re.finditer(r'(?:file:///|/)([^\s"\'\)]+?/\.run/cadence/' + re.escape(card_id) + r'/[^\s"\'\)]+)', text_corpus):
+        raw_p = "/" + m.group(1).lstrip("/")
+        p = Path(urllib.parse.unquote(raw_p))
+        parent_dir = p.parent if p.is_file() or p.name.endswith(".success") or p.name.endswith(".json") else p
+        if parent_dir.exists():
+            st_file = parent_dir / "state.json"
+            if st_file.exists():
+                try:
+                    with open(st_file) as f:
+                        data = json.load(f)
+                        lsa = str(data.get("last_success_at") or "")
+                        if lsa.startswith(today_str) or (now_ts - st_file.stat().st_mtime < 86400):
+                            return True
+                except Exception:
+                    pass
+            for sf in parent_dir.glob("*.success"):
+                if sf.name.startswith(today_str) or (now_ts - sf.stat().st_mtime < 86400):
+                    return True
+
+    # 2. Known search roots
+    candidate_dirs = [
+        Path(os.path.expanduser("~/Documents/Cowork/Antigravity Cowork/26.06.06 2nd Brain/.run/cadence")) / card_id,
+        Path(os.path.expanduser("~/Documents/Cowork/Antigravity Cowork/.run/cadence")) / card_id,
+    ]
+    for pat in (
+        os.path.expanduser("~/Documents/Cowork/Antigravity Cowork/*/.run/cadence/") + card_id,
+        os.path.expanduser("~/Documents/A-coding/*/.run/cadence/") + card_id,
+    ):
+        for matched in glob.glob(pat):
+            candidate_dirs.append(Path(matched))
+
+    for cdir in candidate_dirs:
+        if not cdir.exists():
+            continue
+        st_file = cdir / "state.json"
+        if st_file.exists():
+            try:
+                with open(st_file) as f:
+                    data = json.load(f)
+                    lsa = str(data.get("last_success_at") or "")
+                    if lsa.startswith(today_str) or (now_ts - st_file.stat().st_mtime < 86400):
+                        return True
+            except Exception:
+                pass
+        for sf in cdir.glob("*.success"):
+            if sf.name.startswith(today_str) or (now_ts - sf.stat().st_mtime < 86400):
+                return True
+
+    return False
+
+
 def check_session_claimed_completion(
     transcript_path: Optional[Path] = None,
     parsed_steps: Optional[list[dict[str, Any]]] = None,
 ) -> bool:
     """
-    Check if a session has explicitly claimed completion.
+    Check if a session has claimed completion.
     A session is considered completed if:
-    1. Any step in the window contains explicit completion marker (<!-- goal_complete -->)
-       that was not followed by subsequent user prompts.
-    2. The last substantive MODEL turn contains completion signatures (e.g. All Green sentinel snapshot,
-       13/13 PASS, task completion report, 100% 闭环, etc.) without active tool calls.
+    1. A MODEL turn produced an explicit goal_complete marker, a matching completion pattern,
+       or verified an active cadence card run.
+    2. No genuine interactive human user input has arrived subsequent to that completion.
+       Watchdog resuscitation prompts and system messages are strictly excluded from breaking completion.
     """
     steps = parsed_steps if parsed_steps is not None else []
     if not steps and transcript_path and transcript_path.exists():
         steps = []
-        for line in tail_transcript_lines(transcript_path, max_lines=30):
+        for line in tail_transcript_lines(transcript_path, max_lines=40):
             line_s = line.strip()
             if line_s:
                 try:
@@ -288,66 +393,56 @@ def check_session_claimed_completion(
     if not steps:
         return False
 
-    # 1. First check if any step contains explicit goal_complete marker
+    # Find the index of the last genuine human user input
     last_user_idx = -1
-    last_complete_idx = -1
     for idx, s in enumerate(steps):
-        s_src = s.get("source", "")
-        if s_src in ("USER_EXPLICIT", "USER"):
+        if is_genuine_user_turn(s):
             last_user_idx = idx
-        # CRITICAL PROTECTION: Only MODEL steps can claim completion!
-        # SYSTEM messages (e.g. system prompts instructing agent to use <!-- GOAL_COMPLETE -->)
-        # and USER prompts MUST NEVER be treated as agent completion!
-        if s_src == "MODEL":
-            cnt_lower = str(s.get("content") or "").lower()
-            if "<!-- goal_complete -->" in cnt_lower or "<!-- goal_finished -->" in cnt_lower or "[goal_complete]" in cnt_lower:
-                last_complete_idx = idx
 
-    if last_complete_idx != -1 and last_complete_idx > last_user_idx:
-        return True
+    # Check all substantive MODEL steps that occurred AFTER the last genuine user input
+    last_complete_idx = -1
+    full_text_after_user = []
 
-    # 2. Check for unanswered user message at the end
-    # Walk backwards to find the last substantive turn (skipping checkpoints, ephemeral messages, system notifications)
-    last_model_step = None
-    has_subsequent_user = False
-    for s in reversed(steps):
+    for idx in range(last_user_idx + 1, len(steps)):
+        s = steps[idx]
         s_src = s.get("source", "")
         s_type = s.get("type", "")
-        if s_src in ("USER_EXPLICIT", "USER"):
-            has_subsequent_user = True
-            break
-        if s_src == "MODEL" and s_type == "PLANNER_RESPONSE":
-            last_model_step = s
-            break
+        s_status = s.get("status", "")
+        cnt = str(s.get("content") or "")
+        full_text_after_user.append(cnt)
 
-    if has_subsequent_user or not last_model_step:
-        return False
+        if s_src == "MODEL":
+            cnt_lower = cnt.lower()
+            # 1. Direct completion tags
+            if (
+                "<!-- goal_complete -->" in cnt_lower
+                or "<!-- goal_finished -->" in cnt_lower
+                or "[goal_complete]" in cnt_lower
+                or "[goal_finished]" in cnt_lower
+            ):
+                last_complete_idx = idx
+                continue
 
-    last_status = last_model_step.get("status", "")
-    last_content = str(last_model_step.get("content") or "")
-    has_tool_calls = bool(last_model_step.get("tool_calls"))
+            # 2. Substantive completion report patterns (PLANNER_RESPONSE without active tool calls)
+            if s_type == "PLANNER_RESPONSE" and s_status == "DONE" and not s.get("tool_calls"):
+                cnt_clean = cnt.strip()
+                for pat in COMPLETION_REPORT_PATTERNS:
+                    if re.search(pat, cnt_clean, re.IGNORECASE | re.DOTALL):
+                        last_complete_idx = idx
+                        break
 
-    if last_status == "DONE" and not has_tool_calls:
-        cnt_clean = last_content.strip()
-        for pat in COMPLETION_REPORT_PATTERNS:
-            if re.search(pat, cnt_clean, re.IGNORECASE | re.DOTALL):
+    if last_complete_idx != -1:
+        return True
+
+    # 3. Check for Cadence task completion marker matching today's success tag on disk
+    try:
+        combined_corpus = " ".join(full_text_after_user)
+        for m in re.finditer(r'(CAD-\d{8}-[a-zA-Z0-9_-]+)', combined_corpus):
+            card_id = m.group(1)
+            if check_cadence_completed_for_card(card_id, combined_corpus):
                 return True
-
-        # 3. Check for Cadence task completion marker matching today's success tag on disk
-        try:
-            today_str = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
-            content_combined = " ".join(str(s.get("content") or "") for s in steps[-10:])
-            for m in re.finditer(r'(CAD-\d{8}-[a-zA-Z0-9_-]+)', content_combined):
-                card_id = m.group(1)
-                for base in (
-                    Path("/Users/vecsatfoxmailcom/Documents/Cowork/Antigravity Cowork/26.06.06 2nd Brain/.run/cadence"),
-                    Path(os.path.expanduser("~/Documents/Cowork/Antigravity Cowork/26.06.06 2nd Brain/.run/cadence")),
-                ):
-                    succ_file = base / card_id / f"{today_str}.success"
-                    if succ_file.exists():
-                        return True
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     return False
 
@@ -2140,6 +2235,14 @@ class AntigravityWatchdog:
                     continue
                 is_stop_hook_halt = has_stop_hook and not last_step.get("tool_calls")
 
+                is_cleanly_done = (
+                    last_source == "MODEL"
+                    and last_type == "PLANNER_RESPONSE"
+                    and last_status == "DONE"
+                    and not last_step.get("tool_calls")
+                    and not has_stop_hook
+                )
+
                 # Check if aborted by server restart or hung in RUNNING state
                 if last_status == "RUNNING":
                     is_stalled = True
@@ -2156,13 +2259,6 @@ class AntigravityWatchdog:
                     and (sum_info.get("status") == "CASCADE_RUN_STATUS_RUNNING" or sum_info.get("not_fully_idle"))
                     and not check_session_claimed_completion(transcript_path, parsed_steps)
                 ):
-                    is_cleanly_done = (
-                        last_source == "MODEL"
-                        and last_type == "PLANNER_RESPONSE"
-                        and last_status == "DONE"
-                        and not last_step.get("tool_calls")
-                        and not has_stop_hook
-                    )
                     if not is_cleanly_done:
                         if is_prior_to_restart or (now - file_mtime >= self.config.stall_grace_seconds):
                             is_stalled = True
@@ -2176,19 +2272,14 @@ class AntigravityWatchdog:
                     is_stalled = True
                     matched_error = "server_restart_unfinished_conversation"
 
-                # Check if session ended on an unanswered user prompt
-                if not is_stalled and last_source in ("USER_EXPLICIT", "USER"):
-                    cnt_check = str(last_content or "")
-                    if "【系统自动" in cnt_check or "自愈拉起" in cnt_check or "【系统后台" in cnt_check:
-                        # Automated watchdog prompt is still pending / in flight, do not treat as genuine unanswered user prompt!
-                        pass
-                    else:
-                        if is_prior_to_restart:
-                            is_stalled = True
-                            matched_error = "server_restart_unanswered_user_prompt"
-                        elif (now - file_mtime >= self.config.stall_grace_seconds):
-                            is_stalled = True
-                            matched_error = "unanswered_user_prompt_hang"
+                # Check if session ended on an unanswered genuine user prompt
+                if not is_stalled and is_genuine_user_turn(last_step):
+                    if is_prior_to_restart:
+                        is_stalled = True
+                        matched_error = "server_restart_unanswered_user_prompt"
+                    elif (now - file_mtime >= self.config.stall_grace_seconds):
+                        is_stalled = True
+                        matched_error = "unanswered_user_prompt_hang"
 
                 # Widen MCP error detection across all loaded parsed steps (up to 15 steps)
                 for s in reversed(parsed_steps):

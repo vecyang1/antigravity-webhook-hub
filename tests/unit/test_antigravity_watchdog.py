@@ -3122,5 +3122,56 @@ class TestAntigravityWatchdog:
         stalled = watchdog.scan_stalled_conversations()
         assert not any(s.conversation_id == convo_id for s in stalled)
 
+    def test_glintmuse_audit_completion_and_watchdog_injection_pollution_immunity(self, db, temp_dir):
+        """
+        Verify that an audit session that reported completion with 📊 emoji,
+        cadence weekly success tag (2026-W39.success), and git commit hash
+        is recognized as completed even if subsequent watchdog resuscitation
+        prompts were injected as USER_EXPLICIT into the transcript.
+        """
+        from hub.antigravity.watchdog import (
+            check_session_claimed_completion,
+            is_genuine_user_turn,
+        )
+
+        convo_id = "test-glintmuse-audit-session"
+        audit_report = (
+            "# 📊 26.02.06 Assesories / GlintMuse Project History Audit 专项审计完成汇报\n\n"
+            "## 1. 核心审计结论与闭环状态\n"
+            "- 本地与云端已保持 100% 一致性对齐。\n"
+            "- Git 提交记录: `4b208be6`。\n"
+            "- 周期巡检执行与闭环凭据: `state.json 与 2026-W39.success` 已落盘。\n"
+            "- 文件变更与版本控制: 40 additions, 0 deletions。\n"
+        )
+        watchdog_prompt = (
+            "【系统自动自愈拉起：/boost 服务重启延续】\n"
+            "检测到 Antigravity 应用/服务此前已重启，未完成的 /boost、/goal 或多 Agent 协同任务已自动恢复连接。\n"
+            "⚠️ 关键执行纪律（严禁降级 Solo 模式）：\n"
+            "1. 本会话处于高阶自治与团队协同推进状态，严禁退化为单兵等待或打假卡，继续贯彻团队/委派协同推进。"
+        )
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "/boost GlintMuse Project History Audit"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": audit_report, "tool_calls": []},
+            # Subsequent turn injected by Watchdog before fix
+            {"step_index": 2, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": watchdog_prompt},
+        ]
+
+        # 1. Verify is_genuine_user_turn rejects watchdog prompt but accepts genuine user prompt
+        assert is_genuine_user_turn(steps[0]) is True
+        assert is_genuine_user_turn(steps[2]) is False
+
+        # 2. Verify check_session_claimed_completion returns True despite step 2 being USER_EXPLICIT
+        t_path = _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=800.0)
+        assert check_session_claimed_completion(t_path, steps) is True
+
+        # 3. Verify watchdog scanner does NOT stall or resuscitate this session upon restart
+        config = AntigravityWatchdogConfig(brain_dir=str(temp_dir))
+        watchdog = AntigravityWatchdog(db=db, config=config)
+        watchdog.ls_restart_time = time.time() - 400.0
+
+        stalled = watchdog.scan_stalled_conversations()
+        assert not any(s.conversation_id == convo_id for s in stalled)
+
 
 
