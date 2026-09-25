@@ -453,7 +453,7 @@ def check_has_pending_resuscitation_prompt(
     cooldown_seconds: float = 300.0,
 ) -> tuple[bool, Optional[str]]:
     """
-    Check if the conversation already contains a recent resuscitation prompt
+    Check if the conversation transcript already contains a recent resuscitation prompt
     that is still pending / queued or not yet answered by a substantive user or model turn.
     Prevents duplicate prompt bombarding in Queued Messages.
     """
@@ -484,9 +484,7 @@ def check_has_pending_resuscitation_prompt(
 
     # Check if there is any substantive USER message after the resuscitation prompt
     for s in parsed_steps[last_res_idx + 1:]:
-        s_src = s.get("source", "")
-        cnt = str(s.get("content") or "")
-        if s_src in ("USER_EXPLICIT", "USER") and "【系统自动" not in cnt and "自愈拉起" not in cnt:
+        if is_genuine_user_turn(s):
             # Genuine user intervened, prompt is not lingering
             return False, None
 
@@ -503,7 +501,7 @@ def check_has_pending_resuscitation_prompt(
             break
 
     if not has_subsequent_model_completion:
-        # Prompt is still queued or model is currently working through it
+        # Prompt is still queued in memory or model is currently working through it
         age = now - last_res_time if last_res_time > 0 else 0.0
         if last_res_time == 0.0 or age < cooldown_seconds:
             step_idx = parsed_steps[last_res_idx].get("step_index", "?")
@@ -1014,6 +1012,18 @@ def inspect_conversation_db_for_terminal_network_error(
         payload_str = payload_bytes.decode("utf-8", errors="ignore")
         p_lower = payload_str.lower()
 
+        # Transient internal retry detection:
+        # If this is merely an internal retry step (e.g. 'API error (attempt 1): request failed')
+        # and has not actually terminated agent execution, it is an active internal retry loop, NOT a fatal crash!
+        if (
+            "api error (attempt " in p_lower
+            and "agent execution terminated due to error" not in p_lower
+            and "agent terminated due to error" not in p_lower
+            and "agent executor error" not in p_lower
+            and "error unknown" not in p_lower
+        ):
+            return None
+
         has_terminal_issue = (
             "there was a network issue connecting to the server" in p_lower
             or "agent executor error: calling model: request failed" in p_lower
@@ -1034,7 +1044,6 @@ def inspect_conversation_db_for_terminal_network_error(
             or "broken pipe" in p_lower
             or "stream was interrupted" in p_lower
             or "the stream was interrupted" in p_lower
-            or "streamgeneratecontent?alt=sse" in p_lower
         )
 
         if has_terminal_issue:
@@ -1788,16 +1797,6 @@ class AntigravityWatchdog:
                     if check_session_claimed_completion(transcript_path, parsed_steps):
                         return False, "session_already_completed"
 
-                    # 2d. Pending Queued Resuscitation Prompt Guard:
-                    # If the transcript already contains an automated resuscitation prompt
-                    # that has not yet been answered by a genuine user or completed model turn,
-                    # DO NOT send another resuscitation prompt into the message queue!
-                    is_pending, p_reason = check_has_pending_resuscitation_prompt(
-                        parsed_steps, now, cooldown_seconds=float(getattr(self.config, "boost_quiet_seconds", 300.0))
-                    )
-                    if is_pending:
-                        return False, p_reason
-
                     effective_attempts = attempts
                     if is_prior_to_restart:
                         if self.ls_restart_time > 0 and res_epoch > 0.0 and res_epoch < self.ls_restart_time:
@@ -1832,13 +1831,21 @@ class AntigravityWatchdog:
                     if res_epoch > 0.0 and last_res and last_res.get("status") in ("resuscitated", "failed", "exhausted", "schedule_remounted"):
                         multiplier = 1.0 if effective_attempts <= 1 else (1.5 if effective_attempts == 2 else 2.5)
                         base_cd = float(getattr(self.config, "stall_grace_seconds", 30))
-                        is_b = check_session_has_boost_or_goal(transcript_path, parsed_steps)
-                        if is_b:
-                            step_cooldown = max(base_cd * multiplier, 300.0)
-                        else:
-                            step_cooldown = base_cd * multiplier
+                        step_cooldown = max(base_cd * multiplier, 300.0)
                         if now - res_epoch < step_cooldown:
                             return False, f"recent_resuscitation_cooldown ({int(now - res_epoch)}s ago < {int(step_cooldown)}s)"
+
+                    # 5. Pending Queued Resuscitation Prompt Guard:
+                    # If the transcript already contains an automated resuscitation prompt
+                    # that has not yet been answered by a genuine user or completed model turn,
+                    # DO NOT send another resuscitation prompt into the message queue!
+                    is_pending, p_reason = check_has_pending_resuscitation_prompt(
+                        parsed_steps,
+                        now,
+                        cooldown_seconds=float(getattr(self.config, "boost_quiet_seconds", 300.0)),
+                    )
+                    if is_pending:
+                        return False, p_reason
 
                     return True, None
 
@@ -2205,15 +2212,22 @@ class AntigravityWatchdog:
                         else:
                             continue
 
+                # Check authoritative conversation_summaries state
+                sum_info = summaries_map.get(convo_id)
+
                 # Invariant: Actively running sessions must NEVER be interrupted or injected by watchdog!
                 is_actively_running = False
                 running_quiet = float(getattr(self.config, "boost_quiet_seconds", 900))
-                if last_status == "RUNNING":
-                    # Only actively running if on current server process AND within running_quiet window
-                    if not is_prior_to_restart and (now - file_mtime < running_quiet):
+                if not is_prior_to_restart:
+                    if last_status == "RUNNING" and (now - file_mtime < running_quiet):
+                        # Only actively running if on current server process AND within running_quiet window
                         is_actively_running = True
-                elif last_source in ("USER_EXPLICIT", "USER") and (now - file_mtime < self.config.stall_grace_seconds):
-                    is_actively_running = True
+                    elif sum_info and (sum_info.get("status") == "CASCADE_RUN_STATUS_RUNNING" or sum_info.get("not_fully_idle")) and (now - file_mtime < self.config.stall_grace_seconds):
+                        is_actively_running = True
+                    elif last_source in ("USER_EXPLICIT", "USER") and (now - file_mtime < self.config.stall_grace_seconds):
+                        is_actively_running = True
+                    elif last_step.get("tool_calls") and (now - file_mtime < self.config.stall_grace_seconds):
+                        is_actively_running = True
 
                 if is_actively_running:
                     continue
@@ -2252,7 +2266,6 @@ class AntigravityWatchdog:
                         matched_error = "running_step_hung"
 
                 # Check authoritative conversation_summaries state
-                sum_info = summaries_map.get(convo_id)
                 if (
                     not is_stalled
                     and sum_info
@@ -2339,15 +2352,27 @@ class AntigravityWatchdog:
                         s_type = step.get("type", "")
                         s_status = step.get("status", "")
                         s_content = str(step.get("content") or "").lower()
+                        s_error = str(step.get("error") or "").lower()
+                        combined_err = f"{s_content} {s_error}".strip()
 
                         if s_source == "MODEL" and s_type == "PLANNER_RESPONSE" and s_status == "DONE" and (s_content or step.get("tool_calls")):
                             break
 
                         if s_source == "SYSTEM" or s_status == "ERROR" or s_type == "ERROR_MESSAGE":
-                            if "network issue" in s_content or "agent executor error" in s_content:
+                            # Transient internal retry detection:
+                            if (
+                                "api error (attempt " in combined_err
+                                and "agent execution terminated due to error" not in combined_err
+                                and "agent terminated due to error" not in combined_err
+                                and "agent executor error" not in combined_err
+                                and "error unknown" not in combined_err
+                            ):
+                                continue
+
+                            if "network issue" in combined_err or "agent executor error" in combined_err:
                                 is_network_issue = True
                             for pattern in INTERRUPTED_STREAM_PATTERNS:
-                                if pattern in s_content:
+                                if pattern in combined_err:
                                     is_stalled = True
                                     if "network" in pattern or "server" in pattern or "host" in pattern:
                                         is_network_issue = True
@@ -2362,14 +2387,14 @@ class AntigravityWatchdog:
                                 break
                             if s_status == "ERROR" or s_type == "ERROR_MESSAGE":
                                 is_stalled = True
-                                if "network" in s_content or "server" in s_content or "host" in s_content:
+                                if "network" in combined_err or "server" in combined_err or "host" in combined_err:
                                     is_network_issue = True
                                 if has_stop_hook:
                                     matched_error = "stop_hook_mcp_hang" if is_mcp else "stop_hook_hang"
                                 elif is_boost_goal:
                                     matched_error = "boost_goal_mcp_hang" if is_mcp else "boost_goal_hang"
                                 else:
-                                    matched_error = s_content[:150] or f"{s_source}_{s_status}"
+                                    matched_error = (s_error or s_content)[:150] or f"{s_source}_{s_status}"
                                 break
 
                 if not is_stalled:
@@ -2562,10 +2587,17 @@ class AntigravityWatchdog:
             self._recently_resuscitated.get(convo_id, 0.0),
             self._recently_resuscitated.get(target_convo_id, 0.0),
         )
-        if (now_ts - recent_ts) < self.config.stall_grace_seconds:
+        # 4. Debounce step cooldown (< stall_grace_seconds, min 300s)
+        now_ts = time.time()
+        recent_ts = max(
+            self._recently_resuscitated.get(convo_id, 0.0),
+            self._recently_resuscitated.get(target_convo_id, 0.0),
+        )
+        min_debounce = max(float(self.config.stall_grace_seconds), 300.0)
+        if (now_ts - recent_ts) < min_debounce:
             logger.info(
                 "Session %s (target %s) was resuscitated %ds ago (< %ds). Skipping debounce.",
-                convo_id, target_convo_id, int(now_ts - recent_ts), int(self.config.stall_grace_seconds),
+                convo_id, target_convo_id, int(now_ts - recent_ts), int(min_debounce),
             )
             return {
                 "success": False,
@@ -2908,14 +2940,15 @@ class AntigravityWatchdog:
                 )
                 continue
 
-            # Cross-sweep debounce: skip if resuscitated within stall_grace_seconds
+            # Cross-sweep debounce: skip if resuscitated within min_debounce (at least 300s)
             now_sweep = time.time()
-            if (now_sweep - self._recently_resuscitated.get(item.conversation_id, 0.0) < self.config.stall_grace_seconds) or (
-                now_sweep - self._recently_resuscitated.get(target_id, 0.0) < self.config.stall_grace_seconds
+            min_sweep_debounce = max(float(self.config.stall_grace_seconds), 300.0)
+            if (now_sweep - self._recently_resuscitated.get(item.conversation_id, 0.0) < min_sweep_debounce) or (
+                now_sweep - self._recently_resuscitated.get(target_id, 0.0) < min_sweep_debounce
             ):
                 logger.debug(
                     "Skipping session %s due to cross-sweep debounce (< %ds)",
-                    item.conversation_id, self.config.stall_grace_seconds,
+                    item.conversation_id, int(min_sweep_debounce),
                 )
                 continue
 

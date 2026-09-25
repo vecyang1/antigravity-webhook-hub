@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.20] - 2026-09-26
+
+### Fixed & Enhanced
+- **彻底根治模型执行中自愈提示词重复轰炸与消息队列（Queued Messages）堆积缺陷 (`hub/antigravity/watchdog.py`, `tests/unit/test_antigravity_watchdog.py`)**:
+  - **核心修复 1 (语言服务瞬时流重试豁免与终端错误探针精准化)**:
+    - **痛点根治**：Antigravity 官方语言服务在遇到流式连接抖动时自身具备 7 次重试机制（`API error (attempt 1..7): request failed... streamGenerateContent?alt=sse: EOF`），旧版本错误地将 `streamGenerateContent?alt=sse` 认定为致命中断，导致在重试发生仅 7 秒后就误判崩溃并向正常工作的会话注入自愈消息。
+    - **底层重构**：从终端网络错误签名中剔除常规流式重试 URL，并在数据库与转录本逆向扫描中增加瞬时重试识别门禁（`api error (attempt ...`），只要未伴随致命终止关键词（`agent execution terminated` / `agent executor error`），一律判定为正常内部恢复，严禁插足打断。
+  - **核心修复 2 (authoritative 运行态门禁加固与 Working 状态绝对保护)**:
+    - **痛点根治**：此前 `is_actively_running` 仅检查转录本末尾状态是否为 `RUNNING`。然而模型在执行工具或内部重试时，写入转录本的步骤状态往往是 `DONE`，而前台 Cascade 实际处于 `Working...` 状态，导致 Watchdog 误以为模型停摆并强行通过 Connect RPC 注入提示词，被 IDE 堆入输入框上方的 `Queued Messages` 队列，模型完工后排队消息连续发出造成上下窗口重复轰炸。
+    - **底层重构**：将 `conversation_summaries.db` 状态检查前置至运行态门禁；凡 `status == 'CASCADE_RUN_STATUS_RUNNING'` 或 `not_fully_idle == 1` 且修改时间在 `stall_grace_seconds` 窗口内的会话，直接权威判定为活跃运行（`is_actively_running`），Watchdog 彻底静默，杜绝一切在途消息排队污染。
+  - **核心修复 3 (拉起冷却步长与内存跨轮防抖全面提升至 300s+)**:
+    - 将单步自愈拉起冷却步长（`step_cooldown`）与内存防抖（`min_debounce` / `min_sweep_debounce`）下限由原先的 30s/45s 统一提升至最低 300s（5分钟），从根本上切断因偶发网络波动在数分钟内连续触发 3 次重复注入的死循环。
+  - **核心修复 4 (转录本在途拉起消息门禁优化与时序对齐)**:
+    - 严格规范 `check_has_pending_resuscitation_prompt` 判定逻辑，确保其精准捕获转录本内未被人类用户或模型完工轮次闭环的系统提示词（`pending_resuscitation_in_flight`），同时确保熔断器（`max_retries_exhausted`）与冷却步长优先于在途检查，防止状态误盖。
+  - **自动化回归测试保障**:
+    - 在 `tests/unit/test_antigravity_watchdog.py` 增补 3 项针对性实机回归测试用例：
+      1. `test_transient_api_error_retry_ignored_by_terminal_probe_and_transcript_scan`：校验 attempt 1 重试不被终端探针或扫描识别为致命错误；
+      2. `test_actively_running_session_in_summaries_blocks_watchdog_resuscitation`：校验 summaries 处于 running 状态时绝对禁止注入；
+      3. `test_pending_resuscitation_prompt_blocks_duplicate_injection`：校验转录本在途提示词拦截与防重复排队。
+    - Watchdog 单元测试全量增至 83 项并通过（83 passed）。
+
 ## [1.17.19] - 2026-09-25
 
 ### Fixed & Enhanced

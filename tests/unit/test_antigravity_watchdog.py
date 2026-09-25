@@ -3173,5 +3173,139 @@ class TestAntigravityWatchdog:
         stalled = watchdog.scan_stalled_conversations()
         assert not any(s.conversation_id == convo_id for s in stalled)
 
+    def test_transient_api_error_retry_ignored_by_terminal_probe_and_transcript_scan(self, db, mock_agentapi, temp_dir):
+        """
+        Regression test: Antigravity language server transient internal retries
+        ('API error (attempt 1): request failed... streamGenerateContent?alt=sse: EOF')
+        must NOT be identified as fatal terminal network errors in conversation DB
+        or in the transcript backward scan, and must NOT trigger premature resuscitation.
+        """
+        import sqlite3
+        convo_id = "test-transient-retry-session"
+        conv_dir = temp_dir / "conversations"
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        db_path = conv_dir / f"{convo_id}.db"
+
+        # 1. Simulate language server steps DB recording attempt 1 retry
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)")
+        payload = b'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": EOF'
+        conn.execute("INSERT INTO steps VALUES (80, 17, ?)", (payload,))
+        conn.commit()
+        conn.close()
+
+        # inspect_conversation_db_for_terminal_network_error must return None
+        err = inspect_conversation_db_for_terminal_network_error(convo_id, conversations_dir=conv_dir)
+        assert err is None
+
+        # 2. Simulate transcript.jsonl containing attempt 1 retry step
+        steps = [
+            {"step_index": 79, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": "Completed command"},
+            {
+                "step_index": 80,
+                "source": "SYSTEM",
+                "type": "ERROR_MESSAGE",
+                "status": "DONE",
+                "error": 'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": EOF',
+            },
+        ]
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=5.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            stall_grace_seconds=30,
+            conversations_dir=str(conv_dir),
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+
+        # Must not report as stalled or pull up
+        stalled = watchdog.scan_stalled_conversations()
+        assert not any(s.conversation_id == convo_id for s in stalled)
+
+    def test_actively_running_session_in_summaries_blocks_watchdog_resuscitation(self, db, mock_agentapi, temp_dir):
+        """
+        Regression test: When conversation_summaries.db indicates a session is actively working
+        (status == CASCADE_RUN_STATUS_RUNNING or not_fully_idle = 1) and file mtime is recent,
+        watchdog must treat it as is_actively_running and NEVER inject resuscitation messages.
+        """
+        import sqlite3
+        convo_id = "test-actively-running-guitar-session"
+        summaries_db = temp_dir / "conversation_summaries.db"
+
+        # Initialize mock conversation_summaries.db
+        conn = sqlite3.connect(str(summaries_db))
+        conn.execute(
+            """
+            CREATE TABLE conversation_summaries (
+                conversation_id TEXT PRIMARY KEY,
+                title TEXT,
+                status TEXT,
+                not_fully_idle INTEGER,
+                killed INTEGER,
+                parent_conversation_id TEXT,
+                last_modified_time TEXT,
+                step_count INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO conversation_summaries
+            VALUES (?, 'Active Task', 'CASCADE_RUN_STATUS_RUNNING', 1, 0, NULL, datetime('now'), 85)
+            """,
+            (convo_id,),
+        )
+        conn.commit()
+        conn.close()
+
+        # Transcript ended on a step whose status is DONE (e.g. intermediate tool execution)
+        steps = [
+            {"step_index": 84, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": "Running background task..."},
+        ]
+        # Modified 10 seconds ago (< stall_grace_seconds 30s)
+        _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=10.0)
+
+        config = AntigravityWatchdogConfig(
+            brain_dir=str(temp_dir),
+            stall_grace_seconds=30,
+        )
+        watchdog = AntigravityWatchdog(db=db, config=config, agentapi_client=mock_agentapi)
+        watchdog._summaries_db_path = summaries_db
+
+        stalled = watchdog.scan_stalled_conversations()
+        # Active session must be completely ignored by watchdog
+        assert not any(s.conversation_id == convo_id for s in stalled)
+
+    def test_pending_resuscitation_prompt_blocks_duplicate_injection(self, db, mock_agentapi, temp_dir):
+        """
+        Regression test: When an automated resuscitation prompt has been injected
+        into the transcript and has not yet been answered by a genuine user or completed model turn,
+        check_has_pending_resuscitation_prompt returns pending_resuscitation_in_flight
+        and prevents duplicate prompt bombarding in Queued Messages.
+        """
+        from datetime import datetime, timezone
+        from hub.antigravity.watchdog import check_has_pending_resuscitation_prompt
+
+        now = 1790350000.0
+        ts_str = datetime.fromtimestamp(now - 60.0, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Initial user task"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Working...", "tool_calls": [{"name": "some_tool"}]},
+            {
+                "step_index": 2,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": "【系统自动网络/服务故障自愈拉起提醒】\n现网络与接口通信已恢复正常。请继续推进。",
+                "created_at": ts_str,
+            },
+        ]
+        is_pending, reason = check_has_pending_resuscitation_prompt(steps, now, cooldown_seconds=900.0)
+        assert is_pending is True
+        assert "pending_resuscitation_in_flight" in reason
+        assert "prompt at step 2" in reason
+
+
 
 
