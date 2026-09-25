@@ -63,30 +63,40 @@ def check_spark_anker_reply(db_path: str = SPARK_DB_PATH) -> dict[str, Any]:
 
         conv_pk = orig_row[2]
 
-        # 2. Query for any reply in the conversation
+        # 2. Query for any reply in the conversation or matching subject
+        cur.execute(
+            """
+            SELECT pk, subject, messageFrom, receivedDate, shortBody, conversationPk
+            FROM messages
+            WHERE (conversationPk = ? OR subject LIKE '%充电器售后咨询%')
+              AND messageFrom LIKE '%anker%'
+            ORDER BY receivedDate DESC
+            """,
+            (conv_pk,),
+        )
+        reply_rows = cur.fetchall()
+
+        # 3. Check for bounce / delivery failures on replies
         cur.execute(
             """
             SELECT pk, subject, messageFrom, receivedDate, shortBody
             FROM messages
-            WHERE conversationPk = ? AND pk != ?
-            ORDER BY receivedDate DESC
-            """,
-            (conv_pk, TARGET_MESSAGE_PK),
+            WHERE subject LIKE '%Delivery Status Notification%'
+              AND shortBody LIKE '%zhang.jing@anker.io%'
+            ORDER BY receivedDate DESC LIMIT 1
+            """
         )
-        reply_rows = cur.fetchall()
+        bounce_row = cur.fetchone()
         conn.close()
 
         replies = []
         for r in reply_rows:
-            # receivedDate in Spark is Cocoa CoreData epoch (seconds since 2001-01-01) or Unix timestamp
             raw_date = r[3]
             date_str = str(raw_date)
             try:
-                # If timestamp is > 1.5e9, it's unix epoch
                 if raw_date > 1.5e9:
                     dt = datetime.datetime.fromtimestamp(raw_date, tz=datetime.timezone.utc)
                 else:
-                    # Cocoa epoch (2001-01-01)
                     dt = datetime.datetime(2001, 1, 1, tzinfo=datetime.timezone.utc) + datetime.timedelta(seconds=raw_date)
                 date_str = dt.astimezone(datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
             except Exception:
@@ -98,9 +108,12 @@ def check_spark_anker_reply(db_path: str = SPARK_DB_PATH) -> dict[str, Any]:
                 "from": r[2],
                 "date": date_str,
                 "short_body": (r[4] or "")[:300],
+                "conv_pk": r[5],
             })
 
         has_reply = len(replies) > 0
+        has_bounce = bounce_row is not None
+
         return {
             "status": "success",
             "conversation_pk": conv_pk,
@@ -109,6 +122,8 @@ def check_spark_anker_reply(db_path: str = SPARK_DB_PATH) -> dict[str, Any]:
             "replied": has_reply,
             "reply_count": len(replies),
             "replies": replies,
+            "bounced": has_bounce,
+            "bounce_details": (bounce_row[4][:200] if bounce_row else None),
             "inquiry_subject": orig_row[1],
             "inquiry_from": orig_row[3],
         }
@@ -118,6 +133,7 @@ def check_spark_anker_reply(db_path: str = SPARK_DB_PATH) -> dict[str, Any]:
             "message": f"SQLite inspection failed: {e}",
             "replied": False,
             "replies": [],
+            "bounced": False,
         }
 
 
@@ -138,7 +154,16 @@ def notify_slack(result: dict[str, Any], channel: str = DEFAULT_SLACK_CHANNEL) -
         print("[WARN] No SLACK_BOT_TOKEN found. Skipping Slack notification.", file=sys.stderr)
         return False
 
-    if result.get("replied"):
+    if result.get("bounced"):
+        text = (
+            f"🚨 *Anker 售后邮件退信拦截警告 (Delivery Status Failure)!*\n"
+            f"• *现象*: 您对安克客服回复的邮件被 Google Mailer Daemon 退信（`550 verify address failed, User not found`）。\n"
+            f"• *原因*: 您直接回复了客服内部发件人 `{result['replies'][0]['from'] if result.get('replies') else 'zhang.jing@anker.io'}`，该域名不接受外网直接入站！\n"
+            f"• *立即操作*: **请重新将回复内容发送至官方对外服务收件箱: `ced-cn@anker.com`**！\n"
+            f"• *设备*: `Anker 737 120W (SN: AFZWC61F13100681)`\n\n"
+            f"👉 已自动在 Notion 任务数据库 (`Tasks[UB3_250711]`) 登记高优先级重发待办。"
+        )
+    elif result.get("replied"):
         first_rep = result["replies"][0]
         text = (
             f"⚡ *Anker 售后保修提醒 — 已收到官方回复!*\n"
@@ -302,6 +327,8 @@ def main():
         print(f"• 主题: {result.get('inquiry_subject')}")
         print(f"• 是否已收到回复: {'✅ 是' if result.get('replied') else '⏳ 否 (尚未收到)'}")
         print(f"• 回复邮件数: {result.get('reply_count')}")
+        if result.get("bounced"):
+            print(f"• 🚨 退信告警: 检测到向 zhang.jing@anker.io 发送的回复被 550 退信！请转发至 ced-cn@anker.com！")
         for idx, rep in enumerate(result.get("replies", []), 1):
             print(f"\n  [回复 #{idx}]")
             print(f"  来自: {rep['from']}")

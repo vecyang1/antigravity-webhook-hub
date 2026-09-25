@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.19] - 2026-09-25
+
+### Fixed & Enhanced
+- **Anker 售后跨会话回复检测与 550 退信告警增强 (`scripts/check_anker_reminder.py`)**:
+  - **跨 ConversationPk 识别**：消除严格依赖原始邮件 `conversationPk` 导致的回复漏检问题，增加基于主题 `充电器售后咨询` 与 `messageFrom LIKE '%anker%'` 的多维度识别，成功捕获安克客服张晶（`zhang.jing@anker.io`）的正式回复（PK 725904）。
+  - **退信拦截预警 (Bounce Guard)**：新增对 `Delivery Status Notification (Failure)` 邮件的自动排查，精准识别因直接回复内部邮箱 `zhang.jing@anker.io` 导致的 `550 User not found` 退信事件（PK 726078），并在 Slack 与 CLI 终端输出警示，引导重发至官方收件箱 `ced-cn@anker.com`。
+
 ## [1.17.18] - 2026-09-25
 
 ### Fixed & Enhanced
