@@ -291,6 +291,53 @@ def test_cooldown_enforcement(fake_accounts_dir, db):
         assert len(candidates_forced) == 4  # All non-disabled buckets
 
 
+def test_evaluate_warmup_candidates_skips_proxy_disabled_accounts(db):
+    cfg = AppConfig()
+    sentinel = AntigravityQuotaSentinel(config=cfg, db=db)
+
+    active_profile = AccountQuotaProfile(
+        account_id="acc-active",
+        email="active@gmail.com",
+        is_active=True,
+        access_token="tok_active",
+        disabled=False,
+        proxy_disabled=False,
+        buckets=[
+            QuotaBucketInfo(
+                bucket_id="gemini-5h",
+                model_group="Gemini Models",
+                window_type="5h",
+                remaining_fraction=1.0,
+            )
+        ],
+    )
+    proxy_disabled_profile = AccountQuotaProfile(
+        account_id="acc-proxy-disabled",
+        email="proxy_disabled@gmail.com",
+        is_active=False,
+        access_token="tok_proxy_disabled",
+        disabled=False,
+        proxy_disabled=True,
+        buckets=[
+            QuotaBucketInfo(
+                bucket_id="gemini-5h",
+                model_group="Gemini Models",
+                window_type="5h",
+                remaining_fraction=1.0,
+            )
+        ],
+    )
+
+    candidates = sentinel.evaluate_warmup_candidates([active_profile, proxy_disabled_profile], force=False)
+    assert len(candidates) == 1
+    assert candidates[0]["account_email"] == "active@gmail.com"
+
+    # Even with force=True, proxy_disabled accounts must be skipped to avoid 401/403 loops
+    candidates_force = sentinel.evaluate_warmup_candidates([active_profile, proxy_disabled_profile], force=True)
+    assert len(candidates_force) == 1
+    assert candidates_force[0]["account_email"] == "active@gmail.com"
+
+
 def test_execute_warmup_success_8045(db):
     cfg = AppConfig()
     sentinel = AntigravityQuotaSentinel(config=cfg, db=db)

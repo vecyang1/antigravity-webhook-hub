@@ -508,8 +508,12 @@ class AntigravityQuotaSentinel:
         candidates: list[dict[str, Any]] = []
 
         for p in profiles:
-            # Skip accounts explicitly marked as disabled by user
-            if p.disabled:
+            # Skip accounts explicitly marked as disabled or proxy_disabled (e.g. captcha/403/stale)
+            if p.disabled or p.proxy_disabled:
+                logger.debug(
+                    "Skipping disabled/proxy_disabled account %s (disabled=%s, proxy_disabled=%s)",
+                    p.email, p.disabled, p.proxy_disabled,
+                )
                 continue
 
             # If fleet-wide warmup is disabled and no specific account was targeted, only evaluate active account

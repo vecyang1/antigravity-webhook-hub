@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.21] - 2026-09-26
+
+### Fixed & Enhanced
+- **5小时配额哨兵排除 proxy_disabled 账号与根治401/403死循环微Ping重试 (`hub/antigravity/quota_sentinel.py`, `tests/unit/test_antigravity_quota_sentinel.py`)**:
+  - **痛点根治**：此前 `evaluate_warmup_candidates` 仅检查 `if p.disabled:`，遗漏了 `p.proxy_disabled` 状态。导致因 Google 403 人机验证要求（`VALIDATION_REQUIRED`）或批量停用代理的账号（如 `ficklebohoyi19986@gmail.com` 等 6 个停用账号）仍被不断选入预热候选池，每 15 分钟触发一次微Ping并在日志中持续抛出 HTTP 401 报错（累计失败超千次）。
+  - **底层加固**：在 `evaluate_warmup_candidates` 候选账号筛选中强制要求 `if p.disabled or p.proxy_disabled:`，彻底杜绝已失效或停用账号的无谓网络重试与日志噪音；
+  - **自动化测试保障**：在 `tests/unit/test_antigravity_quota_sentinel.py` 新增 `test_evaluate_warmup_candidates_skips_proxy_disabled_accounts` 测试用例，严格验证常规与 `--force` 模式下 `proxy_disabled` 账号均被豁免。单元测试全量增至 28 项并通过（28 passed）。
+  - **边缘穿透隧道自愈**：排查并重启恢复 `com.vec.cloudflared-http2` HTTP/2 协议隧道，根除 1033 临时报错，公网边缘探活端点 `https://webhook.worldinspirelab.com/healthz` 恢复 200 OK 稳态。
+
 ## [1.17.20] - 2026-09-26
 
 ### Fixed & Enhanced
