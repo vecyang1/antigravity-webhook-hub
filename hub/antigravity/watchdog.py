@@ -1217,7 +1217,7 @@ def detect_parent_conversation_id(
     return None
 
 
-def extract_active_schedule_from_transcript(transcript_path: Path) -> Optional[dict[str, Any]]:
+def extract_active_schedule_from_transcript(transcript_path: Path, return_cancelled: bool = False) -> Optional[dict[str, Any]]:
     """Scan transcript for the last genuine active schedule tool call with CronExpression and last trigger time."""
     try:
         with open(transcript_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -1334,7 +1334,9 @@ def extract_active_schedule_from_transcript(transcript_path: Path) -> Optional[d
             sched_step = last_schedule.get("step_index", 0)
             candidate_task_ids = {f"task-{sched_step}", f"task-{sched_step + 1}", f"task-{sched_step + 2}"}
             if killed_task_ids.intersection(candidate_task_ids) or cancelled_schedule_seen:
-                return {"is_cancelled": True}
+                if return_cancelled:
+                    return {"is_cancelled": True}
+                return None
 
             cron_expr = last_schedule["cron"]
             return {
@@ -2139,10 +2141,12 @@ class AntigravityWatchdog:
                         continue
 
                     # Check if this session has an in-memory schedule dropped after restart
-                    sched_info = extract_active_schedule_from_transcript(transcript_path)
+                    sched_info = extract_active_schedule_from_transcript(transcript_path, return_cancelled=True)
                     if sched_info and sched_info.get("is_cancelled"):
-                        if convo_id in active_sched_map and self.db and hasattr(self.db, "complete_conversation_schedule"):
-                            self.db.complete_conversation_schedule(convo_id)
+                        if convo_id in active_sched_map:
+                            active_sched_map.pop(convo_id, None)
+                            if self.db and hasattr(self.db, "complete_conversation_schedule"):
+                                self.db.complete_conversation_schedule(convo_id)
                         sched_info = None
 
                     if not sched_info and convo_id in active_sched_map:

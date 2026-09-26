@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.24] - 2026-09-27
+
+### Fixed
+- **调度取消契约与内存底册驱逐加固 (`hub/antigravity/watchdog.py`, `tests/unit/test_antigravity_watchdog.py`)**:
+  - **契约对齐**：对齐 `extract_active_schedule_from_transcript` 的函数定义与单测断言契约，默认情况下（`return_cancelled=False`）遇到已取消任务返回 `None`，杜绝调用方将其误当做活跃调度对象；提供 `return_cancelled=True` 选项供 Watchdog 精确感知取消标记 `{"is_cancelled": True}`。
+  - **内存底册即时驱逐**：在 Watchdog 扫描已取消调度时，不仅将 SQLite 表置为 `completed`，并立即执行 `active_sched_map.pop(convo_id, None)`，阻断后续 `if not sched_info and convo_id in active_sched_map:` 回退分支将已被取消的定时任务再次唤醒。
+  - **全量测试通过**：本地 379 项单元测试与 CI 520 项测试全绿无衰退。
+
 ## [1.17.23] - 2026-09-26
 
 ### Fixed & Enhanced

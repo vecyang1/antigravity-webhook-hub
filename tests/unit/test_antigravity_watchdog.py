@@ -3399,6 +3399,8 @@ class TestAntigravityWatchdog:
         t_path = _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=50.0)
         sched = extract_active_schedule_from_transcript(t_path)
         assert sched is None
+        sched_with_cancelled = extract_active_schedule_from_transcript(t_path, return_cancelled=True)
+        assert sched_with_cancelled == {"is_cancelled": True}
 
     def test_boost_goal_detection_ignores_checkpoints_and_system_summaries(self, temp_dir):
         """
