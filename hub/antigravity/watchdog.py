@@ -138,10 +138,21 @@ MCP_ERROR_RESUSCITATION_PROMPT = (
     "请越过该 MCP 错误，跳过或规避报错的工具调用，选用本地 CLI、原生命令或直接完成代码，继续完成目标任务（请全中文汇报进展）。"
 )
 
-SCHEDULE_REMOUNT_PROMPT = (
+class _SchedulePromptTemplate(str):
+    def format(self, *args, **kwargs):
+        if "prompt" not in kwargs:
+            kwargs["prompt"] = "原后台定时任务"
+        if "cron" not in kwargs:
+            kwargs["cron"] = "*/30 * * * *"
+        return super().format(*args, **kwargs)
+
+
+SCHEDULE_REMOUNT_PROMPT = _SchedulePromptTemplate(
     "【系统后台调度守护提醒】\n"
-    "检测到 IDE 服务重启导致会话内的后台定时任务（原 Cron: {cron}）已中断未按期触发。\n"
-    "正在自动重新激活巡检流程，请立即执行一次巡检并调用 schedule 工具重新挂载该定时任务（请全中文汇报进展）。"
+    "检测到此前会话内挂载的后台独立守护定时任务（Cron: {cron}）因 IDE 服务重启已退出。\n"
+    "原任务指令内容为：\n"
+    "「{prompt}」\n"
+    "若该独立守护任务仍需继续执行，请调用 schedule 工具（附带原 Prompt 与 IsDaemon=true）重新挂载上述原定任务；若该任务目标已完成或已废弃，请忽略并保持静默（请全中文汇报进展）。"
 )
 
 EMPTY_RESPONSE_RESUSCITATION_PROMPT = (
@@ -223,50 +234,13 @@ class StalledSessionInfo:
     is_mcp_error: bool = False
     has_active_schedule: bool = False
     active_cron_expression: Optional[str] = None
+    active_schedule_prompt: Optional[str] = None
     is_boost_goal: bool = False
     is_stop_hook_hang: bool = False
     completed_child_id: Optional[str] = None
     completed_child_summary: Optional[str] = None
     is_network_issue: bool = False
     is_server_restart: bool = False
-
-
-def check_session_has_boost_or_goal(transcript_path: Path, parsed_steps: list[dict[str, Any]]) -> bool:
-    """
-    Determine whether a session is operating in /boost, /goal, /teamwork-preview,
-    or multi-agent delegation mode, even if it is a root conversation.
-    Filters out automated watchdog prompts to prevent self-contamination.
-    """
-    for s in parsed_steps:
-        cnt = str(s.get("content") or "")
-        # Filter out automated watchdog resuscitation prompts to avoid self-contamination
-        if "【系统自动" in cnt or "【系统后台" in cnt or "自愈拉起" in cnt or "服务重启延续" in cnt:
-            continue
-        cnt_lower = cnt.lower()
-        if any(k in cnt_lower for k in ("/boost", "/goal", "/teamwork-preview", "delegated agents")):
-            return True
-        if "stop hook blocked termination" in cnt_lower:
-            return True
-        for tc in s.get("tool_calls") or []:
-            tc_name = str(tc.get("name") or "").lower()
-            if tc_name in ("invoke_subagent", "define_subagent"):
-                return True
-
-    # Check first line (step 0 prompt) if loaded window didn't capture it
-    try:
-        with open(transcript_path, "r", encoding="utf-8", errors="ignore") as fp:
-            first_line = fp.readline()
-            if first_line:
-                first_data = json.loads(first_line)
-                first_content = str(first_data.get("content") or "")
-                if not ("【系统自动" in first_content or "【系统后台" in first_content or "自愈拉起" in first_content):
-                    first_content_lower = first_content.lower()
-                    if any(k in first_content_lower for k in ("/boost", "/goal", "/teamwork-preview", "delegated agents")):
-                        return True
-    except Exception:
-        pass
-
-    return False
 
 
 def is_watchdog_resuscitation_prompt(content: str) -> bool:
@@ -292,7 +266,8 @@ def is_watchdog_resuscitation_prompt(content: str) -> bool:
 def is_genuine_user_turn(step: dict[str, Any]) -> bool:
     """Check if a transcript step represents a genuine interactive human user message."""
     src = step.get("source", "")
-    if src not in ("USER_EXPLICIT", "USER"):
+    step_type = step.get("type", "")
+    if src not in ("USER_EXPLICIT", "USER") or step_type != "USER_INPUT":
         return False
     cnt = str(step.get("content") or "")
     if is_watchdog_resuscitation_prompt(cnt):
@@ -300,6 +275,44 @@ def is_genuine_user_turn(step: dict[str, Any]) -> bool:
     if "<SYSTEM_MESSAGE>" in cnt and "not actually sent by the user" in cnt:
         return False
     return True
+
+
+def check_session_has_boost_or_goal(transcript_path: Path, parsed_steps: list[dict[str, Any]]) -> bool:
+    """
+    Determine whether a session is operating in /boost, /goal, /teamwork-preview,
+    or multi-agent delegation mode, even if it is a root conversation.
+    Filters out automated watchdog prompts, system checkpoints, and assistant text to prevent self-contamination.
+    """
+    for s in parsed_steps:
+        if is_genuine_user_turn(s):
+            cnt = str(s.get("content") or "")
+            cnt_lower = cnt.lower()
+            if re.search(r'(?:^|\s)/(?:boost|goal|teamwork-preview)\b', cnt_lower) or "delegated agents" in cnt_lower:
+                return True
+            if "stop hook blocked termination" in cnt_lower:
+                return True
+
+        if s.get("source") == "MODEL":
+            for tc in s.get("tool_calls") or []:
+                tc_name = str(tc.get("name") or "").lower()
+                if tc_name in ("invoke_subagent", "define_subagent"):
+                    return True
+
+    # Check first line (step 0 prompt) if loaded window didn't capture it
+    try:
+        with open(transcript_path, "r", encoding="utf-8", errors="ignore") as fp:
+            first_line = fp.readline()
+            if first_line:
+                first_data = json.loads(first_line)
+                if is_genuine_user_turn(first_data):
+                    first_content = str(first_data.get("content") or "")
+                    first_content_lower = first_content.lower()
+                    if re.search(r'(?:^|\s)/(?:boost|goal|teamwork-preview)\b', first_content_lower) or "delegated agents" in first_content_lower:
+                        return True
+    except Exception:
+        pass
+
+    return False
 
 
 def check_cadence_completed_for_card(card_id: str, text_corpus: str = "") -> bool:
@@ -1068,7 +1081,7 @@ def inspect_conversation_db_for_terminal_network_error(
     return None
 
 
-def parse_cron_interval_seconds(cron_expr: str, default_interval: int = 1800) -> int:
+def parse_cron_interval_seconds(cron_expr: str, default_interval: int = 0) -> int:
     """
     Parse a standard 5-part cron expression into approximate recurrence interval in seconds.
     Supports standard intervals:
@@ -1081,11 +1094,14 @@ def parse_cron_interval_seconds(cron_expr: str, default_interval: int = 1800) ->
       - '0 */4 * * *' -> 14400s (every 4 hours)
       - '0 0 * * *' or '0 9 * * *' -> 86400s (daily)
       - '0,30 * * * *' -> 1800s (twice an hour)
+    Returns 0 if cron_expr is empty, null, or has fewer than 5 parts.
     """
     if not cron_expr:
-        return default_interval
+        return 0
 
-    clean = cron_expr.strip()
+    clean = str(cron_expr).strip(' "\'')
+    if not clean or clean.lower() in ("null", "none", "\"\"", "''"):
+        return 0
 
     parts = clean.split()
     if len(parts) >= 5:
@@ -1129,10 +1145,11 @@ def parse_cron_interval_seconds(cron_expr: str, default_interval: int = 1800) ->
         if minute_part.isdigit() and hour_part.isdigit() and dom == "*" and month == "*" and dow == "*":
             return 86400
 
-    # Fallback to regex search for */N if not standard 5-part
-    m = re.search(r'\*/(\d+)', clean)
-    if m:
-        return max(60, int(m.group(1)) * 60)
+        # Fallback to regex search for */N if 5-part
+        m = re.search(r'\*/(\d+)', clean)
+        if m:
+            return max(60, int(m.group(1)) * 60)
+        return default_interval
 
     return default_interval
 
@@ -1201,7 +1218,7 @@ def detect_parent_conversation_id(
 
 
 def extract_active_schedule_from_transcript(transcript_path: Path) -> Optional[dict[str, Any]]:
-    """Scan transcript for the last schedule tool call with CronExpression and last trigger time."""
+    """Scan transcript for the last genuine active schedule tool call with CronExpression and last trigger time."""
     try:
         with open(transcript_path, "r", encoding="utf-8", errors="ignore") as f:
             f.seek(0, os.SEEK_END)
@@ -1214,11 +1231,34 @@ def extract_active_schedule_from_transcript(transcript_path: Path) -> Optional[d
         last_schedule = None
         last_schedule_time = 0.0
         last_trigger_time = 0.0
+        killed_task_ids: set[str] = set()
+        cancelled_schedule_seen = False
 
         for line in reversed(lines):
             line_clean = line.strip()
             if not line_clean:
                 continue
+
+            # Track cancelled tasks via manage_task kill
+            if '"manage_task"' in line_clean or '"name":"manage_task"' in line_clean or '"name": "manage_task"' in line_clean:
+                try:
+                    obj = json.loads(line_clean)
+                    for call in (obj.get("tool_calls") or []):
+                        if call.get("name") == "manage_task":
+                            m_args = call.get("args") or {}
+                            act = str(m_args.get("Action") or "").strip(' "\'').lower()
+                            if act == "kill":
+                                tid = str(m_args.get("TaskId") or "").strip(' "\'')
+                                if tid:
+                                    killed_task_ids.add(tid)
+                                    if "/" in tid:
+                                        killed_task_ids.add(tid.split("/")[-1])
+                except Exception:
+                    pass
+
+            # Track explicit cancellation text or tool result
+            if any(k in line_clean for k in ("cancelled", "canceled", "已取消", "已中止")):
+                cancelled_schedule_seen = True
 
             if not last_schedule and ('"name":"schedule"' in line_clean or '"name": "schedule"' in line_clean):
                 try:
@@ -1227,25 +1267,57 @@ def extract_active_schedule_from_transcript(transcript_path: Path) -> Optional[d
                     for call in calls:
                         if call.get("name") == "schedule":
                             args = call.get("args") or {}
-                            cron = args.get("CronExpression")
-                            prompt = args.get("Prompt")
-                            if cron:
-                                last_schedule = {
-                                    "cron": str(cron).strip(' "'),
-                                    "prompt": str(prompt or "").strip(' "'),
-                                }
-                                ts_str = obj.get("created_at")
-                                if ts_str:
-                                    try:
-                                        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                                        last_schedule_time = dt.timestamp()
-                                    except Exception:
-                                        pass
-                                break
+
+                            # 1. One-shot timer check: DurationSeconds > 0 indicates timer, not recurring cron
+                            duration = args.get("DurationSeconds")
+                            if duration is not None:
+                                dur_str = str(duration).strip(' "\'')
+                                if dur_str.isdigit() and int(dur_str) > 0:
+                                    continue
+
+                            # 2. Cron validation: Must be non-empty and have at least 5 parts
+                            cron_raw = str(args.get("CronExpression") or "").strip(' "\'')
+                            if not cron_raw or cron_raw.lower() in ("null", "none", "\"\"", "''"):
+                                continue
+                            parts = cron_raw.split()
+                            if len(parts) < 5:
+                                continue
+
+                            # 3. Daemon check: Explicitly non-daemon tasks are task-scoped temporary crons
+                            is_daemon_raw = args.get("IsDaemon")
+                            if is_daemon_raw is not None and str(is_daemon_raw).strip(' "\'').lower() in ("false", "0", "no"):
+                                continue
+
+                            # 4. Prompt validation
+                            prompt_raw = str(args.get("Prompt") or "").strip(' "\'')
+                            if not prompt_raw or prompt_raw.lower() in ("null", "none", ""):
+                                continue
+
+                            interval = parse_cron_interval_seconds(cron_raw)
+                            if interval <= 0:
+                                continue
+
+                            ts_sec = 0.0
+                            ts_str = obj.get("created_at")
+                            if ts_str:
+                                try:
+                                    dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                                    ts_sec = dt.timestamp()
+                                except Exception:
+                                    pass
+
+                            last_schedule = {
+                                "cron": cron_raw,
+                                "prompt": prompt_raw,
+                                "interval_seconds": interval,
+                                "step_index": obj.get("step_index", 0),
+                            }
+                            last_schedule_time = ts_sec
+                            break
                 except Exception:
                     pass
 
-            if any(k in line_clean for k in ("Cron trigger #", "巡检汇报", "(iteration ", "/task-", "CRON_TRIGGER")) or (last_schedule and last_schedule.get("prompt") and last_schedule["prompt"][:25] in line_clean):
+            if any(k in line_clean for k in ("Cron trigger #", "巡检汇报", "(iteration ", "CRON_TRIGGER")) or (last_schedule and last_schedule.get("prompt") and last_schedule["prompt"][:25] in line_clean):
                 try:
                     obj = json.loads(line_clean)
                     ts_str = obj.get("created_at")
@@ -1258,12 +1330,17 @@ def extract_active_schedule_from_transcript(transcript_path: Path) -> Optional[d
                     pass
 
         if last_schedule:
+            # If the schedule task was subsequently killed or cancelled, treat as inactive
+            sched_step = last_schedule.get("step_index", 0)
+            candidate_task_ids = {f"task-{sched_step}", f"task-{sched_step + 1}", f"task-{sched_step + 2}"}
+            if killed_task_ids.intersection(candidate_task_ids) or cancelled_schedule_seen:
+                return {"is_cancelled": True}
+
             cron_expr = last_schedule["cron"]
-            interval = parse_cron_interval_seconds(cron_expr)
             return {
                 "cron": cron_expr,
                 "prompt": last_schedule["prompt"],
-                "interval_seconds": interval,
+                "interval_seconds": last_schedule["interval_seconds"],
                 "last_trigger_time": last_trigger_time,
                 "last_schedule_time": last_schedule_time,
             }
@@ -1545,7 +1622,13 @@ class AntigravityWatchdog:
         if self.db and hasattr(self.db, "list_active_conversation_schedules"):
             try:
                 for s in self.db.list_active_conversation_schedules():
-                    active_sched_map[s["conversation_id"]] = s
+                    s_cron = str(s.get("cron_expression") or "").strip(' "\'')
+                    # Auto-archive invalid schedules or schedules older than 7 days without triggers
+                    if not s_cron or len(s_cron.split()) < 5 or (now - s.get("last_trigger_at", 0.0) > 86400 * 7):
+                        if hasattr(self.db, "complete_conversation_schedule"):
+                            self.db.complete_conversation_schedule(s["conversation_id"])
+                    else:
+                        active_sched_map[s["conversation_id"]] = s
             except Exception as e:
                 logger.debug("Error loading active conversation schedules: %s", e)
 
@@ -2049,17 +2132,40 @@ class AntigravityWatchdog:
 
                 # --- 3. Normal Active / Completed State Checks ---
                 if last_source == "MODEL" and last_type == "PLANNER_RESPONSE" and last_status == "DONE" and last_content and not last_step.get("tool_calls"):
+                    # Check if session has already closed with goal complete
+                    if check_session_claimed_completion(transcript_path, parsed_steps):
+                        if convo_id in active_sched_map and self.db and hasattr(self.db, "complete_conversation_schedule"):
+                            self.db.complete_conversation_schedule(convo_id)
+                        continue
+
                     # Check if this session has an in-memory schedule dropped after restart
                     sched_info = extract_active_schedule_from_transcript(transcript_path)
+                    if sched_info and sched_info.get("is_cancelled"):
+                        if convo_id in active_sched_map and self.db and hasattr(self.db, "complete_conversation_schedule"):
+                            self.db.complete_conversation_schedule(convo_id)
+                        sched_info = None
+
                     if not sched_info and convo_id in active_sched_map:
                         db_s = active_sched_map[convo_id]
-                        sched_info = {
-                            "cron": db_s["cron_expression"],
-                            "prompt": db_s["prompt"],
-                            "interval_seconds": db_s["expected_interval_seconds"],
-                            "last_trigger_time": db_s["last_trigger_at"],
-                            "last_schedule_time": 0.0,
-                        }
+                        db_cron = str(db_s.get("cron_expression") or "").strip(' "\'')
+                        if db_cron and len(db_cron.split()) >= 5:
+                            sched_info = {
+                                "cron": db_cron,
+                                "prompt": db_s["prompt"],
+                                "interval_seconds": db_s["expected_interval_seconds"],
+                                "last_trigger_time": db_s["last_trigger_at"],
+                                "last_schedule_time": 0.0,
+                            }
+                        else:
+                            if self.db and hasattr(self.db, "complete_conversation_schedule"):
+                                self.db.complete_conversation_schedule(convo_id)
+
+                    if sched_info:
+                        cron_str = str(sched_info.get("cron") or "").strip(' "\'')
+                        if not cron_str or len(cron_str.split()) < 5 or sched_info.get("interval_seconds", 0) <= 0:
+                            if self.db and hasattr(self.db, "complete_conversation_schedule"):
+                                self.db.complete_conversation_schedule(convo_id)
+                            sched_info = None
 
                     if sched_info:
                         existing_s = active_sched_map.get(convo_id, {})
@@ -2138,79 +2244,77 @@ class AntigravityWatchdog:
                                     skip_reason=skip_reason,
                                     has_active_schedule=True,
                                     active_cron_expression=sched_info["cron"],
+                                    active_schedule_prompt=sched_info["prompt"],
                                 )
                             )
-                    if not sched_info:
-                        # Check if session has already closed with goal complete
-                        if check_session_claimed_completion(transcript_path, parsed_steps):
-                            continue
+                        continue
 
-                        # Check 1: Is this session waiting on a child subagent that already completed?
-                        child_ids: list[str] = []
-                        for s in parsed_steps:
-                            s_content = str(s.get("content") or "")
-                            for m in re.finditer(r'["\']conversationId["\']\s*:\s*["\']([0-9a-zA-Z-]{20,45})["\']', s_content):
-                                cid = m.group(1)
-                                if cid != convo_id and cid not in child_ids:
-                                    child_ids.append(cid)
-                            for m in re.finditer(r'subagent\s*\(?[`\'"]?([0-9a-zA-Z-]{20,45})[`\'"]?\)?', s_content, re.IGNORECASE):
-                                cid = m.group(1)
-                                if cid != convo_id and cid not in child_ids:
-                                    child_ids.append(cid)
+                    # Check 1: Is this session waiting on a child subagent that already completed?
+                    child_ids: list[str] = []
+                    for s in parsed_steps:
+                        s_content = str(s.get("content") or "")
+                        for m in re.finditer(r'["\']conversationId["\']\s*:\s*["\']([0-9a-zA-Z-]{20,45})["\']', s_content):
+                            cid = m.group(1)
+                            if cid != convo_id and cid not in child_ids:
+                                child_ids.append(cid)
+                        for m in re.finditer(r'subagent\s*\(?[`\'"]?([0-9a-zA-Z-]{20,45})[`\'"]?\)?', s_content, re.IGNORECASE):
+                            cid = m.group(1)
+                            if cid != convo_id and cid not in child_ids:
+                                child_ids.append(cid)
 
-                        already_notified_cids = set()
-                        for s in parsed_steps:
-                            s_content = str(s.get("content") or "")
-                            for cid in child_ids:
-                                if cid in s_content and (
-                                    "子代理完成通知" in s_content
-                                    or "已完成执行" in s_content
-                                    or f"sender={cid}" in s_content
-                                    or f"sender: {cid}" in s_content
-                                    or f"sender={cid}" in s_content.lower()
-                                ):
+                    already_notified_cids = set()
+                    for s in parsed_steps:
+                        s_content = str(s.get("content") or "")
+                        for cid in child_ids:
+                            if cid in s_content and (
+                                "子代理完成通知" in s_content
+                                or "已完成执行" in s_content
+                                or f"sender={cid}" in s_content
+                                or f"sender: {cid}" in s_content
+                                or f"sender={cid}" in s_content.lower()
+                            ):
+                                already_notified_cids.add(cid)
+
+                    if self.db and hasattr(self.db, "has_resuscitation_since"):
+                        for cid in child_ids:
+                            if cid not in already_notified_cids:
+                                if self.db.has_resuscitation_since(convo_id, 0.0, error_prefix=f"parent_waiting_subagent_completed_hang:{cid}"):
                                     already_notified_cids.add(cid)
 
-                        if self.db and hasattr(self.db, "has_resuscitation_since"):
-                            for cid in child_ids:
-                                if cid not in already_notified_cids:
-                                    if self.db.has_resuscitation_since(convo_id, 0.0, error_prefix=f"parent_waiting_subagent_completed_hang:{cid}"):
-                                        already_notified_cids.add(cid)
-
-                        for cid in child_ids:
-                            if cid in already_notified_cids:
-                                continue
-                            c_path = resolve_transcript_path(cid, self._brain_dir)
-                            if c_path and c_path.exists():
-                                c_lines = self._tail_transcript_lines(c_path, max_lines=10)
-                                for cl in reversed(c_lines):
-                                    try:
-                                        c_step = json.loads(cl.strip())
-                                        c_cnt = str(c_step.get("content") or "")
-                                        # Subagent completion MUST be genuine and explicit (goal_complete marker)
-                                        # NEVER treat an intermediate PLANNER_RESPONSE turn as completed!
-                                        if "<!-- goal_complete -->" in c_cnt.lower() or "<!-- goal_finished -->" in c_cnt.lower() or "[goal_complete]" in c_cnt.lower():
-                                            completed_child_id = cid
-                                            completed_child_summary = c_cnt[:500]
-                                            break
-                                    except Exception:
-                                        continue
-                                if completed_child_id:
-                                    break
-
-                        has_stop_hook = any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps)
-
-                        is_boost_goal = check_session_has_boost_or_goal(transcript_path, parsed_steps)
-                        if completed_child_id and (now - file_mtime > self.config.stall_grace_seconds):
-                            pass
-                        elif has_stop_hook:
-                            pass
-                        elif is_terminal_db_error:
-                            pass
-                        elif is_prior_to_restart and is_boost_goal and not check_session_claimed_completion(transcript_path, parsed_steps):
-                            pass
-                        else:
+                    for cid in child_ids:
+                        if cid in already_notified_cids:
                             continue
+                        c_path = resolve_transcript_path(cid, self._brain_dir)
+                        if c_path and c_path.exists():
+                            c_lines = self._tail_transcript_lines(c_path, max_lines=10)
+                            for cl in reversed(c_lines):
+                                try:
+                                    c_step = json.loads(cl.strip())
+                                    c_cnt = str(c_step.get("content") or "")
+                                    # Subagent completion MUST be genuine and explicit (goal_complete marker)
+                                    # NEVER treat an intermediate PLANNER_RESPONSE turn as completed!
+                                    if "<!-- goal_complete -->" in c_cnt.lower() or "<!-- goal_finished -->" in c_cnt.lower() or "[goal_complete]" in c_cnt.lower():
+                                        completed_child_id = cid
+                                        completed_child_summary = c_cnt[:500]
+                                        break
+                                except Exception:
+                                    continue
+                            if completed_child_id:
+                                break
+
+                    has_stop_hook = any("stop hook blocked termination" in str(s.get("content") or "").lower() for s in parsed_steps)
+
+                    is_boost_goal = check_session_has_boost_or_goal(transcript_path, parsed_steps)
+                    if completed_child_id and (now - file_mtime > self.config.stall_grace_seconds):
+                        pass
+                    elif has_stop_hook:
+                        pass
+                    elif is_terminal_db_error:
+                        pass
+                    elif is_prior_to_restart and is_boost_goal and not check_session_claimed_completion(transcript_path, parsed_steps):
+                        pass
+                    else:
+                        continue
 
                 # Check authoritative conversation_summaries state
                 sum_info = summaries_map.get(convo_id)
@@ -2674,8 +2778,16 @@ class AntigravityWatchdog:
         elif session_info.is_mcp_error or "mcp" in str(session_info.last_error).lower():
             prompt = custom_prompt or MCP_ERROR_RESUSCITATION_PROMPT
         elif session_info.has_active_schedule or "schedule" in str(session_info.last_error).lower():
-            cron_str = session_info.active_cron_expression or "*/30 * * * *"
-            prompt = custom_prompt or SCHEDULE_REMOUNT_PROMPT.format(cron=cron_str)
+            cron_str = str(session_info.active_cron_expression or "").strip(' "\'')
+            if cron_str and len(cron_str.split()) >= 5:
+                prompt_str = getattr(session_info, "active_schedule_prompt", None) or "原后台定时任务"
+                prompt = custom_prompt or SCHEDULE_REMOUNT_PROMPT.format(cron=cron_str, prompt=prompt_str)
+            else:
+                logger.warning("Session %s has invalid active_cron_expression '%s', suppressing schedule remount prompt", convo_id, cron_str)
+                if session_info.is_server_restart:
+                    prompt = custom_prompt or SERVER_RESTART_RESUSCITATION_PROMPT
+                else:
+                    prompt = custom_prompt or DEFAULT_RESUSCITATION_PROMPT
         elif session_info.last_error == "empty_planner_response_hang":
             prompt = custom_prompt or EMPTY_RESPONSE_RESUSCITATION_PROMPT
         elif "tool_result" in str(session_info.last_error).lower():

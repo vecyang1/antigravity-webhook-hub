@@ -169,6 +169,39 @@ class TestPromptBuilder(unittest.TestCase):
         self.assertIn(BOOST_DIRECTIVE, follow_up)
         self.assertIn(GOAL_DIRECTIVE, follow_up)
 
+    def test_build_antigravity_prompt_attachment_download_failure_alert(self):
+        payload = AntigravityTaskPayload(
+            text="分析此UI布局 /boost /goal",
+            files=[
+                {"name": "diagram.png", "mimetype": "image/png"},
+                {"name": "mockup.jpg", "mimetype": "image/jpeg"},
+            ],
+            channel="C0C1B86AMCN",
+            ts="1789200000.100",
+        )
+        # When downloaded_images is empty (download failure)
+        prompt = build_antigravity_prompt(payload, downloaded_images=[])
+        self.assertIn("[/boost](slashCommand;boost)", prompt)
+        self.assertIn("[/goal](slashCommand;goal)", prompt)
+        self.assertIn("[⚠️ 附件告警 / Attachment Download Failure]:", prompt)
+        self.assertIn("diagram.png", prompt)
+        self.assertIn("mockup.jpg", prompt)
+        self.assertIn("但在下载落盘时发生中断", prompt)
+
+    def test_build_follow_up_prompt_attachment_download_failure_alert(self):
+        payload = AntigravityTaskPayload(
+            text="请看这张新图",
+            files=[{"name": "new_screen.png", "mimetype": "image/png"}],
+            channel="C0C1B86AMCN",
+            thread_ts="1789200000.100",
+            ts="1789200500.200",
+            is_follow_up=True,
+        )
+        follow_up = build_follow_up_prompt(payload, downloaded_images=[])
+        self.assertIn("[用户追问 / User Follow-up]:", follow_up)
+        self.assertIn("[⚠️ 附件告警 / Attachment Download Failure]:", follow_up)
+        self.assertIn("new_screen.png", follow_up)
+
 
 class TestThreadNotifier(unittest.TestCase):
     """Test Slack milestone comment dispatcher."""
@@ -192,6 +225,14 @@ class TestThreadNotifier(unittest.TestCase):
         ok1 = notifier.notify_collected("C0C1B86AMCN", "1789200000.100", "tsk_test", title="测试任务", commands=["boost"], files_count=2)
         self.assertTrue(ok1)
 
+        # Test milestone 1: collected with merged commands (e.g. /boost and /goal)
+        with patch.object(notifier, "post_thread_message") as mock_post:
+            notifier.notify_collected("C0C1B86AMCN", "1789200000.100", "tsk_test_2", title="全流程加速", commands=["boost", "goal"], files_count=1)
+            mock_post.assert_called_once()
+            call_text = mock_post.call_args[0][2]
+            self.assertIn("• *识别指令*: `/boost`, `/goal`", call_text)
+            self.assertIn("• *素材附件*: `1` 个", call_text)
+
         # Test milestone 2: in progress
         ok2 = notifier.notify_in_progress("C0C1B86AMCN", "1789200000.100", "tsk_test", model_tier="pro", active_skills=["psychological-copywriter"])
         self.assertTrue(ok2)
@@ -203,6 +244,94 @@ class TestThreadNotifier(unittest.TestCase):
         # Test milestone 4: follow_up
         ok4 = notifier.notify_follow_up("C0C1B86AMCN", "1789200000.100", conversation_id="conv-1234-5678", snippet="补充说明", files_count=1)
         self.assertTrue(ok4)
+
+    def test_milestone_slash_commands_merge_logic(self):
+        """Verify that upstream n8n body_dict['slash_commands'] merges with text commands and deduplicates."""
+        from hub.antigravity.prompt_builder import extract_slash_commands
+
+        body_dict = {
+            "text": "分析此UI布局 /strategic-compact",
+            "slash_commands": ["boost", "/goal", "boost"],
+            "channel": "C0C1B86AMCN",
+            "ts": "1789200000.100",
+        }
+        _, text_cmds, _ = extract_slash_commands(body_dict.get("text") or "")
+        raw_incoming_cmds = body_dict.get("slash_commands") or []
+        if isinstance(raw_incoming_cmds, str):
+            raw_incoming_cmds = [c.strip() for c in raw_incoming_cmds.split(",") if c.strip()]
+        incoming_cmds = [str(c).lstrip("/") for c in raw_incoming_cmds if str(c).strip()]
+        cmds = list(dict.fromkeys(incoming_cmds + text_cmds))
+
+        self.assertEqual(cmds, ["boost", "goal", "strategic-compact"])
+
+    def test_milestone_slash_commands_merge_with_nested_data(self):
+        """Verify that nested body_dict['data']['slash_commands'] and files are extracted."""
+        from hub.antigravity.prompt_builder import extract_slash_commands
+
+        body_dict = {
+            "action": "antigravity.run",
+            "data": {
+                "text": "分析此UI布局 /boost",
+                "slash_commands": "goal, /scheduled-task-rescheduler",
+                "channel": "C0C1B86AMCN",
+                "ts": "1789200000.100",
+                "image_urls": ["https://files.slack.com/img1.png", "https://files.slack.com/img2.png"],
+            }
+        }
+        sub_dict = body_dict.get("data") if isinstance(body_dict.get("data"), dict) else {}
+        incoming_text = (
+            body_dict.get("text")
+            or sub_dict.get("text")
+            or ""
+        )
+        _, text_cmds, _ = extract_slash_commands(incoming_text)
+        raw_incoming_cmds = (
+            body_dict.get("slash_commands")
+            or sub_dict.get("slash_commands")
+            or []
+        )
+        if isinstance(raw_incoming_cmds, str):
+            raw_incoming_cmds = [c.strip() for c in raw_incoming_cmds.split(",") if c.strip()]
+        incoming_cmds = [str(c).strip().lstrip("/") for c in raw_incoming_cmds if str(c).strip().lstrip("/")]
+        cmds = list(dict.fromkeys(incoming_cmds + text_cmds))
+
+        raw_files = (
+            body_dict.get("files")
+            or sub_dict.get("files")
+            or body_dict.get("image_urls")
+            or sub_dict.get("image_urls")
+            or []
+        )
+        self.assertEqual(cmds, ["goal", "scheduled-task-rescheduler", "boost"])
+        self.assertEqual(len(raw_files), 2)
+
+    def test_build_follow_up_prompt_no_attachments_does_not_claim_new_attachments(self):
+        """Verify that follow-up prompt without attachments or text does not hallucinate attachment claims."""
+        payload = AntigravityTaskPayload(
+            text="/boost",
+            files=[],
+            channel="C0C1B86AMCN",
+            thread_ts="1789200000.100",
+            ts="1789200500.200",
+            is_follow_up=True,
+        )
+        follow_up = build_follow_up_prompt(payload, downloaded_images=[])
+        self.assertNotIn("用户补充了新的素材附件", follow_up)
+        self.assertIn("用户继续会话", follow_up)
+
+    def test_payload_from_dict_slash_commands_string_and_slashes_normalization(self):
+        """Verify AntigravityTaskPayload.from_dict normalizes strings and slashes in slash_commands."""
+        data1 = {"slash_commands": "boost, /goal, boost"}
+        p1 = AntigravityTaskPayload.from_dict(data1)
+        self.assertEqual(p1.slash_commands, ["boost", "goal"])
+
+        data2 = {"slash_commands": ["/boost", "goal", "/boost"]}
+        p2 = AntigravityTaskPayload.from_dict(data2)
+        self.assertEqual(p2.slash_commands, ["boost", "goal"])
+
+        data3 = {"data": {"slash_commands": "strategic-compact"}}
+        p3 = AntigravityTaskPayload.from_dict(data3)
+        self.assertEqual(p3.slash_commands, ["strategic-compact"])
 
 
 class TestSessionManagerAndDatabase(unittest.TestCase):

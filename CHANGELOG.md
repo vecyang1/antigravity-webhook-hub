@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.23] - 2026-09-26
+
+### Fixed & Enhanced
+- **彻底根治一次性计时器（One-shot Timer）误判为周期调度（Cron）及迭代自繁殖扩散缺陷 (`hub/antigravity/watchdog.py`, `hub/antigravity/agentapi_client.py`, `tests/unit/test_antigravity_watchdog.py`)**:
+  - **痛点根治**：此前智能体在调用 `schedule` 工具进行单次延迟等待时（例如 `DurationSeconds=1800, CronExpression=""`），旧代码仅判定 `if cron:`，由于参数包含空引号字符串 `\"\"` 判定为真，在剥离后为空串。旧 `parse_cron_interval_seconds("")` 内部默认回退为 1800 秒，导致 Watchdog 误将其当成周期为 1800 秒的持久 Cron 登记入库；在 IDE 服务重启或超时后，向会话错误注入带巡检诱导性措辞的自愈提醒（`【系统后台调度守护提醒】检测到原 Cron 中断...正在自动重新激活巡检流程，请立即执行一次巡检并调用 schedule 工具重新挂载...`），诱发普通消费会话中的模型盲目遵从并挂载定时巡检任务（如 `task-108`），随后每隔 30 分钟自发触发一次并在会话内不断跑 `df -h` 和 `top` 输出系统巡检报告，发生恶性“迭代扩散（Iterative Spread）”自繁殖。
+  - **一次性 Timer 排除与严格 5 段式 Cron 门禁**:
+    - 在 `extract_active_schedule_from_transcript` 中强制校验：凡 `DurationSeconds > 0` 直接判定为一次性计时器而非周期 Cron，直接跳过；
+    - 严格校验 `CronExpression`：必须为非空且通过 `split()` 分割后至少包含 5 段标准字段，空串、引号空串（`""` / `''`）、`null`、`none` 均直接过滤；
+    - `parse_cron_interval_seconds` 基础回退参数优化为 `default_interval=0`，空值或非法 Cron 表达式默认返回 0，杜绝意外赋予 1800 秒虚拟周期。
+  - **任务主动注销识别与 SQLite 调度底册自愈同步**:
+    - 在 `extract_active_schedule_from_transcript` 中逆向扫描 `manage_task(Action='kill')` 或 `Task ... cancelled.` 取消记录；若当前任务已被智能体或管理员取消，直接返回 `{"is_cancelled": True}`；
+    - 在 `scan_stalled_conversations` 中一旦捕获任务已取消，立即调用 `self.db.complete_conversation_schedule(convo_id)` 将 SQLite `conversation_schedules` 底册标记为 `completed`，彻底斩断数据库残留死循环。
+  - **跨会话 RPC 环境变量隔离 (`hub/antigravity/agentapi_client.py`)**:
+    - 在 `AgentAPIClient._get_env()` 增补清除 `ANTIGRAVITY_AGENT` 与 `ANTIGRAVITY_CONVERSATION_ID`，确保跨会话通过 Connect RPC 发送消息时，子进程不会携带调用方自身的会话上下文元数据，根除 `permission_denied` 权限越界报错。
+  - **CHECKPOINT 历史压缩摘要防误判 (`hub/antigravity/watchdog.py`)**:
+    - 加固 `check_session_has_boost_or_goal` 与 `is_genuine_user_turn`：严格限定仅对 `source in ("USER_EXPLICIT", "USER") and type == "USER_INPUT"` 且非 Watchdog 注入的真实交互回合进行正则匹配，杜绝 IDE 上下文压缩自动生成的 `CHECKPOINT` 包含历史 `/boost` / `/goal` 文本导致普通对话被误判为处于 Boost 自治状态。
+  - **实机消杀与回归测试保障**:
+    - 实机向受感染会话 `92c8921d-278a-4542-85fb-dc1207683f54` 发送销毁指令，目标会话已成功执行 `manage_task(Action='kill', TaskId='92c8921d.../task-108')`，流氓定时任务被彻底销毁；
+    - SQLite `conversation_schedules` 表全量记录已完成对齐，`./bin/webhook-hub antigravity doctor` 验证监控定时器已清零（0 active schedules）；
+    - 全量单元测试 379/379 全部通过（`379 passed in 65.49s`）。
+
+## [1.17.22] - 2026-09-26
+
+### Fixed & Enhanced
+- **Slack 附件图片下载稳健性加固与 IncompleteRead curl 兜底 (`hub/antigravity/image_downloader.py`, `tests/unit/test_image_downloader.py`)**:
+  - **痛点根治**：在 macOS + Python 3.14 环境下，Slack CDN (`files.slack.com`) 的 CloudFront/Envoy 分块流式传输易导致标准库 `urllib.request.urlopen` 抛出 `http.client.IncompleteRead` 异常，造成 Slack `/boost` / `/goal` 附带的图片无法落盘，Antigravity Agent 缺失图像输入。
+  - **curl 韧性兜底与认证重定向保持**：实现 `download_file_with_curl`，在 urllib 遇到 IncompleteRead 或网络异常时无缝 fallback 到系统级 curl（`--fail --max-time 30 -sS -L --location-trusted` 带 Bearer 授权与 `--` 防注入）。增加 `--location-trusted` 确保重定向至 `files-origin.slack.com` 时 Bearer 令牌不丢失，`--fail` 确保 HTTP 4xx/5xx 不会被误认为下载成功。
+  - **伪装错误报文拦截与全量坏文件清除**：增加首字节特征校验，拦截返回 200 OK 但内容为 HTML 登录页或 Slack API 错误 JSON（`{"ok":false...}`）的伪装文件；并在任何下载失败时**无条件删除部分落盘的残余文件**（不仅是 0 字节），彻底杜绝下次重试时因 `st_size > 0` 误复用残缺/损坏图片。
+  - **路径穿越防御**：加固 `sanitize_filename`，通过 `Path(name).name` 提取基准文件名并剥离前导点，彻底阻断 `../../` 路径穿越隐患。
+- **里程碑 1 Slash 指令合并与通知精准化 (`hub/routes/webhook.py`, `tests/unit/test_antigravity_agent.py`)**:
+  - **痛点根治**：上游 n8n 在预处理时会将正文中的 slash commands 剥离至 `body_dict["slash_commands"]`，导致 Hub 仅从 `text` 提取时返回空列表，向 Slack 线程推送的已采集里程碑误报为“默认执行”。
+  - **双向归一化合并与嵌套载荷支持**：在 `hub/routes/webhook.py` 中合并 `body_dict.get("slash_commands")`、`sub_dict.get("slash_commands")` 与 `extract_slash_commands(text)`，清洗并保持顺序去重，确保 `/boost`、`/goal` 等指令在扁平或嵌套数据包下均准确呈现在 `📥 [已采集 · Task Collected]` 里程碑评论中。
+  - **数据模型底层归一化 (`hub/antigravity/models.py`)**：在 `AntigravityTaskPayload.from_dict` 中统一解析逗号分隔字符串或带斜杠的指令列表（如 `"boost, /goal"`），剥离斜杠并去重，杜绝 `list("boost")` 字符拆解缺陷。
+- **防御性 Prompt 构建与附件中断显式告警 (`hub/antigravity/prompt_builder.py`)**:
+  - 当 `payload.files` 存在但 `downloaded_images` 为空时，在 `build_antigravity_prompt` 与 `build_follow_up_prompt` 中显式追加 `[⚠️ 附件告警 / Attachment Download Failure]` 块，明确告警图片未能落盘并列出文件名，防止模型静默忽略图片素材或产生幻觉。
+  - 修复追问 Prompt 在既无正文又无附件时错误提示“用户补充了新的素材附件”的逻辑缺陷，无附件时准确呈现“用户继续会话”。
+- **全链路指令模式同步与回归测试保障**:
+  - 同步 `scripts/deploy_slack_agent_workflow.py` 与 `scripts/slack_agent_ops.py` 中的 `commandsPattern`，支持 `scheduled-task-rescheduler`。
+  - 完善 `tests/unit/test_image_downloader.py`（增至 13 项单元测试，覆盖 `--fail`、`--location-trusted`、残缺非零文件清理、HTML/JSON 错误体拦截）以及 `tests/unit/test_antigravity_agent.py`，全套单元测试通过。
+
 ## [1.17.21] - 2026-09-26
 
 ### Fixed & Enhanced

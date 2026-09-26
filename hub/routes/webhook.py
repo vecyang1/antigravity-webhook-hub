@@ -376,17 +376,56 @@ def register_webhook_routes(
 
         # For Antigravity tasks originating from Slack, announce milestone 1 (collected) under thread
         if action_type in ("antigravity", "agent_conversation", "antigravity_task", "antigravity.run", "antigravity_run") and not source.endswith("_stress"):
-            channel = body_dict.get("channel")
-            ts = str(body_dict.get("ts") or body_dict.get("event_ts") or "")
-            thread_ts = body_dict.get("thread_ts")
+            sub_dict = body_dict.get("data") if isinstance(body_dict.get("data"), dict) else {}
+            channel = (
+                body_dict.get("channel")
+                or sub_dict.get("channel")
+                or body_dict.get("channel_id")
+                or sub_dict.get("channel_id")
+            )
+            ts = str(
+                body_dict.get("ts")
+                or sub_dict.get("ts")
+                or body_dict.get("event_ts")
+                or sub_dict.get("event_ts")
+                or ""
+            )
+            thread_ts = body_dict.get("thread_ts") or sub_dict.get("thread_ts")
             root_ts = str(thread_ts or ts or "")
             is_follow_up = bool(thread_ts and str(thread_ts) != ts)
             if channel and root_ts and not is_follow_up:
                 try:
                     from hub.antigravity.prompt_builder import extract_slash_commands
                     from hub.antigravity.thread_notifier import ThreadNotifier
-                    _, cmds, _ = extract_slash_commands(body_dict.get("text") or "")
-                    files_cnt = len(body_dict.get("files") or [])
+                    incoming_text = (
+                        body_dict.get("text")
+                        or sub_dict.get("text")
+                        or body_dict.get("raw_text")
+                        or sub_dict.get("raw_text")
+                        or body_dict.get("prompt")
+                        or sub_dict.get("prompt")
+                        or ""
+                    )
+                    _, text_cmds, _ = extract_slash_commands(incoming_text)
+                    raw_incoming_cmds = (
+                        body_dict.get("slash_commands")
+                        or sub_dict.get("slash_commands")
+                        or []
+                    )
+                    if isinstance(raw_incoming_cmds, str):
+                        raw_incoming_cmds = [c.strip() for c in raw_incoming_cmds.split(",") if c.strip()]
+                    incoming_cmds = [str(c).strip().lstrip("/") for c in raw_incoming_cmds if str(c).strip().lstrip("/")]
+                    cmds = list(dict.fromkeys(incoming_cmds + text_cmds))
+
+                    raw_files = (
+                        body_dict.get("files")
+                        or sub_dict.get("files")
+                        or body_dict.get("image_urls")
+                        or sub_dict.get("image_urls")
+                        or []
+                    )
+                    files_cnt = len(raw_files)
+                    title_val = body_dict.get("title") or sub_dict.get("title")
                     notifier = ThreadNotifier()
                     asyncio.create_task(
                         asyncio.to_thread(
@@ -394,7 +433,7 @@ def register_webhook_routes(
                             channel=channel,
                             thread_ts=root_ts,
                             task_id=task_id,
-                            title=body_dict.get("title"),
+                            title=title_val,
                             commands=cmds,
                             files_count=files_cnt,
                         )

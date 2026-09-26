@@ -507,7 +507,7 @@ class TestAntigravityWatchdog:
         res = asyncio.run(watchdog.resuscitate_session(item))
         assert res["success"] is True
         assert res["status"] == "schedule_remounted"
-        expected_prompt = SCHEDULE_REMOUNT_PROMPT.format(cron="*/30 * * * *")
+        expected_prompt = SCHEDULE_REMOUNT_PROMPT.format(cron="*/30 * * * *", prompt="Check email")
         mock_agentapi.send_message.assert_awaited_once_with(
             conversation_id=convo_id,
             content=expected_prompt,
@@ -3305,6 +3305,143 @@ class TestAntigravityWatchdog:
         assert is_pending is True
         assert "pending_resuscitation_in_flight" in reason
         assert "prompt at step 2" in reason
+
+    def test_oneshot_timer_with_empty_cron_is_ignored_by_schedule_extractor(self, temp_dir):
+        """
+        Regression test: An agent calls schedule with DurationSeconds=1800 and empty CronExpression='\"\"'.
+        extract_active_schedule_from_transcript must return None, and parse_cron_interval_seconds must return 0.
+        """
+        from hub.antigravity.watchdog import extract_active_schedule_from_transcript, parse_cron_interval_seconds
+
+        assert parse_cron_interval_seconds("") == 0
+        assert parse_cron_interval_seconds('""') == 0
+        assert parse_cron_interval_seconds("   ") == 0
+        assert parse_cron_interval_seconds("invalid cron") == 0
+
+        convo_id = "test-oneshot-timer-not-cron"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Research power banks"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "Waiting for research",
+                "tool_calls": [
+                    {
+                        "name": "schedule",
+                        "args": {
+                            "DurationSeconds": "1800",
+                            "CronExpression": '""',
+                            "IsDaemon": "false",
+                            "Prompt": "Wait for deep research to complete",
+                            "TimerCondition": "any",
+                        },
+                    }
+                ],
+            },
+        ]
+        t_path = _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=100.0)
+        sched = extract_active_schedule_from_transcript(t_path)
+        assert sched is None
+
+    def test_cancelled_schedule_via_manage_task_kill_is_ignored(self, temp_dir):
+        """
+        Regression test: When an agent mounts a schedule and later calls manage_task(Action='kill', TaskId='task-2'),
+        extract_active_schedule_from_transcript must detect the cancellation and return None.
+        """
+        from hub.antigravity.watchdog import extract_active_schedule_from_transcript
+
+        convo_id = "test-cancelled-schedule-kill"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "Set inspection cron"},
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "Scheduled",
+                "tool_calls": [
+                    {
+                        "name": "schedule",
+                        "args": {
+                            "CronExpression": "*/30 * * * *",
+                            "IsDaemon": "true",
+                            "Prompt": "Periodic inspection",
+                        },
+                    }
+                ],
+            },
+            {
+                "step_index": 2,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "content": "Cancel the inspection task",
+            },
+            {
+                "step_index": 3,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "Task cancelled",
+                "tool_calls": [
+                    {
+                        "name": "manage_task",
+                        "args": {
+                            "Action": "kill",
+                            "TaskId": "task-2",
+                        },
+                    }
+                ],
+            },
+        ]
+        t_path = _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=50.0)
+        sched = extract_active_schedule_from_transcript(t_path)
+        assert sched is None
+
+    def test_boost_goal_detection_ignores_checkpoints_and_system_summaries(self, temp_dir):
+        """
+        Regression test: check_session_has_boost_or_goal must only trigger on genuine human USER_INPUT,
+        not on system CHECKPOINT messages or assistant text that happens to mention '/boost' or '/goal'.
+        """
+        from hub.antigravity.watchdog import check_session_has_boost_or_goal
+
+        convo_id = "test-checkpoint-summary-boost-ignore"
+        steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "推荐几款65W充电宝"},
+            {
+                "step_index": 1,
+                "source": "SYSTEM",
+                "type": "CHECKPOINT",
+                "status": "DONE",
+                "content": "{{ CHECKPOINT 0 }}\nSummary of previous conversation:\n1. User requested /boost mode in another thread\n2. Previous /goal completed",
+            },
+            {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "为您推荐酷态科10号和安克Prime 65W。",
+                "tool_calls": [],
+            },
+        ]
+        t_path = _create_fake_session(temp_dir, convo_id, steps, mtime_offset_seconds=10.0)
+        has_boost = check_session_has_boost_or_goal(t_path, steps)
+        assert has_boost is False
+
+    def test_schedule_remount_prompt_contains_original_prompt_and_not_generic_inspection(self):
+        """
+        Verify that SCHEDULE_REMOUNT_PROMPT retains the original prompt and never instructs
+        the LLM to perform generic system health checks or inspections.
+        """
+        from hub.antigravity.watchdog import SCHEDULE_REMOUNT_PROMPT
+
+        rendered = SCHEDULE_REMOUNT_PROMPT.format(cron="*/15 * * * *", prompt="Sync Shopify inventory")
+        assert "Cron: */15 * * * *" in rendered
+        assert "Sync Shopify inventory" in rendered
+        assert "正在自动重新激活巡检流程" not in rendered
+        assert "执行一次巡检" not in rendered
 
 
 

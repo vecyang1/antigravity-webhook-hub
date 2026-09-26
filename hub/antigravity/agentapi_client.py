@@ -319,6 +319,7 @@ class AgentAPIClient:
             "ANTIGRAVITY_CONVERSATION_ID",
             "ANTIGRAVITY_SOURCE_METADATA",
             "ANTIGRAVITY_TRAJECTORY_ID",
+            "ANTIGRAVITY_AGENT",
         ):
             env.pop(key, None)
 

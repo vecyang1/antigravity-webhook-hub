@@ -149,7 +149,7 @@ def build_antigravity_prompt(
     # Core user intent: text + voice transcript
     prompt_parts: list[str] = []
 
-    images = downloaded_images or payload.downloaded_images
+    images = downloaded_images if downloaded_images is not None else payload.downloaded_images
     voice_tx = (payload.voice_transcript or "").strip()
     core_text = ""
     if clean_text and voice_tx and voice_tx not in clean_text:
@@ -168,14 +168,23 @@ def build_antigravity_prompt(
 
     prompt_parts.append(core_text)
 
-    # Image attachments
-    images = downloaded_images or payload.downloaded_images
+    # Image attachments or download failure alert
+    images = downloaded_images if downloaded_images is not None else payload.downloaded_images
     if images:
         img_section = [f"\n[本地图片素材 / Attached Images ({len(images)})]:"]
         for p in images:
             img_section.append(f"- {p}")
         img_section.append("请在理解任务和给出结论时，查阅并结合以上图片内容。")
         prompt_parts.append("\n".join(img_section))
+    elif payload.files:
+        file_names = [f.get("name") or "未命名文件" for f in payload.files if isinstance(f, dict)]
+        names_str = f"（文件列表: {', '.join(file_names)}）" if file_names else ""
+        alert_msg = (
+            f"\n[⚠️ 附件告警 / Attachment Download Failure]: 检测到 Slack 附带了素材附件{names_str}，"
+            "但在下载落盘时发生中断或未成功获取本地路径。请注意当前会话未能加载该图片，"
+            "若任务高度依赖图像请提示用户重新上传或检查 Slack 下载权限。"
+        )
+        prompt_parts.append(alert_msg)
 
     # Active directives
     if all_directives:
@@ -227,6 +236,7 @@ def build_follow_up_prompt(
     follow_up_header = f"{prefix_header}[用户追问 / User Follow-up]:" if prefix_header else "[用户追问 / User Follow-up]:"
     prompt_parts: list[str] = [follow_up_header]
 
+    images = downloaded_images if downloaded_images is not None else payload.downloaded_images
     voice_tx = (payload.voice_transcript or "").strip()
     if clean_text and voice_tx and voice_tx not in clean_text:
         prompt_parts.append(f"{clean_text}\n\n[语音追问]: {voice_tx}")
@@ -234,15 +244,25 @@ def build_follow_up_prompt(
         prompt_parts.append(f"[语音追问]: {voice_tx}")
     elif clean_text:
         prompt_parts.append(clean_text)
-    else:
+    elif images or payload.files:
         prompt_parts.append("（用户补充了新的素材附件，请根据上下文结合分析）")
+    else:
+        prompt_parts.append("（用户继续会话）")
 
-    images = downloaded_images or payload.downloaded_images
     if images:
         img_section = [f"\n[追问附带图片 ({len(images)})]:"]
         for p in images:
             img_section.append(f"- {p}")
         prompt_parts.append("\n".join(img_section))
+    elif payload.files:
+        file_names = [f.get("name") or "未命名文件" for f in payload.files if isinstance(f, dict)]
+        names_str = f"（文件列表: {', '.join(file_names)}）" if file_names else ""
+        alert_msg = (
+            f"\n[⚠️ 附件告警 / Attachment Download Failure]: 检测到 Slack 附带了素材附件{names_str}，"
+            "但在下载落盘时发生中断或未成功获取本地路径。请注意当前追问未能加载该图片，"
+            "若任务高度依赖图像请提示用户重新上传或检查 Slack 下载权限。"
+        )
+        prompt_parts.append(alert_msg)
 
     if all_directives:
         prompt_parts.append("\n" + "\n\n".join(all_directives))

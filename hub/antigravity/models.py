@@ -166,7 +166,14 @@ class AntigravityTaskPayload:
         ).lower()
 
         title = data.get("title") or sub_data.get("title")
-        slash_commands = list(data.get("slash_commands") or sub_data.get("slash_commands") or [])
+        raw_slash_cmds = data.get("slash_commands") or sub_data.get("slash_commands") or []
+        if isinstance(raw_slash_cmds, str):
+            raw_slash_cmds = [c.strip() for c in raw_slash_cmds.split(",") if c.strip()]
+        slash_commands = list(dict.fromkeys(
+            str(c).strip().lstrip("/")
+            for c in raw_slash_cmds
+            if str(c).strip().lstrip("/")
+        ))
         active_skills = list(data.get("active_skills") or sub_data.get("active_skills") or [])
 
         downloaded_images = list(data.get("downloaded_images") or sub_data.get("downloaded_images") or [])

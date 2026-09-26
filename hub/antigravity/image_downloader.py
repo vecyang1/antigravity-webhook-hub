@@ -6,9 +6,11 @@ directory, giving local Antigravity agents direct filesystem access to all visua
 
 from __future__ import annotations
 
+import http.client
 import logging
 import os
 import re
+import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -31,8 +33,68 @@ IMAGE_MIMETYPES = {
 
 def sanitize_filename(name: str) -> str:
     """Sanitize filename to prevent path traversal and shell injection."""
-    cleaned = re.sub(r'[^a-zA-Z0-9._-]', '_', name)
+    pure_name = Path(name).name
+    cleaned = re.sub(r'[^a-zA-Z0-9._-]', '_', pure_name)
+    cleaned = cleaned.lstrip('.')
     return cleaned[:60] if cleaned else "attachment.png"
+
+
+def download_file_with_curl(
+    url: str,
+    dest_path: Path,
+    bot_token: Optional[str] = None,
+    timeout: int = 30,
+) -> bool:
+    """
+    Download a remote file using system curl with Bearer authorization and redirects.
+    Ensures robust streaming from Slack's CloudFront/Envoy CDN (files.slack.com)
+    where Python urllib may encounter IncompleteRead on macOS.
+    """
+    cmd = [
+        "curl",
+        "--fail",
+        "--max-time", str(timeout),
+        "-sS",
+        "-L",
+        "--location-trusted",
+        "-A", "Antigravity-Webhook-Hub/1.0",
+        "-o", str(dest_path),
+    ]
+    if bot_token and "slack.com" in url:
+        cmd.extend(["-H", f"Authorization: Bearer {bot_token}"])
+    cmd.extend(["--", url])
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+        if res.returncode == 0 and dest_path.is_file() and dest_path.stat().st_size > 0:
+            # Detect HTML error pages or Slack error JSON disguised as 200 OK
+            header_sample = b""
+            try:
+                with open(dest_path, "rb") as f:
+                    header_sample = f.read(256)
+            except Exception:
+                pass
+
+            if header_sample.startswith((b"<!DOCTYPE", b"<html", b"<HTML", b'{"ok":false', b'{"ok": false', b"The requested file could not be found")):
+                logger.warning(
+                    "curl downloaded error/HTML content instead of image for %s (sample: %s)",
+                    url, header_sample[:60],
+                )
+                dest_path.unlink(missing_ok=True)
+                return False
+
+            return True
+
+        logger.warning(
+            "curl download failed for %s (exit code %d): %s",
+            url, res.returncode, res.stderr.strip() if res.stderr else "empty destination",
+        )
+        dest_path.unlink(missing_ok=True)
+        return False
+    except Exception as e:
+        logger.warning("curl execution error downloading %s: %s", url, e)
+        dest_path.unlink(missing_ok=True)
+        return False
 
 
 def download_slack_images(
@@ -88,15 +150,32 @@ def download_slack_images(
 
         req = urllib.request.Request(download_url, headers=headers, method="GET")
 
+        downloaded = False
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
                 data = resp.read()
                 if data:
-                    dest_path.write_bytes(data)
-                    downloaded_paths.append(str(dest_path.resolve()))
-                    count += 1
-                    logger.info("Successfully downloaded image %s (%d bytes)", safe_name, len(data))
+                    if data[:64].startswith((b"<!DOCTYPE", b"<html", b"<HTML", b'{"ok":false', b'{"ok": false', b"The requested file could not be found")):
+                        logger.warning("urllib downloaded error/HTML content for %s", download_url)
+                        dest_path.unlink(missing_ok=True)
+                    else:
+                        dest_path.write_bytes(data)
+                        if dest_path.is_file() and dest_path.stat().st_size > 0:
+                            downloaded = True
+                            downloaded_paths.append(str(dest_path.resolve()))
+                            count += 1
+                            logger.info("Successfully downloaded image %s (%d bytes)", safe_name, len(data))
         except Exception as e:
-            logger.warning("Failed to download image from %s: %s", download_url, e)
+            logger.warning("urllib download failed for %s (%s), attempting curl fallback", download_url, e)
+
+        if not downloaded:
+            dest_path.unlink(missing_ok=True)
+            if download_file_with_curl(download_url, dest_path, bot_token=bot_token, timeout=30):
+                downloaded_paths.append(str(dest_path.resolve()))
+                count += 1
+                logger.info("Successfully downloaded image %s via curl fallback (%d bytes)", safe_name, dest_path.stat().st_size)
+            else:
+                dest_path.unlink(missing_ok=True)
+                logger.warning("Failed to download image from %s via both urllib and curl", download_url)
 
     return downloaded_paths
